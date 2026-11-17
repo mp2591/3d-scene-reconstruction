@@ -1,0 +1,35 @@
+# A complete suite that finishes in a few minutes on a CPU:
+#
+#   scene-recon run-suite --config configs/suites/smoke_suite.yaml
+#
+# Three variations of the tiny testing model are trained, evaluated and
+# profiled on the synthetic spheres; the comparison report is written to
+# runs/smoke_suite/summary.md. Use it to see what a suite produces.
+
+suite_name: smoke_suite
+stages: [train, evaluate, profile]
+
+# Merged into every run. Here: everything from the single-run smoke test, plus
+# a third evaluation protocol so the plots have three points per line.
+common:
+  base: ../smoke_test.yaml
+  evaluation:
+    source_view_sets: [[0], [0, 6], [0, 4, 8]]
+  profiling:
+    num_frames: 3
+
+# Executed in this order. Each entry is merged on top of `common`.
+runs:
+  tiny_narrow:
+    model:
+      encoder: {num_features: 8}
+      decoder: {hidden_width: 32}
+
+  tiny_wide:
+    model:
+      encoder: {num_features: 32}
+      decoder: {hidden_width: 128}
+
+  tiny_without_fine_pass:
+    renderer:
+      num_fine_samples: 0

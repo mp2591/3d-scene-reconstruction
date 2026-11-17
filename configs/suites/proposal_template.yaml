@@ -1,0 +1,56 @@
+# TEMPLATE for the comparison in the project proposal. It does not run yet:
+# the model files it names (configs/models/*.yaml) are written by the team,
+# together with the networks they describe. Until they exist, `run-suite`
+# stops before training anything and lists every missing file.
+#
+#   scene-recon run-suite --config configs/suites/proposal_template.yaml
+#
+# Try the whole suite quickly before the real run:
+#
+#   scene-recon run-suite --config configs/suites/proposal_template.yaml \
+#       --set training.num_steps=200 training.validate_every=100 evaluation.num_scenes=5
+#
+# (Trial results land in the same directory; delete runs/proposal_comparison/
+# before the real run, or change suite_name.)
+
+suite_name: proposal_comparison
+stages: [train, evaluate, profile]
+
+common:
+  base: [../base.yaml, ../data/srn_cars.yaml]
+
+runs:
+  # (1) Baseline pixelNeRF: ResNet-34 encoder, MLP decoder with average pooling over views.
+  pixelnerf_resnet34:
+    base: ../models/pixelnerf_resnet34.yaml
+
+  # (2) Baseline TransNeRF: U-Net encoder, cross-view and ray attention decoders.
+  transnerf_unet:
+    base: ../models/transnerf_unet.yaml
+
+  # (3) Encoder ablations: the modern backbones with a standard decoder.
+  #     A model can also be written out in full instead of naming a file:
+  convnextv2_mlp:
+    model:
+      name: pixel_aligned_nerf          # your top-level module
+      encoder: {name: convnextv2}
+      decoder: {name: resnet_mlp}
+    optimization:
+      group_overrides:
+        encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}   # pretrained encoder
+
+  hiera_mlp:
+    model:
+      name: pixel_aligned_nerf
+      encoder: {name: hiera}
+      decoder: {name: resnet_mlp}
+    optimization:
+      group_overrides:
+        encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
+
+  # (4) End-to-end modernised model: Hiera encoder with the Mask Unit attention decoder.
+  hiera_maskunit:
+    base: ../models/hiera_maskunit.yaml
+    optimization:
+      group_overrides:
+        encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}

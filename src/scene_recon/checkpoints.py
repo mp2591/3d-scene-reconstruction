@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import torch
 from torch import nn
@@ -35,7 +36,11 @@ def save_checkpoint(
     progress: TrainingProgress,
     raw_config: dict[str, Any],
 ) -> None:
-    """Write everything needed to resume training or to evaluate the model."""
+    """Write everything needed to resume training or to evaluate the model.
+
+    Next to the checkpoint, a small JSON file records the training progress,
+    so that tools can see how far a run has come without loading the weights.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     state = {
         "model": model.state_dict(),
@@ -45,11 +50,10 @@ def save_checkpoint(
         "training_seconds": progress.training_seconds,
         "config": raw_config,
     }
-    # Write to a temporary file first, so that a crash while saving cannot
-    # leave a truncated checkpoint in place of a good one.
-    temporary_path = path.with_suffix(".tmp")
-    torch.save(state, temporary_path)
-    temporary_path.replace(path)
+    _write_atomically(path, lambda temporary_path: torch.save(state, temporary_path))
+    _write_atomically(
+        progress_file(path), lambda temporary_path: temporary_path.write_text(json.dumps(asdict(progress)))
+    )
 
 
 def load_checkpoint(
@@ -63,6 +67,8 @@ def load_checkpoint(
     Pass the optimiser and scheduler to resume training; leave them out to
     load the weights for evaluation.
     """
+    if not path.is_file():
+        raise FileNotFoundError(f"No checkpoint at {path}. Train the model first, or pass --checkpoint.")
     state = torch.load(path, map_location="cpu", weights_only=True)
     model.load_state_dict(state["model"])
     if optimizer is not None:
@@ -70,3 +76,34 @@ def load_checkpoint(
     if scheduler is not None:
         scheduler.load_state_dict(state["scheduler"])
     return TrainingProgress(step=state["step"], training_seconds=state["training_seconds"])
+
+
+def read_progress(checkpoint_path: Path) -> TrainingProgress | None:
+    """The training progress stored with a checkpoint, or ``None`` if there is no checkpoint."""
+    if not checkpoint_path.is_file():
+        return None
+
+    sidecar = progress_file(checkpoint_path)
+    if sidecar.is_file():
+        return TrainingProgress(**json.loads(sidecar.read_text()))
+
+    # A checkpoint without the JSON file was not written by save_checkpoint;
+    # fall back to reading the (much larger) checkpoint itself.
+    state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    return TrainingProgress(step=state["step"], training_seconds=state["training_seconds"])
+
+
+def progress_file(checkpoint_path: Path) -> Path:
+    """Path of the JSON file that records the progress of a checkpoint."""
+    return checkpoint_path.with_suffix(".json")
+
+
+def _write_atomically(path: Path, write: Callable[[Path], Any]) -> None:
+    """Write to a temporary file, then move it into place.
+
+    A crash while writing therefore never leaves a truncated file in place of
+    a good one.
+    """
+    temporary_path = path.with_name(path.name + ".tmp")
+    write(temporary_path)
+    temporary_path.replace(path)

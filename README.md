@@ -12,6 +12,10 @@ checkpointing, evaluation and profiling. The neural network is a plug-in. Any
 `nn.Module` that implements two methods can be trained and evaluated, and is
 selected by name in a YAML file.
 
+A whole comparison is described by one suite file: list the runs, start one
+command, and get every checkpoint, the test metrics, a comparison table and
+the plots.
+
 > **The repository contains no real architectures yet.** The only model
 > included, `tiny_pixel_aligned_nerf`, is a few small layers that exist to
 > test the pipeline. It must not be used for reported results.
@@ -56,7 +60,28 @@ Outputs are written to `runs/<run_name>/`:
 | `checkpoints/last.pt` | Model, optimiser and scheduler state.                          |
 | `tensorboard/`        | Loss curves, learning rates, validation metrics and renders.   |
 | `evaluation.json`     | Test metrics, overall and per scene (`evaluate`).              |
+| `previews/`           | A few rendered test views, for side-by-side comparison (`evaluate`). |
 | `profile.json`        | Parameter counts and rendering speed (`profile`).              |
+
+## Running a whole comparison
+
+A suite file lists several runs that share most of their settings. One
+command trains, evaluates and profiles them in order and writes a report
+comparing them:
+
+```bash
+scene-recon run-suite --config configs/suites/smoke_suite.yaml
+```
+
+The report is at `runs/smoke_suite/summary.md`: tables of training cost,
+speed and test metrics, with plots of quality against the number of input
+views, quality against rendering speed, training curves, and the same views
+rendered by every run. Starting the same command again resumes an interrupted
+suite and skips everything that is already done.
+
+[`docs/suites.md`](docs/suites.md) describes the suite file and the outputs.
+[`configs/suites/proposal_template.yaml`](configs/suites/proposal_template.yaml)
+lays out the comparison from the proposal.
 
 ## Commands
 
@@ -66,9 +91,11 @@ Outputs are written to `runs/<run_name>/`:
 | `scene-recon evaluate`    | Compute PSNR, SSIM and LPIPS on the test split.                      |
 | `scene-recon profile`     | Report parameter counts and full-frame rendering speed (FPS).        |
 | `scene-recon check-model` | Verify that a model satisfies the pipeline's contract, in seconds.   |
+| `scene-recon run-suite`   | Run every experiment of a suite file and write a comparison report.  |
 
-Every command takes `--config <file>`. Single values can be overridden
-without editing a file:
+Every command takes `--config <file>`: an experiment config, or a suite file
+for `run-suite`. Single values can be overridden without editing a file
+(for `run-suite`, in every run):
 
 ```bash
 scene-recon train --config configs/smoke_test.yaml --set training.batch_size=8 experiment.run_name=bigger_batch
@@ -85,8 +112,9 @@ scene-recon train --config configs/smoke_test.yaml --set training.batch_size=8 e
    scene-recon train --config configs/srn_cars_tiny_model.yaml --set training.num_steps=200 training.validate_every=100
    ```
 
-3. Write your model ([guide](docs/writing_a_model.md)), copy
-   `configs/srn_cars_tiny_model.yaml`, and point it at your model.
+3. Write your models ([guide](docs/writing_a_model.md)), describe each in
+   `configs/models/`, and list them as runs in a copy of
+   `configs/suites/proposal_template.yaml`.
 
 ## Adding your own model
 
@@ -117,10 +145,12 @@ configs/                 Experiment configs (YAML).
   base.yaml              Every pipeline setting, with the values from the proposal.
   data/                  One file per dataset.
   models/                One file per model.
+  suites/                Suite files: several runs and a comparison report.
 docs/
   pipeline.md            How data flows through the pipeline, and its conventions.
   writing_a_model.md     The model contract and how to plug a network in.
   configuration.md       How config files are composed and validated.
+  suites.md              Running and comparing many experiments from one file.
 src/scene_recon/
   cli.py                 Command-line entry point.
   config.py              Config loading and validation.
@@ -135,6 +165,10 @@ src/scene_recon/
   training.py            The training loop.
   evaluation.py          Novel-view evaluation.
   profiling.py           Parameter counts and rendering speed.
+  stages.py              Train, evaluate and profile one run (used by every command).
+  run_files.py           Where each output of a run is stored.
+  suite.py               Loading a suite file and running its experiments in order.
+  report.py  plots.py    The suite report: tables and figures.
 tests/                   Unit tests and end-to-end tests.
 ```
 
@@ -144,7 +178,7 @@ tests/                   Unit tests and end-to-end tests.
 pytest
 ```
 
-The suite runs on a CPU in under a minute. It includes a test that renders an
+The tests run on a CPU in under a minute. It includes a test that renders an
 analytically known scene through the full ray casting and volume rendering
 code and compares the result with the exact image, and end-to-end tests of
 every command.

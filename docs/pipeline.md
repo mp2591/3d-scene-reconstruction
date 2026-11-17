@@ -39,13 +39,18 @@ a scene, then over scenes.
 set of input views, so `[[64], [64, 104]]` evaluates the model with one input
 view and again with two.
 
+Every evaluation also saves the first rendered view of the first
+`evaluation.num_preview_scenes` scenes under `previews/`. All models evaluated
+with the same source views render the same views, so these images can be
+compared side by side; the suite report does exactly that.
+
 ## The three cost figures of the proposal
 
 | Figure             | Where it comes from                                                           |
 |--------------------|-------------------------------------------------------------------------------|
 | Training GPU hours | Recorded during training; stored in the checkpoint and in `evaluation.json`.  |
 | Parameter count    | `scene-recon profile`, in total and per parameter group.                      |
-| Rendering FPS      | `scene-recon profile`: time to render one full frame of an encoded scene.     |
+| Rendering FPS      | `scene-recon profile`: time to render one full frame of an encoded scene, averaged over `profiling.num_frames` frames. |
 
 Training time counts optimisation steps and data loading, and excludes
 validation and checkpointing. It accumulates correctly across resumed runs.

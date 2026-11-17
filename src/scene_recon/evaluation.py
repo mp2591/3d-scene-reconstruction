@@ -27,6 +27,37 @@ logger = logging.getLogger(__name__)
 
 _LOG_PROGRESS_EVERY_NUM_SCENES = 25
 
+# File names inside a preview directory (see save_preview).
+_PREVIEW_PREDICTION = "prediction.png"
+_PREVIEW_TRUTH = "truth.png"
+_PREVIEW_SOURCE_PATTERN = "source_*.png"
+
+
+@dataclass
+class ScenePreview:
+    """One rendered view of one scene, kept for visual inspection.
+
+    The view is always the first non-source view of the scene, so every
+    model evaluated with the same source views renders the same image.
+    """
+
+    scene_id: str
+    target_view: int
+    """Index of the rendered view within the scene."""
+
+    source_images: Tensor
+    """The images the model was given, shape (V, 3, H, W)."""
+
+    prediction: Tensor
+    """The rendered view, shape (3, H, W)."""
+
+    truth: Tensor
+    """The true image of the same view, shape (3, H, W)."""
+
+    def side_by_side(self) -> Tensor:
+        """First source image, prediction and truth next to each other, shape (3, H, 3 * W)."""
+        return torch.cat([self.source_images[0], self.prediction, self.truth], dim=-1)
+
 
 @dataclass
 class EvaluationResult:
@@ -36,9 +67,8 @@ class EvaluationResult:
     per_scene: dict[str, dict[str, float]]
     """Each metric averaged over the target views of one scene, keyed by scene id."""
 
-    preview: Tensor
-    """An image of shape (3, H, 3 * W) for visual inspection, showing for the first scene:
-    its first source view, the first rendered target view, and that view's ground truth."""
+    previews: list[ScenePreview]
+    """One preview for each of the first ``num_preview_scenes`` scenes."""
 
 
 class Evaluator:
@@ -63,6 +93,7 @@ class Evaluator:
         source_view_indices: Sequence[int],
         num_scenes: int | None = None,
         num_target_views: int | None = None,
+        num_preview_scenes: int = 1,
         image_dir: Path | None = None,
     ) -> EvaluationResult:
         """Evaluate on the first ``num_scenes`` scenes of a dataset.
@@ -73,6 +104,8 @@ class Evaluator:
             num_scenes: Number of scenes to evaluate. ``None`` means all.
             num_target_views: Number of views to render per scene, spread
                 evenly over the non-source views. ``None`` means all of them.
+            num_preview_scenes: Number of scenes, from the first one on, for
+                which a ``ScenePreview`` is returned.
             image_dir: If given, every rendered image is saved as
                 ``<image_dir>/<scene_id>/<view_index>.png``.
         """
@@ -84,9 +117,9 @@ class Evaluator:
         self.model.eval()
 
         per_scene: dict[str, dict[str, float]] = {}
-        preview = None
+        previews: list[ScenePreview] = []
         for scene_index in range(num_scenes):
-            target_view_indices = _choose_target_views(
+            target_view_indices = choose_target_views(
                 scenes.num_views(scene_index), source_view_indices, num_target_views
             )
             views = scenes.load_scene(scene_index, source_view_indices + target_view_indices).to(self.device)
@@ -104,10 +137,19 @@ class Evaluator:
             per_scene[scene_id] = {
                 name: metric(prediction, ground_truth).mean().item() for name, metric in self.metrics.items()
             }
-            if preview is None:
-                preview = torch.cat([source_views.images[0, 0], prediction[0], ground_truth[0]], dim=-1).cpu()
+            if scene_index < num_preview_scenes:
+                previews.append(
+                    ScenePreview(
+                        scene_id=scene_id,
+                        target_view=target_view_indices[0],
+                        source_images=source_views.images[0].cpu(),
+                        prediction=prediction[0].cpu(),
+                        truth=ground_truth[0].cpu(),
+                    )
+                )
             if image_dir is not None:
-                _save_images(prediction, target_view_indices, image_dir / scene_id)
+                for image, view_index in zip(prediction, target_view_indices):
+                    save_image(image, image_dir / scene_id / f"{view_index:06d}.png")
             if (scene_index + 1) % _LOG_PROGRESS_EVERY_NUM_SCENES == 0:
                 logger.info("Evaluated %d / %d scenes", scene_index + 1, num_scenes)
 
@@ -117,18 +159,18 @@ class Evaluator:
             name: float(np.mean([scene_metrics[name] for scene_metrics in per_scene.values()]))
             for name in self.metrics
         }
-        return EvaluationResult(mean=mean, per_scene=per_scene, preview=preview)
+        return EvaluationResult(mean=mean, per_scene=per_scene, previews=previews)
 
 
-def _choose_target_views(
-    num_views: int, source_view_indices: list[int], num_target_views: int | None
+def choose_target_views(
+    num_views: int, source_view_indices: Sequence[int], num_target_views: int | None
 ) -> list[int]:
-    """All views that are not source views, optionally thinned out to an evenly spaced subset."""
-    if max(source_view_indices) >= num_views:
-        raise ConfigError(
-            f"Source view indices {source_view_indices} are out of range for a scene with "
-            f"{num_views} views. Adjust the source views in the 'validation' or 'evaluation' config section."
-        )
+    """All views that are not source views, optionally thinned out to an evenly spaced subset.
+
+    The first non-source view is always included, which is what makes
+    previews of different runs show the same view.
+    """
+    check_source_views(source_view_indices, num_views, where="the evaluation source views")
     candidates = [index for index in range(num_views) if index not in source_view_indices]
     if not candidates:
         raise ConfigError("Every view of the scene is a source view, so there is nothing left to evaluate on.")
@@ -139,9 +181,45 @@ def _choose_target_views(
     return [candidates[position] for position in positions]
 
 
-def _save_images(images: Tensor, view_indices: list[int], directory: Path) -> None:
-    """Save images of shape (N, 3, H, W) in [0, 1] as 8-bit PNG files named after their view index."""
-    directory.mkdir(parents=True, exist_ok=True)
-    pixels = (images.permute(0, 2, 3, 1) * 255.0).round().to(torch.uint8).cpu().numpy()
-    for image, view_index in zip(pixels, view_indices):
-        Image.fromarray(image).save(directory / f"{view_index:06d}.png")
+def check_source_views(source_view_indices: Sequence[int], num_views: int, where: str) -> None:
+    """Raise a readable error if source view indices do not exist in a scene with ``num_views`` views."""
+    out_of_range = [index for index in source_view_indices if not 0 <= index < num_views]
+    if out_of_range:
+        raise ConfigError(
+            f"{where} include {out_of_range}, but the scenes have only {num_views} views "
+            f"(valid indices are 0 to {num_views - 1})."
+        )
+
+
+def save_image(image: Tensor, path: Path) -> None:
+    """Save an image of shape (3, H, W) with values in [0, 1] as an 8-bit PNG."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pixels = (image.clamp(0.0, 1.0).permute(1, 2, 0) * 255.0).round().to(torch.uint8).cpu().numpy()
+    Image.fromarray(pixels).save(path)
+
+
+def save_preview(preview: ScenePreview, directory: Path) -> None:
+    """Save a preview's images as PNG files in ``directory``."""
+    for index, image in enumerate(preview.source_images):
+        save_image(image, directory / f"source_{index}.png")
+    save_image(preview.prediction, directory / _PREVIEW_PREDICTION)
+    save_image(preview.truth, directory / _PREVIEW_TRUTH)
+
+
+def load_preview_images(directory: Path) -> dict[str, list[np.ndarray] | np.ndarray]:
+    """Read back the images written by ``save_preview``.
+
+    Returns:
+        ``{"sources": [...], "prediction": ..., "truth": ...}`` with each image
+        an array of shape (H, W, 3) and dtype uint8.
+    """
+
+    def read(path: Path) -> np.ndarray:
+        with Image.open(path) as image:
+            return np.asarray(image.convert("RGB"))
+
+    return {
+        "sources": [read(path) for path in sorted(directory.glob(_PREVIEW_SOURCE_PATTERN))],
+        "prediction": read(directory / _PREVIEW_PREDICTION),
+        "truth": read(directory / _PREVIEW_TRUTH),
+    }

@@ -135,20 +135,30 @@ the result.
    random inputs and reports the first violation in plain words.
 
    ```bash
-   scene-recon check-model --config configs/pixelnerf_srn_cars.yaml --image-size 128
+   scene-recon check-model --config configs/pixelnerf_srn_cars.yaml
    ```
 
-6. **Train.**
+   The random test images have the size of the dataset's images, so encoders
+   with a fixed input size (such as position embeddings) are checked at the
+   size they will see.
+
+6. **Train**, on its own or as one run of a suite ([suites.md](suites.md)).
 
    ```bash
    scene-recon train --config configs/pixelnerf_srn_cars.yaml
    ```
 
-## Making encoders and decoders interchangeable
+## Encoders and decoders inside the top-level model
 
-The proposal pairs several encoders with several decoders. To avoid writing
-one top-level class per combination, a top-level model can build its parts
-from the `ENCODERS` and `DECODERS` registries:
+The pipeline sees only the top-level model. What happens inside it (which
+encoder and decoder it contains, what the encoder hands to the decoder, how
+features are fused across views) is entirely up to whoever writes it.
+
+### Optional: choosing the encoder and decoder from config
+
+The proposal pairs several encoders with several decoders. Instead of
+writing one top-level class per combination, a top-level model can build its
+parts by name from the `ENCODERS` and `DECODERS` registries:
 
 ```python
 @ENCODERS.register("resnet34")
@@ -175,9 +185,17 @@ model:
 ```
 
 [`models/testing/tiny_model.py`](../src/scene_recon/models/testing/tiny_model.py)
-is a complete, small example of this pattern. The interface between *your*
-encoders and *your* decoders is yours to define; the pipeline only sees the
-top-level model.
+is a complete, small example of this pattern.
+
+One thing to plan for if you use it: the top-level model's code is shared by
+every combination, so every encoder must produce what every decoder expects.
+For example, if the shared code samples one feature map per view, an encoder
+returning several multi-scale maps needs an adapter, or a shared convention
+such as "every encoder returns a list of maps". `scene-recon check-model`
+catches a mismatch in seconds.
+
+Encoder and decoder files must live under `src/scene_recon/models/`, like the
+top-level model, so that their registration runs.
 
 ## Geometry helpers
 

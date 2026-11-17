@@ -81,7 +81,7 @@ def test_command_line_runs_train_evaluate_and_profile(smoke_config: Config, tmp_
     cli.main(["check-model", "--config", str(config_path)])
     cli.main(["train", "--config", str(config_path)])
     cli.main(["evaluate", "--config", str(config_path), "--set", "evaluation.save_images=true"])
-    cli.main(["profile", "--config", str(config_path), "--num-frames", "1"])
+    cli.main(["profile", "--config", str(config_path), "--set", "profiling.num_frames=1", "profiling.num_warmup_frames=0"])
 
     evaluation = json.loads((smoke_config.run_dir / "evaluation.json").read_text())
     assert [protocol["source_views"] for protocol in evaluation["protocols"]] == [[0], [0, 6]]
