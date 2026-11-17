@@ -34,26 +34,22 @@ from scene_recon.build import (
 from scene_recon.checkpoints import TrainingProgress, load_checkpoint, save_checkpoint
 from scene_recon.config import Config, save_config
 from scene_recon.data import SceneDataset, endless_training_batches
-from scene_recon.evaluation import Evaluator
+from scene_recon.evaluation import Evaluator, check_source_views
 from scene_recon.metrics import mse_to_psnr
 from scene_recon.optim import build_optimizer_and_scheduler
 from scene_recon.registry import ConfigError
 from scene_recon.rendering import VolumeRenderer, final_output, sample_training_rays
+from scene_recon.run_files import RunFiles
 from scene_recon.structures import SceneViews
 
 logger = logging.getLogger(__name__)
 
-CHECKPOINT_NAME = "last.pt"
-
 
 class Trainer:
-    """Trains the model described by a config and writes all outputs to the run directory.
+    """Trains the model described by a config.
 
-    Layout of the run directory (``<output_dir>/<run_name>/``)::
-
-        config.yaml          the full config of the run
-        checkpoints/last.pt  the latest model, optimiser and scheduler state
-        tensorboard/         training curves and validation renders
+    Writes the run's config, checkpoints and TensorBoard logs into the run
+    directory; see ``scene_recon.run_files`` for the layout.
     """
 
     def __init__(self, config: Config, resume: bool = False) -> None:
@@ -63,7 +59,6 @@ class Trainer:
             resume: Continue from the run directory's latest checkpoint
                 instead of starting from scratch.
         """
-        _check_training_settings(config)
         self.config = config
         self.device = resolve_device(config.experiment.device)
         seed_everything(config.experiment.seed)
@@ -78,9 +73,10 @@ class Trainer:
         self.evaluator = Evaluator(
             self.model, self.renderer, build_metrics(config.validation.metrics), self.device
         )
-        _check_validation_settings(config, self.validation_scenes)
+        check_training_settings(config, self.validation_scenes)
 
-        self.checkpoint_path = config.run_dir / "checkpoints" / CHECKPOINT_NAME
+        self.files = RunFiles(config.run_dir)
+        self.checkpoint_path = self.files.checkpoint
         self.progress = TrainingProgress()
         if resume:
             self.progress = load_checkpoint(self.checkpoint_path, self.model, self.optimizer, self.scheduler)
@@ -92,8 +88,8 @@ class Trainer:
             )
 
         config.run_dir.mkdir(parents=True, exist_ok=True)
-        save_config(config, config.run_dir / "config.yaml")
-        self.writer = SummaryWriter(str(config.run_dir / "tensorboard"))
+        save_config(config, self.files.config)
+        self.writer = SummaryWriter(str(self.files.tensorboard))
 
     def train(self) -> None:
         """Run optimisation steps until ``training.num_steps`` is reached."""
@@ -103,23 +99,28 @@ class Trainer:
         )
         logger.info("Training on %s for %d steps", self.device, settings.num_steps)
 
-        while self.progress.step < settings.num_steps:
-            step_start = time.perf_counter()
-            batch = next(batches).to(self.device)
-            scalars = self._training_step(batch)
-            self.progress.training_seconds += time.perf_counter() - step_start
-            self.progress.step += 1
+        try:
+            while self.progress.step < settings.num_steps:
+                step_start = time.perf_counter()
+                batch = next(batches).to(self.device)
+                scalars = self._training_step(batch)
+                self.progress.training_seconds += time.perf_counter() - step_start
+                self.progress.step += 1
 
-            step = self.progress.step
-            if step % settings.log_every == 0:
-                self._log_training(scalars)
-            if step % settings.validate_every == 0:
-                self._validate()
-            if step % settings.checkpoint_every == 0:
-                self._save_checkpoint()
+                step = self.progress.step
+                if step % settings.log_every == 0:
+                    self._log_training(scalars)
+                if step % settings.validate_every == 0:
+                    self._validate()
+                if step % settings.checkpoint_every == 0:
+                    self._save_checkpoint()
+            self._save_checkpoint()
+        finally:
+            # Stops the data-loading worker processes and flushes the logs,
+            # also when training stops with an error.
+            batches.close()
+            self.writer.close()
 
-        self._save_checkpoint()
-        self.writer.close()
         logger.info("Finished after %.2f training hours", self.progress.training_seconds / 3600)
 
     def _training_step(self, batch: SceneViews) -> dict[str, float]:
@@ -174,7 +175,7 @@ class Trainer:
         step = self.progress.step
         for name, value in result.mean.items():
             self.writer.add_scalar(f"validation/{name}", value, step)
-        self.writer.add_image("validation/source_prediction_truth", result.preview, step)
+        self.writer.add_image("validation/source_prediction_truth", result.previews[0].side_by_side(), step)
 
         summary = " | ".join(f"{name} {value:.4f}" for name, value in result.mean.items())
         logger.info("step %d | validation | %s", step, summary)
@@ -185,8 +186,12 @@ class Trainer:
         )
 
 
-def _check_training_settings(config: Config) -> None:
-    """Catch settings that contradict each other before any work is done."""
+def check_training_settings(config: Config, validation_scenes: SceneDataset) -> None:
+    """Catch training settings that cannot work, before any time is spent on training.
+
+    Raises:
+        ConfigError: Describing the first problem found.
+    """
     settings = config.training
     if max(settings.num_source_views) > settings.views_per_scene:
         raise ConfigError(
@@ -196,13 +201,8 @@ def _check_training_settings(config: Config) -> None:
     if min(settings.num_source_views) < 1:
         raise ConfigError("training.num_source_views must only contain positive numbers.")
 
-
-def _check_validation_settings(config: Config, validation_scenes: SceneDataset) -> None:
-    """Make sure validation can run, now rather than thousands of steps into training."""
-    num_views = validation_scenes.num_views(0)
-    out_of_range = [index for index in config.validation.source_views if not 0 <= index < num_views]
-    if out_of_range:
-        raise ConfigError(
-            f"validation.source_views contains {out_of_range}, but validation scenes have only "
-            f"{num_views} views (valid indices are 0 to {num_views - 1})."
-        )
+    # Validation runs thousands of steps into training; a mistake here
+    # should not cost those steps.
+    check_source_views(
+        config.validation.source_views, validation_scenes.num_views(0), where="validation.source_views"
+    )

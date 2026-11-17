@@ -18,6 +18,7 @@ them.
 | `training`     | settings  | Steps, batch size, rays, logging and checkpoint intervals.    |
 | `validation`   | settings  | The quick check that runs during training.                    |
 | `evaluation`   | settings  | The full test protocol.                                       |
+| `profiling`    | settings  | How rendering speed is measured.                              |
 
 **Settings** sections have a fixed set of keys, defined as dataclasses in
 [`config.py`](../src/scene_recon/config.py). A misspelt or missing key stops
@@ -67,6 +68,18 @@ scene-recon train --config configs/smoke_test.yaml --set training.num_steps=50 m
 
 Keys are dotted paths. Values are parsed as YAML, so numbers, booleans, lists
 (`evaluation.metrics=[psnr,ssim]`) and `null` work as they do in a file.
+
+## Several runs in one file
+
+A suite file combines a shared config fragment with one fragment per run, and
+runs them all; see [suites.md](suites.md). Each fragment is written exactly
+like the files described on this page.
+
+## Rules beyond spelling
+
+* Each entry of `evaluation.source_view_sets` must have a different number of
+  views. Results are labelled and plotted by the number of input views, so two
+  sets of the same size could not be told apart.
 
 ## Reproducing a run
 

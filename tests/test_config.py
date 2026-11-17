@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from scene_recon.config import _load_yaml_with_bases, load_config
+from scene_recon.config import load_yaml_with_bases, load_config
 from scene_recon.registry import ConfigError
 
 from conftest import CONFIG_DIR
@@ -63,4 +63,17 @@ def test_selecting_another_component_drops_the_previous_arguments(tmp_path: Path
     child = tmp_path / "child.yaml"
     child.write_text(yaml.safe_dump({"base": "base.yaml", "model": {"name": "second", "width": 2}}))
 
-    assert _load_yaml_with_bases(child)["model"] == {"name": "second", "width": 2}
+    assert load_yaml_with_bases(child)["model"] == {"name": "second", "width": 2}
+
+
+def test_evaluation_protocols_must_differ_in_number_of_views():
+    with pytest.raises(ConfigError, match="same number of views"):
+        load_config(CONFIG_DIR / "smoke_test.yaml", overrides=["evaluation.source_view_sets=[[0], [5]]"])
+
+
+def test_missing_base_file_is_named_in_the_error(tmp_path: Path):
+    path = tmp_path / "child.yaml"
+    path.write_text(yaml.safe_dump({"base": "nowhere.yaml"}))
+
+    with pytest.raises(ConfigError, match="nowhere.yaml"):
+        load_config(path)

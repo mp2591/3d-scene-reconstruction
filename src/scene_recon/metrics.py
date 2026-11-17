@@ -5,6 +5,9 @@ with the ground truth and returns one value per image::
 
     values = metric(prediction, target)   # both (N, 3, H, W) in [0, 1] -> (N,)
 
+and declares two class attributes used by the suite report: ``display_name``
+and ``higher_is_better``.
+
 SSIM and LPIPS follow the settings of the pixelNeRF evaluation code so that
 numbers are comparable with the published baselines.
 """
@@ -21,6 +24,9 @@ from scene_recon.registry import METRICS, ConfigError
 class PSNR(nn.Module):
     """Peak signal-to-noise ratio in decibels. Higher is better."""
 
+    display_name = "PSNR (dB)"
+    higher_is_better = True
+
     def forward(self, prediction: Tensor, target: Tensor) -> Tensor:
         mse = ((prediction - target) ** 2).mean(dim=(1, 2, 3))
         return mse_to_psnr(mse)
@@ -33,6 +39,9 @@ class SSIM(nn.Module):
     Computed with scikit-image's default settings (a 7x7 uniform window),
     which is what the pixelNeRF and TransNeRF evaluations use.
     """
+
+    display_name = "SSIM"
+    higher_is_better = True
 
     def forward(self, prediction: Tensor, target: Tensor) -> Tensor:
         from skimage.metrics import structural_similarity
@@ -53,6 +62,9 @@ class LPIPS(nn.Module):
     Requires the optional ``lpips`` package (``pip install scene-recon[lpips]``),
     which downloads pretrained network weights on first use.
     """
+
+    display_name = "LPIPS"
+    higher_is_better = False
 
     def __init__(self, network: str = "vgg") -> None:
         """

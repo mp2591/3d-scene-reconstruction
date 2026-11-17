@@ -63,4 +63,12 @@ evaluation:
   metrics: [psnr, ssim, lpips]
   num_scenes: null          # null = every test scene.
   num_target_views: null    # null = every view that is not a source view.
-  save_images: false        # Save each rendered view under <run_dir>/renders/.
+  save_images: false        # Save every rendered view under <run_dir>/renders/ (large on the full test set).
+  num_preview_scenes: 4     # Scenes whose first rendered view is always saved, for side-by-side comparisons.
+
+# Rendering-speed measurement (`scene-recon profile`). Renders full frames of
+# the first test scene, conditioned on the first entry of
+# evaluation.source_view_sets.
+profiling:
+  num_frames: 20            # Timed frames; the reported speed is their average.
+  num_warmup_frames: 2      # Untimed frames first, so start-up costs are not counted.

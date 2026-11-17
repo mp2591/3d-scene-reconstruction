@@ -135,6 +135,21 @@ class EvaluationSettings:
     """Limit the number of rendered views per scene. ``null`` renders every non-source view."""
 
     save_images: bool
+    """Save every rendered view under ``<run_dir>/renders/``. Takes a lot of disk space on the full test set."""
+
+    num_preview_scenes: int
+    """Scenes whose first rendered view is always saved, for side-by-side comparison of runs."""
+
+
+@dataclass(frozen=True)
+class ProfilingSettings:
+    """Rendering-speed measurement, run by ``scene-recon profile``."""
+
+    num_frames: int
+    """Timed full-frame renders; the reported speed is their average."""
+
+    num_warmup_frames: int
+    """Untimed renders done first, so one-off start-up costs are not counted."""
 
 
 @dataclass(frozen=True)
@@ -152,6 +167,7 @@ class Config:
     training: TrainingSettings
     validation: ValidationSettings
     evaluation: EvaluationSettings
+    profiling: ProfilingSettings
 
     raw: dict[str, Any]
     """The merged YAML content, saved next to the run's outputs for reproducibility."""
@@ -168,6 +184,7 @@ _SETTINGS_SECTIONS = {
     "training": TrainingSettings,
     "validation": ValidationSettings,
     "evaluation": EvaluationSettings,
+    "profiling": ProfilingSettings,
 }
 _COMPONENT_SECTIONS = ("data", "model", "loss")
 
@@ -181,9 +198,9 @@ def load_config(path: str | Path, overrides: Sequence[str] = ()) -> Config:
             are parsed as YAML, so ``"model.hidden_width=64"`` yields an int
             and ``"evaluation.metrics=[psnr, ssim]"`` yields a list.
     """
-    raw = _load_yaml_with_bases(Path(path))
+    raw = load_yaml_with_bases(Path(path))
     for override in overrides:
-        _apply_override(raw, override)
+        apply_override(raw, override)
     return parse_config(raw)
 
 
@@ -198,6 +215,7 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
     }
 
     _check_keys(raw["data"].keys(), set(DATA_SPLITS), where="'data'")
+    _check_source_view_sets(settings["evaluation"].source_view_sets)
 
     return Config(
         data=copy.deepcopy(dict(raw["data"])),
@@ -214,24 +232,40 @@ def save_config(config: Config, path: str | Path) -> None:
         yaml.safe_dump(config.raw, file, sort_keys=False)
 
 
-def _load_yaml_with_bases(path: Path) -> dict[str, Any]:
+def load_yaml_with_bases(path: Path) -> dict[str, Any]:
     """Load a YAML file and merge it on top of the file(s) named by its ``base`` key, if any."""
+    if not path.is_file():
+        raise ConfigError(f"Config file not found: {path}")
     with open(path) as file:
         content = yaml.safe_load(file) or {}
     if not isinstance(content, dict):
         raise ConfigError(f"{path} must contain a YAML mapping at the top level.")
+    return resolve_bases(content, relative_to=path.parent)
 
+
+def resolve_bases(content: Mapping[str, Any], relative_to: Path) -> dict[str, Any]:
+    """Merge a config fragment on top of the file(s) named by its ``base`` key.
+
+    Args:
+        content: A config fragment, possibly with a ``base`` key holding one
+            path or a list of paths.
+        relative_to: Directory that relative ``base`` paths start from.
+
+    Returns:
+        The merged content, without the ``base`` key.
+    """
+    content = dict(content)
     base_paths = content.pop("base", [])
     if isinstance(base_paths, str):
         base_paths = [base_paths]
 
     merged: dict[str, Any] = {}
     for base_path in base_paths:
-        merged = _merge(merged, _load_yaml_with_bases(path.parent / base_path))
-    return _merge(merged, content)
+        merged = merge_configs(merged, load_yaml_with_bases(relative_to / base_path))
+    return merge_configs(merged, content)
 
 
-def _merge(base: dict[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
+def merge_configs(base: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
     """Recursively merge ``update`` into ``base``.
 
     Nested mappings are merged key by key. A component section that selects a
@@ -242,7 +276,7 @@ def _merge(base: dict[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:
     for key, value in update.items():
         both_are_mappings = isinstance(value, Mapping) and isinstance(merged.get(key), Mapping)
         if both_are_mappings and not _selects_different_component(merged[key], value):
-            merged[key] = _merge(merged[key], value)
+            merged[key] = merge_configs(merged[key], value)
         else:
             merged[key] = copy.deepcopy(value)
     return merged
@@ -252,7 +286,7 @@ def _selects_different_component(base: Mapping[str, Any], update: Mapping[str, A
     return "name" in base and "name" in update and base["name"] != update["name"]
 
 
-def _apply_override(raw: dict[str, Any], override: str) -> None:
+def apply_override(raw: dict[str, Any], override: str) -> None:
     """Apply one ``"dotted.key=value"`` override in place."""
     dotted_key, separator, value_text = override.partition("=")
     if not separator:
@@ -265,6 +299,22 @@ def _apply_override(raw: dict[str, Any], override: str) -> None:
         if not isinstance(section, dict):
             raise ConfigError(f"Cannot apply override '{override}': '{key}' is not a mapping.")
     section[last_key] = yaml.safe_load(value_text)
+
+
+def _check_source_view_sets(source_view_sets: list[list[int]]) -> None:
+    """Each evaluation protocol must use a different number of views.
+
+    Results are labelled and plotted by the number of input views ("1 view",
+    "2 views"), so two protocols with the same number would be indistinguishable.
+    """
+    sizes = [len(views) for views in source_view_sets]
+    if len(set(sizes)) != len(sizes):
+        raise ConfigError(
+            f"evaluation.source_view_sets {source_view_sets} contains two sets with the same number of "
+            "views. Results are identified by the number of input views, so each set must have a different size."
+        )
+    if 0 in sizes:
+        raise ConfigError("evaluation.source_view_sets must not contain an empty set.")
 
 
 def _check_keys(actual: Any, expected: set[str], where: str) -> None:

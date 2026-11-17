@@ -30,14 +30,14 @@ class ModelContractError(AssertionError):
     """Raised when a model does not behave as the pipeline requires."""
 
 
-def check_model_contract(model: ReconstructionModel, image_size: int = 64) -> None:
+def check_model_contract(model: ReconstructionModel, image_size: int | tuple[int, int] = 64) -> None:
     """Verify that a model satisfies the ``ReconstructionModel`` contract.
 
     Args:
         model: The model to check. It is run on whatever device it lives on.
-        image_size: Height and width of the random test images. Use the
-            resolution the model will be trained on if its encoder is
-            sensitive to it.
+        image_size: Size of the random test images, as ``(height, width)``
+            or a single number for square images. Use the resolution of the
+            dataset if the encoder depends on it (e.g. fixed position embeddings).
 
     Raises:
         ModelContractError: With a description of the first violation found.
@@ -47,6 +47,8 @@ def check_model_contract(model: ReconstructionModel, image_size: int = 64) -> No
 
     _check_parameter_groups(model)
 
+    if isinstance(image_size, int):
+        image_size = (image_size, image_size)
     device = next(model.parameters()).device
     for num_source_views in _SOURCE_VIEW_COUNTS:
         source_views = _random_source_views(num_source_views, image_size).to(device)
@@ -114,7 +116,7 @@ def _check_tensor(tensor: Tensor, name: str, expected_shape: tuple[int, ...], wh
         raise ModelContractError(f"{where}: {name} contains NaN or infinite values.")
 
 
-def _random_source_views(num_views: int, image_size: int) -> SceneViews:
+def _random_source_views(num_views: int, image_size: tuple[int, int]) -> SceneViews:
     """Random images with valid cameras placed on a circle around the origin, looking inwards."""
     world_up = torch.tensor([0.0, 0.0, 1.0])
     poses = []
@@ -124,12 +126,13 @@ def _random_source_views(num_views: int, image_size: int) -> SceneViews:
         poses.append(look_at_pose(position, torch.zeros(3), world_up))
     camera_to_world = torch.stack(poses).expand(_NUM_SCENES, num_views, 4, 4).clone()
 
-    focal, center = 1.2 * image_size, image_size / 2
-    intrinsics = torch.tensor([[focal, 0.0, center], [0.0, focal, center], [0.0, 0.0, 1.0]])
+    height, width = image_size
+    focal = 1.2 * width
+    intrinsics = torch.tensor([[focal, 0.0, width / 2], [0.0, focal, height / 2], [0.0, 0.0, 1.0]])
     intrinsics = intrinsics.expand(_NUM_SCENES, num_views, 3, 3).clone()
 
     return SceneViews(
-        images=torch.rand(_NUM_SCENES, num_views, 3, image_size, image_size),
+        images=torch.rand(_NUM_SCENES, num_views, 3, height, width),
         cameras=Cameras(camera_to_world, intrinsics),
         near=torch.full((_NUM_SCENES,), 0.8),
         far=torch.full((_NUM_SCENES,), 1.8),
