@@ -8,6 +8,7 @@ model:
   encoder:
     name: tiny_conv
     num_features: 16
+    input_normalization: none   # trained from scratch; a pretrained encoder would use e.g. imagenet
   decoder:
     name: tiny_pooled_mlp
     hidden_width: 64

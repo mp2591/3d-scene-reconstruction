@@ -1,0 +1,142 @@
+"""The training data must depend only on the seed and the step number.
+
+The unit tests check the schedule itself; the end-to-end tests check the
+guarantees that matter for comparing models: two different models see the
+same data, and an interrupted run ends exactly where an uninterrupted one does.
+"""
+
+import hashlib
+import random
+
+import pytest
+import torch
+
+import scene_recon.training as training_module
+from scene_recon.config import Config, parse_config
+from scene_recon.data import TrainingSchedule, training_batches
+from scene_recon.data.synthetic import SyntheticSpheresDataset
+from scene_recon.training import Trainer
+
+
+def _schedule(seed: int = 0, num_scenes: int = 10, batch_size: int = 3) -> TrainingSchedule:
+    scenes = SyntheticSpheresDataset(num_scenes=num_scenes, num_views=8, image_size=8, seed=0)
+    return TrainingSchedule(scenes, seed=seed, batch_size=batch_size, views_per_scene=4, num_source_views=[1, 2, 3])
+
+
+class TestSchedule:
+    def test_same_seed_and_step_give_the_same_data(self):
+        first, second = _schedule(seed=7), _schedule(seed=7)
+
+        for step in (0, 5, 1234):
+            assert first.scene_plan(step) == second.scene_plan(step)
+            assert first.source_view_indices(step) == second.source_view_indices(step)
+            assert torch.equal(
+                torch.rand(5, generator=first.generator("rays", step)),
+                torch.rand(5, generator=second.generator("rays", step)),
+            )
+
+    def test_different_seeds_give_different_data(self):
+        assert _schedule(seed=1).scene_plan(0) != _schedule(seed=2).scene_plan(0)
+
+    def test_each_epoch_visits_every_scene_at_most_once(self):
+        schedule = _schedule(num_scenes=10, batch_size=3)  # 3 full batches per epoch, one scene left out
+
+        for epoch in range(3):
+            steps = range(epoch * 3, epoch * 3 + 3)
+            scenes = [scene for step in steps for scene, _ in schedule.scene_plan(step)]
+            assert len(scenes) == len(set(scenes)) == 9
+
+    def test_fewer_scenes_than_batch_size_uses_all_of_them(self):
+        schedule = _schedule(num_scenes=2, batch_size=4)
+
+        assert sorted(scene for scene, _ in schedule.scene_plan(0)) == [0, 1]
+
+    def test_views_and_source_views_are_valid(self):
+        schedule = _schedule()
+
+        for step in range(20):
+            for _, views in schedule.scene_plan(step):
+                assert len(views) == len(set(views)) == 4 and all(0 <= view < 8 for view in views)
+            source = schedule.source_view_indices(step)
+            assert 1 <= len(source) <= 3 and all(0 <= index < 4 for index in source)
+
+    def test_global_random_state_has_no_influence(self):
+        schedule = _schedule()
+        torch.manual_seed(0)
+        random.seed(0)
+        before = (schedule.scene_plan(3), schedule.source_view_indices(3))
+        torch.manual_seed(99)
+        random.seed(99)
+        torch.rand(1000)  # e.g. a model initialising its weights
+
+        assert (schedule.scene_plan(3), schedule.source_view_indices(3)) == before
+
+    @pytest.mark.parametrize("num_workers", [0, 2])
+    def test_loader_yields_exactly_the_planned_batches(self, num_workers: int):
+        schedule = _schedule()
+        batches = training_batches(schedule, start_step=4, num_workers=num_workers)
+
+        for step in (4, 5, 6):
+            batch = next(batches)
+            expected = [schedule.scenes.load_scene(scene, views) for scene, views in schedule.scene_plan(step)]
+            assert torch.equal(batch.images, torch.cat([scene.images for scene in expected]))
+        batches.close()
+
+
+# ---------------------------------------------------------------- end to end
+
+
+def _config(smoke_config: Config, run_name: str, **training_changes) -> Config:
+    raw = {
+        **smoke_config.raw,
+        "experiment": {**smoke_config.raw["experiment"], "run_name": run_name},
+        "training": {**smoke_config.raw["training"], "validate_every": 1000, **training_changes},
+    }
+    return parse_config(raw)
+
+
+def _record_training_data(monkeypatch) -> list[str]:
+    """Record a fingerprint of every step's training data: loaded images, source views and supervised rays."""
+    fingerprints: list[str] = []
+    real_sample_training_rays = training_module.sample_training_rays
+
+    def recording_sample_training_rays(batch, rays_per_scene, generator):
+        rays, target_rgb = real_sample_training_rays(batch, rays_per_scene, generator)
+        content = torch.cat([batch.images.flatten(), rays.directions.flatten(), target_rgb.flatten()])
+        fingerprints.append(hashlib.sha256(content.cpu().numpy().tobytes()).hexdigest())
+        return rays, target_rgb
+
+    monkeypatch.setattr(training_module, "sample_training_rays", recording_sample_training_rays)
+    return fingerprints
+
+
+def _with_decoder_width(config: Config, hidden_width: int) -> Config:
+    model = {**config.raw["model"], "decoder": {**config.raw["model"]["decoder"], "hidden_width": hidden_width}}
+    return parse_config({**config.raw, "model": model})
+
+
+def test_different_models_are_trained_on_identical_data(smoke_config: Config, monkeypatch):
+    fingerprints = _record_training_data(monkeypatch)
+
+    Trainer(_with_decoder_width(_config(smoke_config, "small"), hidden_width=8)).train()
+    data_seen_by_small = list(fingerprints)
+    fingerprints.clear()
+
+    # A larger model draws far more random numbers to initialise its weights.
+    Trainer(_with_decoder_width(_config(smoke_config, "large"), hidden_width=96)).train()
+
+    assert len(data_seen_by_small) == smoke_config.training.num_steps
+    assert fingerprints == data_seen_by_small
+
+
+def test_an_interrupted_run_ends_exactly_like_an_uninterrupted_one(smoke_config: Config):
+    uninterrupted = Trainer(_config(smoke_config, "uninterrupted", num_steps=6))
+    uninterrupted.train()
+
+    Trainer(_config(smoke_config, "interrupted", num_steps=3)).train()
+    torch.manual_seed(12345)  # whatever happened to the global random state in between
+    resumed = Trainer(_config(smoke_config, "interrupted", num_steps=6), resume=True)
+    resumed.train()
+
+    for name, weights in uninterrupted.model.state_dict().items():
+        assert torch.equal(weights, resumed.model.state_dict()[name]), name

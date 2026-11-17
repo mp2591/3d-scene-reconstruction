@@ -148,6 +148,52 @@ the result.
    scene-recon train --config configs/pixelnerf_srn_cars.yaml
    ```
 
+## Input normalisation
+
+Every model receives the same images: RGB, values in [0, 1]. Keeping the
+input identical is what makes the comparison fair. A pretrained backbone,
+however, works as intended only on inputs normalised the way it was
+pretrained, and backbones differ. So each encoder normalises its own input,
+first thing in `forward`, with the shared helper in
+[`models/normalization.py`](../src/scene_recon/models/normalization.py):
+
+```python
+from scene_recon.models.normalization import InputNormalization
+
+class ConvNeXtV2Encoder(nn.Module):
+    def __init__(self, input_normalization: str = "imagenet") -> None:
+        super().__init__()
+        self.normalize = InputNormalization(input_normalization)
+        ...
+
+    def forward(self, images: Tensor) -> Tensor:   # (N, 3, H, W) in [0, 1]
+        return self.stages(self.normalize(images))
+```
+
+Available: `"imagenet"` (most pretrained backbones), `"minus_one_to_one"`
+and `"none"` (for encoders trained from scratch). Check which one your
+weights were pretrained with, and add an entry to `NORMALIZATIONS` if it is
+missing. As a constructor argument the choice appears in the model's config,
+and in the suite report when runs differ in it. The helper's statistics are
+not stored in checkpoints, so the config always decides.
+
+## What a model must not do
+
+The pipeline decides everything about the data, identically for every model
+(see [pipeline.md](pipeline.md#the-training-data-schedule)). So inside a model:
+
+- **No augmentation.** Random crops, flips, resizing or colour jitter would
+  give each model different data, and geometric changes would no longer match
+  the camera parameters. Augmentation, if wanted, belongs in the pipeline.
+- **No choosing of views.** Use all source views you are given.
+- **No seeding.** Do not call `torch.manual_seed` or similar; the pipeline
+  seeds from `experiment.seed` and restores the random state on resume.
+- **No reading of data during `forward`.** Load weights once, in `__init__`,
+  from a path given in the config.
+
+Dropout, stochastic depth and other randomness that is part of the model are
+fine.
+
 ## Encoders and decoders inside the top-level model
 
 The pipeline sees only the top-level model. What happens inside it (which

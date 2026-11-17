@@ -9,7 +9,9 @@ from scene_recon.geometry import pixel_centers, rays_through_pixels
 from scene_recon.structures import Cameras, RayBundle, SceneViews
 
 
-def sample_training_rays(views: SceneViews, rays_per_scene: int) -> tuple[RayBundle, Tensor]:
+def sample_training_rays(
+    views: SceneViews, rays_per_scene: int, generator: torch.Generator
+) -> tuple[RayBundle, Tensor]:
     """Pick random pixels from random views and return their rays and colours.
 
     Rays are drawn uniformly from all pixels of all given views.
@@ -17,6 +19,7 @@ def sample_training_rays(views: SceneViews, rays_per_scene: int) -> tuple[RayBun
     Args:
         views: B scenes with N views each.
         rays_per_scene: Number of rays R to draw from each scene.
+        generator: CPU generator the pixel choices are drawn from.
 
     Returns:
         The rays, and the ground-truth colours of their pixels with shape (B, R, 3).
@@ -25,9 +28,10 @@ def sample_training_rays(views: SceneViews, rays_per_scene: int) -> tuple[RayBun
     height, width = views.image_size
     device = views.images.device
 
-    view_index = torch.randint(num_views, (batch_size, rays_per_scene), device=device)
-    pixel_x = torch.randint(width, (batch_size, rays_per_scene), device=device)
-    pixel_y = torch.randint(height, (batch_size, rays_per_scene), device=device)
+    shape = (batch_size, rays_per_scene)
+    view_index = torch.randint(num_views, shape, generator=generator).to(device)
+    pixel_x = torch.randint(width, shape, generator=generator).to(device)
+    pixel_y = torch.randint(height, shape, generator=generator).to(device)
     scene_index = torch.arange(batch_size, device=device)[:, None]
 
     cameras = Cameras(

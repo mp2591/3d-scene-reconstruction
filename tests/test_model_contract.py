@@ -8,6 +8,8 @@ from scene_recon.build import build_model
 from scene_recon.config import Config
 from scene_recon.models.base import ParameterGroup, ReconstructionModel
 from scene_recon.models.contract import ModelContractError, check_model_contract
+from scene_recon.models.normalization import InputNormalization
+from scene_recon.registry import ConfigError
 from scene_recon.structures import FieldOutput, SceneViews
 
 
@@ -75,3 +77,22 @@ def test_parameters_missing_from_every_group_are_reported():
 
     with pytest.raises(ModelContractError, match="in no parameter group"):
         check_model_contract(ForgottenParameters())
+
+
+def test_input_normalization_applies_the_named_statistics():
+    images = torch.full((1, 3, 2, 2), 0.5)
+
+    assert torch.allclose(InputNormalization("none")(images), images)
+    assert torch.allclose(InputNormalization("minus_one_to_one")(images), torch.zeros_like(images))
+    mean, std = torch.tensor([0.485, 0.456, 0.406]), torch.tensor([0.229, 0.224, 0.225])
+    imagenet = InputNormalization("imagenet")(images)
+    assert torch.allclose(imagenet[0, :, 0, 0], (0.5 - mean) / std)
+
+
+def test_input_normalization_is_not_stored_in_checkpoints():
+    assert InputNormalization("imagenet").state_dict() == {}
+
+
+def test_unknown_input_normalization_is_a_config_error():
+    with pytest.raises(ConfigError, match="Available"):
+        InputNormalization("cifar")

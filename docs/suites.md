@@ -70,6 +70,11 @@ the data, and its model is built and checked against the pipeline's contract
 reported together, and nothing is trained until they are fixed. A typo in the
 last run costs seconds, not the days spent training the runs before it.
 
+The runs must also be **measured identically**: the `evaluation`,
+`validation` and `profiling` sections and the validation and test data must
+be the same for every run, or the suite does not start. Set them in
+`common`. Runs measured differently could not be compared.
+
 **2. The runs are executed one after another**, each through the requested
 stages. Work that is already done is skipped:
 
@@ -122,6 +127,13 @@ one run with a different checkpoint:
 ```bash
 scene-recon evaluate --config runs/proposal_comparison/hiera_mlp/config.yaml --checkpoint my.pt
 ```
+
+The report starts with **what differs between runs**: a table of every
+setting whose value is not the same for all runs (the model's settings, an
+encoder's learning rate, a renderer ablation, ...). Everything not in the
+table is identical, and the report states when all runs were also trained on
+identical data, step for step (same seed, training data and batch settings;
+see [pipeline.md](pipeline.md#the-training-data-schedule)).
 
 `summary.csv` has one row per run. Quality columns are named
 `<metric>_<n>v`: `psnr_1v` is the PSNR with one input view. Load it with

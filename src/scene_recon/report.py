@@ -29,6 +29,7 @@ import scene_recon.metrics  # noqa: F401  (registers the metrics, whose display 
 from scene_recon.checkpoints import read_progress
 from scene_recon.config import Config
 from scene_recon.evaluation import load_preview_images
+from scene_recon.fairness import MISSING, differing_settings, format_value, trained_on_identical_data
 from scene_recon.plots import (
     plot_image_grid,
     plot_metrics_vs_source_views,
@@ -79,7 +80,7 @@ def write_report(suite_name: str, directory: Path, runs: dict[str, Config], fail
 
     _write_csv(results, directory / "summary.csv")
     figures = _write_figures(results, plots_dir)
-    _write_markdown(suite_name, results, figures, failures, directory / "summary.md")
+    _write_markdown(suite_name, results, figures, failures, differing_settings(runs), directory / "summary.md")
     logger.info("Suite report updated: %s", directory / "summary.md")
 
 
@@ -156,6 +157,7 @@ def _write_markdown(
     results: list[RunResult],
     figures: list[tuple[str, Path]],
     failures: dict[str, str],
+    differences: dict[str, dict],
     path: Path,
 ) -> None:
     lines = [
@@ -175,6 +177,8 @@ def _write_markdown(
             f"| {_format_count(result.parameters)} "
             f"| {_format(result.frames_per_second, '{:.2f}')} |"
         )
+
+    lines += ["", *_differences_section(results, differences)]
 
     metric_names = _metric_names(results)
     for count in _view_counts(results):
@@ -202,6 +206,36 @@ def _write_markdown(
         lines += [f"- **{name}**: `{message}`" for name, message in failures.items()]
 
     path.write_text("\n".join(lines) + "\n")
+
+
+def _differences_section(results: list[RunResult], differences: dict[str, dict]) -> list[str]:
+    """What was varied between the runs, so the reader knows everything else was held fixed."""
+    lines = ["## What differs between runs", ""]
+    if not differences:
+        return lines + ["Nothing: all runs use identical settings."]
+
+    lines.append(
+        "Every setting not listed here is identical for all runs. The measurement settings "
+        "(evaluation, validation, profiling, and the validation and test data) are always identical; "
+        "the suite does not start otherwise."
+    )
+    if trained_on_identical_data(differences):
+        lines.append("All runs were trained on identical data, step for step.")
+    lines += [
+        "",
+        "| Setting | " + " | ".join(result.name for result in results) + " |",
+        "|---|" + "---|" * len(results),
+    ]
+    for setting, values in differences.items():
+        cells = [_table_cell(values.get(result.name, MISSING)) for result in results]
+        lines.append(f"| `{setting}` | " + " | ".join(cells) + " |")
+    return lines
+
+
+def _table_cell(value) -> str:
+    if value == MISSING:
+        return MISSING
+    return f"`{format_value(value)}`".replace("|", "\\|")
 
 
 def _metric_header(metric: str) -> str:

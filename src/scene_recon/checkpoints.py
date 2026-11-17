@@ -49,6 +49,7 @@ def save_checkpoint(
         "step": progress.step,
         "training_seconds": progress.training_seconds,
         "config": raw_config,
+        "random_state": _global_random_state(),
     }
     _write_atomically(path, lambda temporary_path: torch.save(state, temporary_path))
     _write_atomically(
@@ -65,7 +66,9 @@ def load_checkpoint(
     """Restore a model, and optionally the optimiser and scheduler, from a checkpoint.
 
     Pass the optimiser and scheduler to resume training; leave them out to
-    load the weights for evaluation.
+    load the weights for evaluation. When resuming, PyTorch's global random
+    state is restored too, so randomness inside the model (dropout,
+    stochastic depth) continues as if training had never stopped.
     """
     if not path.is_file():
         raise FileNotFoundError(f"No checkpoint at {path}. Train the model first, or pass --checkpoint.")
@@ -73,6 +76,7 @@ def load_checkpoint(
     model.load_state_dict(state["model"])
     if optimizer is not None:
         optimizer.load_state_dict(state["optimizer"])
+        _restore_global_random_state(state.get("random_state"))
     if scheduler is not None:
         scheduler.load_state_dict(state["scheduler"])
     return TrainingProgress(step=state["step"], training_seconds=state["training_seconds"])
@@ -91,6 +95,22 @@ def read_progress(checkpoint_path: Path) -> TrainingProgress | None:
     # fall back to reading the (much larger) checkpoint itself.
     state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     return TrainingProgress(step=state["step"], training_seconds=state["training_seconds"])
+
+
+def _global_random_state() -> dict[str, Any]:
+    state: dict[str, Any] = {"cpu": torch.get_rng_state()}
+    if torch.cuda.is_available():
+        state["cuda"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def _restore_global_random_state(state: dict[str, Any] | None) -> None:
+    if state is None:  # a checkpoint from before random states were saved
+        return
+    torch.set_rng_state(state["cpu"])
+    # A run moved between machines may have a different number of GPUs, or none.
+    if "cuda" in state and torch.cuda.is_available() and len(state["cuda"]) == torch.cuda.device_count():
+        torch.cuda.set_rng_state_all(state["cuda"])
 
 
 def progress_file(checkpoint_path: Path) -> Path:

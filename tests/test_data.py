@@ -5,7 +5,6 @@ import pytest
 import torch
 from PIL import Image
 
-from scene_recon.data.loading import endless_training_batches
 from scene_recon.data.srn import SRNDataset
 from scene_recon.data.synthetic import SyntheticSpheresDataset
 from scene_recon.registry import ConfigError
@@ -78,23 +77,3 @@ class TestSyntheticSpheres:
         assert torch.equal(corner_pixel, torch.ones(3))
         assert not torch.equal(centre_pixel, torch.ones(3))
         assert scene.images.min() >= 0 and scene.images.max() <= 1
-
-
-def test_training_batches_stack_scenes_with_a_subset_of_views():
-    dataset = SyntheticSpheresDataset(num_scenes=5, num_views=6, image_size=8, seed=0)
-
-    batch = next(endless_training_batches(dataset, batch_size=2, views_per_scene=3, num_workers=0))
-
-    assert batch.images.shape == (2, 3, 3, 8, 8)
-    assert batch.cameras.camera_to_world.shape == (2, 3, 4, 4)
-    assert batch.near.shape == (2,)
-    assert len(batch.scene_ids) == 2
-
-
-def test_training_batches_never_run_out():
-    dataset = SyntheticSpheresDataset(num_scenes=3, num_views=4, image_size=8, seed=0)
-    batches = endless_training_batches(dataset, batch_size=2, views_per_scene=2, num_workers=0)
-
-    # Three scenes give one full batch per pass; asking for more must keep working.
-    for _ in range(4):
-        assert next(batches).num_scenes == 2
