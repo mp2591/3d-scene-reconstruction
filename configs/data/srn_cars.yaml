@@ -1,0 +1,25 @@
+# ShapeNet-SRN Cars (Sitzmann et al., 2019), 128 x 128 renders.
+#
+# Point each split_dir at the extracted folder of that split. The source view
+# indices in base.yaml (64 and 104) assume the benchmark's validation and test
+# scenes with 251 views each; if your copy has fewer views per scene, change
+# validation.source_views and evaluation.source_view_sets accordingly.
+#
+# near and far bound the distance from the camera at which a car can be.
+
+data:
+  train:
+    name: srn
+    split_dir: data/srn_cars/cars_train
+    near: 0.8
+    far: 1.8
+  val:
+    name: srn
+    split_dir: data/srn_cars/cars_val
+    near: 0.8
+    far: 1.8
+  test:
+    name: srn
+    split_dir: data/srn_cars/cars_test
+    near: 0.8
+    far: 1.8

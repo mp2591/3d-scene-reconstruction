@@ -1,0 +1,14 @@
+# A deliberately small model for testing the pipeline. Not for reported results.
+#
+# It shows how a top-level model can take its encoder and decoder from config:
+# each sub-section is built from the ENCODERS / DECODERS registry by name.
+
+model:
+  name: tiny_pixel_aligned_nerf
+  encoder:
+    name: tiny_conv
+    num_features: 16
+  decoder:
+    name: tiny_pooled_mlp
+    hidden_width: 64
+    num_frequencies: 4

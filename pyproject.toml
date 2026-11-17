@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scene-recon"
+version = "0.1.0"
+description = "Config-driven pipeline for sparse-view 3D scene reconstruction with generalizable NeRFs."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.1",
+    "numpy",
+    "pyyaml",
+    "pillow",
+    "scikit-image",
+    "tensorboard",
+]
+
+[project.optional-dependencies]
+# LPIPS downloads pretrained VGG weights the first time it is used.
+lpips = ["lpips"]
+dev = ["pytest"]
+
+[project.scripts]
+scene-recon = "scene_recon.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
