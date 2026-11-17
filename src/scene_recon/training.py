@@ -8,6 +8,12 @@ One optimisation step:
 4. Encode the source views, render the rays, compare with the true pixel colours.
 5. Back-propagate and update the weights.
 
+Every random choice in steps 1 to 4 comes from the ``TrainingSchedule``, which
+derives it from the seed and the step number alone. Every model trained with
+the same seed therefore sees exactly the same data, step by step, and a
+resumed run continues exactly where it stopped. PyTorch's global random
+generator is left to the model (weight initialisation, dropout, ...).
+
 Progress is logged to the console and to TensorBoard, the model is validated
 on a few held-out scenes at regular intervals, and checkpoints allow an
 interrupted run to be resumed exactly where it stopped.
@@ -16,7 +22,6 @@ interrupted run to be resumed exactly where it stopped.
 from __future__ import annotations
 
 import logging
-import random
 import time
 
 import torch
@@ -33,7 +38,7 @@ from scene_recon.build import (
 )
 from scene_recon.checkpoints import TrainingProgress, load_checkpoint, save_checkpoint
 from scene_recon.config import Config, save_config
-from scene_recon.data import SceneDataset, endless_training_batches
+from scene_recon.data import SceneDataset, TrainingSchedule, training_batches
 from scene_recon.evaluation import Evaluator, check_source_views
 from scene_recon.metrics import mse_to_psnr
 from scene_recon.optim import build_optimizer_and_scheduler
@@ -70,6 +75,13 @@ class Trainer:
 
         self.train_scenes = build_dataset(config, "train")
         self.validation_scenes = build_dataset(config, "val")
+        self.schedule = TrainingSchedule(
+            self.train_scenes,
+            seed=config.experiment.seed,
+            batch_size=config.training.batch_size,
+            views_per_scene=config.training.views_per_scene,
+            num_source_views=config.training.num_source_views,
+        )
         self.evaluator = Evaluator(
             self.model, self.renderer, build_metrics(config.validation.metrics), self.device
         )
@@ -94,16 +106,14 @@ class Trainer:
     def train(self) -> None:
         """Run optimisation steps until ``training.num_steps`` is reached."""
         settings = self.config.training
-        batches = endless_training_batches(
-            self.train_scenes, settings.batch_size, settings.views_per_scene, settings.num_workers
-        )
+        batches = training_batches(self.schedule, start_step=self.progress.step, num_workers=settings.num_workers)
         logger.info("Training on %s for %d steps", self.device, settings.num_steps)
 
         try:
             while self.progress.step < settings.num_steps:
                 step_start = time.perf_counter()
                 batch = next(batches).to(self.device)
-                scalars = self._training_step(batch)
+                scalars = self._training_step(batch, self.progress.step)
                 self.progress.training_seconds += time.perf_counter() - step_start
                 self.progress.step += 1
 
@@ -123,21 +133,19 @@ class Trainer:
 
         logger.info("Finished after %.2f training hours", self.progress.training_seconds / 3600)
 
-    def _training_step(self, batch: SceneViews) -> dict[str, float]:
-        """Perform one optimisation step and return the scalars worth logging."""
-        settings = self.config.training
+    def _training_step(self, batch: SceneViews, step: int) -> dict[str, float]:
+        """Perform optimisation step number ``step`` (counted from 0) and return the scalars worth logging."""
         self.model.train()
 
-        # The number of source views changes from step to step, so one model
-        # learns to work with any of the configured view counts.
-        num_source_views = random.choice(settings.num_source_views)
-        source_view_indices = torch.randperm(batch.num_views)[:num_source_views]
-        source_views = batch.select_views(source_view_indices)
-
-        rays, target_rgb = sample_training_rays(batch, settings.rays_per_scene)
+        source_views = batch.select_views(self.schedule.source_view_indices(step))
+        rays, target_rgb = sample_training_rays(
+            batch, self.config.training.rays_per_scene, generator=self.schedule.generator("rays", step)
+        )
 
         scene_encoding = self.model.encode_scene(source_views)
-        renders = self.renderer.render_rays(self.model, scene_encoding, rays, randomize=True)
+        renders = self.renderer.render_rays(
+            self.model, scene_encoding, rays, generator=self.schedule.generator("sample_depths", step)
+        )
         loss_terms = self.loss_function(renders, target_rgb)
 
         self.optimizer.zero_grad(set_to_none=True)

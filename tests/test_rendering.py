@@ -38,14 +38,15 @@ def _settings(num_coarse_samples: int, num_fine_samples: int) -> RendererSetting
 class TestStratifiedSampling:
     @pytest.mark.parametrize("randomize", [False, True])
     def test_depths_are_sorted_and_within_near_and_far(self, randomize: bool):
-        depths = sample_stratified_depths(_rays(), num_samples=16, randomize=randomize)
+        generator = torch.Generator().manual_seed(0) if randomize else None
+        depths = sample_stratified_depths(_rays(), num_samples=16, generator=generator)
 
         assert depths.shape == (2, 5, 16)
         assert (depths[..., 1:] >= depths[..., :-1]).all()
         assert depths.min() >= 0.8 and depths.max() <= 1.8
 
     def test_without_randomisation_samples_sit_at_bin_centres(self):
-        depths = sample_stratified_depths(_rays(), num_samples=4, randomize=False)
+        depths = sample_stratified_depths(_rays(), num_samples=4, generator=None)
 
         expected = torch.tensor([0.925, 1.175, 1.425, 1.675])
         assert torch.allclose(depths[0, 0], expected, atol=1e-6)
@@ -57,7 +58,7 @@ class TestImportanceSampling:
         weights = torch.zeros(1, 1, 11)
         weights[..., 5] = 1.0  # all content at depth 1.3
 
-        new_depths = sample_importance_depths(depths, weights, num_samples=64, randomize=True)
+        new_depths = sample_importance_depths(depths, weights, num_samples=64, generator=torch.Generator())
 
         assert new_depths.shape == (1, 1, 64)
         assert (new_depths[..., 1:] >= new_depths[..., :-1]).all()
@@ -68,7 +69,7 @@ class TestImportanceSampling:
         depths = torch.linspace(0.8, 1.8, 11).expand(1, 3, 11)
         weights = torch.zeros(1, 3, 11)
 
-        new_depths = sample_importance_depths(depths, weights, num_samples=8, randomize=False)
+        new_depths = sample_importance_depths(depths, weights, num_samples=8, generator=None)
 
         assert torch.isfinite(new_depths).all()
         assert new_depths.min() >= 0.8 and new_depths.max() <= 1.8
@@ -116,7 +117,7 @@ class TestRaySelection:
         views.images[:, 1] = 0.5
         views.images[:, 2] = 0.9
 
-        rays, target_rgb = sample_training_rays(views, rays_per_scene=200)
+        rays, target_rgb = sample_training_rays(views, rays_per_scene=200, generator=torch.Generator())
 
         camera_positions = views.cameras.camera_to_world[0, :, :3, 3]
         view_of_ray = (rays.origins[0][:, None] - camera_positions[None]).norm(dim=-1).argmin(dim=-1)

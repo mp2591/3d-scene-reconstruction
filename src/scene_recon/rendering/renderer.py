@@ -30,7 +30,7 @@ class VolumeRenderer:
         model: ReconstructionModel,
         scene_encoding: Any,
         rays: RayBundle,
-        randomize: bool,
+        generator: torch.Generator | None = None,
     ) -> dict[str, RenderOutput]:
         """Render a set of rays.
 
@@ -38,7 +38,8 @@ class VolumeRenderer:
             model: The model to query.
             scene_encoding: The result of ``model.encode_scene`` for the same scenes as ``rays``.
             rays: The rays to render.
-            randomize: Jitter the sample positions (training) or keep them
+            generator: Jitter the sample positions with random numbers from
+                this CPU generator (training). ``None`` keeps them
                 deterministic (evaluation).
 
         Returns:
@@ -47,7 +48,7 @@ class VolumeRenderer:
         """
         background_color = torch.tensor(self.settings.background_color, device=rays.origins.device)
 
-        coarse_depths = sample_stratified_depths(rays, self.settings.num_coarse_samples, randomize)
+        coarse_depths = sample_stratified_depths(rays, self.settings.num_coarse_samples, generator)
         outputs = {
             LEVEL_COARSE: self._render_at_depths(
                 model, scene_encoding, rays, coarse_depths, LEVEL_COARSE, background_color
@@ -56,7 +57,7 @@ class VolumeRenderer:
 
         if self.settings.num_fine_samples > 0:
             new_depths = sample_importance_depths(
-                coarse_depths, outputs[LEVEL_COARSE].weights, self.settings.num_fine_samples, randomize
+                coarse_depths, outputs[LEVEL_COARSE].weights, self.settings.num_fine_samples, generator
             )
             # The fine pass reuses the coarse depths, so it never sees less of
             # the ray than the coarse pass did.
@@ -87,7 +88,7 @@ class VolumeRenderer:
         rgb_chunks, depth_chunks = [], []
         for start in range(0, rays.num_rays, self.settings.ray_chunk_size):
             chunk = rays.slice(start, start + self.settings.ray_chunk_size)
-            output = final_output(self.render_rays(model, scene_encoding, chunk, randomize=False))
+            output = final_output(self.render_rays(model, scene_encoding, chunk))
             rgb_chunks.append(output.rgb)
             depth_chunks.append(output.depth)
 

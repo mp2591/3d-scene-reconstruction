@@ -1,4 +1,10 @@
-"""Choosing where along each ray to query the model."""
+"""Choosing where along each ray to query the model.
+
+Random draws come from an explicit CPU ``torch.Generator`` and are then moved
+to the device, never from PyTorch's global generator, which belongs to the
+model (see ``scene_recon.data.schedule``). Passing no generator gives
+deterministic samples, as used for evaluation.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,7 @@ from torch import Tensor
 from scene_recon.structures import RayBundle
 
 
-def sample_stratified_depths(rays: RayBundle, num_samples: int, randomize: bool) -> Tensor:
+def sample_stratified_depths(rays: RayBundle, num_samples: int, generator: torch.Generator | None) -> Tensor:
     """Spread samples evenly between each ray's near and far distance.
 
     The range is divided into ``num_samples`` equal bins and one depth is
@@ -17,10 +23,10 @@ def sample_stratified_depths(rays: RayBundle, num_samples: int, randomize: bool)
     Args:
         rays: The rays to sample along.
         num_samples: Samples per ray, S.
-        randomize: If true, take a random depth within each bin (used in
-            training, so that the model sees a continuum of depths over
-            time). If false, take the bin centre (used in evaluation, to keep
-            renders deterministic).
+        generator: If given, take a random depth within each bin, drawn
+            from this generator (used in training, so that the model sees a
+            continuum of depths over time). If ``None``, take the bin centre
+            (used in evaluation, to keep renders deterministic).
 
     Returns:
         Depths of shape (B, R, S), increasing along the last dimension.
@@ -28,8 +34,8 @@ def sample_stratified_depths(rays: RayBundle, num_samples: int, randomize: bool)
     batch_size, num_rays = rays.origins.shape[:2]
     device = rays.origins.device
 
-    if randomize:
-        position_in_bin = torch.rand(batch_size, num_rays, num_samples, device=device)
+    if generator is not None:
+        position_in_bin = torch.rand(batch_size, num_rays, num_samples, generator=generator).to(device)
     else:
         position_in_bin = torch.full((batch_size, num_rays, num_samples), 0.5, device=device)
 
@@ -41,7 +47,9 @@ def sample_stratified_depths(rays: RayBundle, num_samples: int, randomize: bool)
     return near + (far - near) * fraction
 
 
-def sample_importance_depths(depths: Tensor, weights: Tensor, num_samples: int, randomize: bool) -> Tensor:
+def sample_importance_depths(
+    depths: Tensor, weights: Tensor, num_samples: int, generator: torch.Generator | None
+) -> Tensor:
     """Draw extra samples where a previous rendering pass found content.
 
     This is the hierarchical sampling of the original NeRF. The rendering
@@ -53,8 +61,8 @@ def sample_importance_depths(depths: Tensor, weights: Tensor, num_samples: int, 
         depths: Depths of the previous pass, shape (B, R, S) with S >= 3.
         weights: Rendering weights of the previous pass, shape (B, R, S).
         num_samples: Number of new samples per ray.
-        randomize: If true, draw randomly; if false, use evenly spaced
-            quantiles of the histogram so the result is deterministic.
+        generator: If given, draw randomly from it. If ``None``, use evenly
+            spaced quantiles of the histogram so the result is deterministic.
 
     Returns:
         New depths of shape (B, R, num_samples), increasing along the last
@@ -71,8 +79,8 @@ def sample_importance_depths(depths: Tensor, weights: Tensor, num_samples: int, 
     cumulative = torch.cumsum(probabilities, dim=-1)
     cumulative = torch.cat([torch.zeros_like(cumulative[..., :1]), cumulative], dim=-1)  # (B, R, S - 1)
 
-    if randomize:
-        quantiles = torch.rand(*depths.shape[:-1], num_samples, device=depths.device)
+    if generator is not None:
+        quantiles = torch.rand(*depths.shape[:-1], num_samples, generator=generator).to(depths.device)
         quantiles, _ = torch.sort(quantiles, dim=-1)
     else:
         quantiles = torch.linspace(0.0, 1.0, num_samples + 2, device=depths.device)[1:-1]

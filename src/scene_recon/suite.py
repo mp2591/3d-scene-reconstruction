@@ -28,8 +28,9 @@ overrides from the command line. The run's key becomes its
 Running a suite:
 
 1. Every run's config is built and validated, its datasets are opened and its
-   model is checked against the pipeline's contract. Any problem stops the
-   suite here, before hours are spent on the first run.
+   model is checked against the pipeline's contract. The runs must also use
+   identical measurement settings (see ``scene_recon.fairness``). Any problem
+   stops the suite here, before hours are spent on the first run.
 2. The runs are executed one after another, each through the requested
    stages. Work that is already done is skipped (see ``_run_stages``), so an
    interrupted suite is resumed by starting it again.
@@ -62,6 +63,7 @@ from scene_recon.config import (
     parse_config,
     resolve_bases,
 )
+from scene_recon.fairness import check_identical_measurement
 from scene_recon.models.contract import check_model_contract
 from scene_recon.registry import ConfigError
 from scene_recon.report import write_report
@@ -149,6 +151,9 @@ def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
             problems.append(f"  {run_name}: {error}")
     if problems:
         raise ConfigError(f"{len(problems)} run(s) in {path} have config problems:\n" + "\n".join(problems))
+
+    # Runs are only comparable if they are measured in exactly the same way.
+    check_identical_measurement(configs)
 
     return Suite(name=suite_name, stages=stages, runs=configs, directory=suite_directory)
 

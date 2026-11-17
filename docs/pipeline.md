@@ -27,6 +27,44 @@ PyTorch loop that can be read from top to bottom. It counts steps rather than
 epochs, logs to TensorBoard, validates on a few held-out scenes at regular
 intervals, and saves a checkpoint from which a run can be resumed.
 
+## The training data schedule
+
+For a fair comparison every model must be trained on the same data. The
+`TrainingSchedule` ([`data/schedule.py`](../src/scene_recon/data/schedule.py))
+makes every random choice about the training data a function of two numbers
+only, `experiment.seed` and the step number:
+
+| Choice                                  | Decided by                          |
+|-----------------------------------------|-------------------------------------|
+| Which scenes form the batch             | `schedule.scene_plan(step)`         |
+| Which views of each scene are loaded    | `schedule.scene_plan(step)`         |
+| Which loaded views are the model's input | `schedule.source_view_indices(step)` |
+| Which pixels are supervised             | `schedule.generator("rays", step)`  |
+| Where along each ray samples are placed | `schedule.generator("sample_depths", step)` |
+
+Each choice has its own random generator, seeded from the seed, the choice's
+name and the step. PyTorch's global random generator is never used for data:
+it belongs to the model (weight initialisation, dropout). As a result:
+
+- **Every model sees the same data at every step**, however many random
+  numbers it draws itself. Only the fine-pass sample positions differ, because
+  they depend on each model's own coarse prediction.
+- **A resumed run continues exactly where it stopped.** The data of step
+  *n* does not depend on what happened before step *n*, and checkpoints also
+  store PyTorch's global random state, so the model's own randomness
+  continues too. On a CPU, an interrupted and resumed run ends with the same
+  weights, bit for bit, as an uninterrupted one (a test checks this).
+- **Workers and devices make no difference.** The choices are made in the
+  main process, on the CPU, before any data is loaded.
+
+Scenes are visited in epochs: each epoch is a fresh random order of the
+training scenes, and every scene appears at most once per epoch.
+
+Images reach the model exactly as the dataset loads them: RGB, values in
+[0, 1], native resolution, no augmentation. Normalisation for a pretrained
+backbone is the encoder's job; see
+[writing_a_model.md](writing_a_model.md#input-normalisation).
+
 ## Evaluation
 
 For each test scene, the evaluator

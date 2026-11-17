@@ -38,7 +38,7 @@ def _write_suite(tmp_path: Path, runs: dict, stages: list[str] | None = None) ->
         "runs": runs,
     }
     path = tmp_path / "suite.yaml"
-    path.write_text(yaml.safe_dump(content))
+    path.write_text(yaml.safe_dump(content, sort_keys=False))  # keep the runs in the given order
     return path
 
 
@@ -134,6 +134,38 @@ def test_stages_always_run_in_pipeline_order(tmp_path: Path):
     suite = load_suite(_write_suite(tmp_path, TWO_RUNS, stages=["profile", "train"]))
 
     assert suite.stages == ["train", "profile"]
+
+
+@pytest.mark.parametrize(
+    "run_change",
+    [
+        {"evaluation": {"metrics": ["psnr"]}},
+        {"validation": {"source_views": [1]}},
+        {"profiling": {"num_frames": 2}},
+        {"data": {"test": {"num_scenes": 3}}},
+    ],
+)
+def test_runs_must_be_measured_identically(tmp_path: Path, run_change: dict):
+    runs = {"reference": {}, "different": run_change}
+
+    with pytest.raises(ConfigError, match="must be the same for every run") as error:
+        load_suite(_write_suite(tmp_path, runs))
+
+    assert "different=" in str(error.value)
+
+
+def test_report_lists_what_differs_between_runs(tmp_path: Path):
+    runs = {**TWO_RUNS, "fewer_samples": {"renderer": {"num_coarse_samples": 16}}}
+    suite = load_suite(_write_suite(tmp_path, runs))
+
+    run_suite(suite)
+
+    report = (suite.directory / "summary.md").read_text()
+    differences = report.split("## What differs between runs")[1].split("##")[0]
+    assert "| `model.decoder.hidden_width` | `16` | `48` | `64` |" in differences
+    assert "| `renderer.num_coarse_samples` | `24` | `24` | `16` |" in differences
+    assert "trained on identical data" in differences
+    assert "training.num_steps" not in differences
 
 
 def test_shipped_smoke_suite_is_valid():
@@ -232,7 +264,7 @@ def test_preflight_stops_the_suite_before_any_training(tmp_path: Path):
     runs = {
         "fine": {},
         "unknown_encoder": {"model": {"encoder": {"name": "no_such_encoder"}}},
-        "bad_view_index": {"validation": {"source_views": [99]}},
+        "too_many_source_views": {"training": {"num_source_views": [1, 9]}},
     }
     suite = load_suite(_write_suite(tmp_path, runs))
 
@@ -240,7 +272,7 @@ def test_preflight_stops_the_suite_before_any_training(tmp_path: Path):
         run_suite(suite)
 
     assert "2 of 3 run(s) cannot start" in str(error.value)
-    assert "no_such_encoder" in str(error.value) and "validation.source_views" in str(error.value)
+    assert "no_such_encoder" in str(error.value) and "up to 9 source views" in str(error.value)
     assert not RunFiles(suite.runs["fine"].run_dir).checkpoint.exists()
 
 
