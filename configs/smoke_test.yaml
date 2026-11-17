@@ -1,0 +1,40 @@
+# A complete run that finishes in about a minute on a CPU:
+#
+#   scene-recon train --config configs/smoke_test.yaml
+#   scene-recon evaluate --config configs/smoke_test.yaml
+#
+# Use it to confirm that an installation works, and as the fastest way to try
+# a change to the pipeline.
+
+base:
+  - base.yaml
+  - data/synthetic_spheres.yaml
+  - models/tiny_pixel_aligned_nerf.yaml
+
+experiment:
+  run_name: smoke_test
+
+renderer:
+  num_coarse_samples: 24
+  num_fine_samples: 12
+
+optimization:
+  learning_rate: 1.0e-3
+  decay_steps: 300
+
+training:
+  num_steps: 300
+  rays_per_scene: 128
+  num_workers: 0
+  log_every: 25
+  validate_every: 100
+  checkpoint_every: 100
+
+validation:
+  num_scenes: 2
+  num_target_views: 2
+  source_views: [0]
+
+evaluation:
+  source_view_sets: [[0], [0, 6]]
+  metrics: [psnr, ssim]     # LPIPS is left out so the smoke test needs no weight download.

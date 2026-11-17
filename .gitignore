@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+
+# Experiment outputs (checkpoints, TensorBoard logs, evaluation results).
+/runs/
+
+# Datasets are large and live outside version control. The leading slash
+# matters: src/scene_recon/data/ is source code and must stay tracked.
+/data/

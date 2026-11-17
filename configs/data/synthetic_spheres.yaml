@@ -1,0 +1,22 @@
+# Procedurally generated spheres. No files needed; for tests and smoke runs only.
+# The seeds differ so that the three splits contain different scenes.
+
+data:
+  train:
+    name: synthetic_spheres
+    num_scenes: 32
+    num_views: 12
+    image_size: 32
+    seed: 0
+  val:
+    name: synthetic_spheres
+    num_scenes: 4
+    num_views: 12
+    image_size: 32
+    seed: 1
+  test:
+    name: synthetic_spheres
+    num_scenes: 4
+    num_views: 12
+    image_size: 32
+    seed: 2

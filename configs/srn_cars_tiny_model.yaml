@@ -1,0 +1,15 @@
+# The testing model on the real dataset, with the training settings of the
+# proposal. Its purpose is to check the full pipeline on ShapeNet-SRN Cars
+# before the real architectures exist.
+#
+# This is also the template for real experiments: copy this file, replace the
+# model entry in `base` with your own model file (or write a `model:` section
+# here), and give the experiment a name.
+
+base:
+  - base.yaml
+  - data/srn_cars.yaml
+  - models/tiny_pixel_aligned_nerf.yaml
+
+experiment:
+  run_name: srn_cars_tiny_model

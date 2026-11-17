@@ -1,0 +1,66 @@
+# Pipeline settings shared by all experiments, following the project proposal.
+#
+# This file is not runnable on its own: an experiment config adds the `data`
+# and `model` sections (see smoke_test.yaml and srn_cars_tiny_model.yaml).
+# Every setting the pipeline reads is listed here; there are no hidden
+# defaults in the code.
+
+experiment:
+  run_name: unnamed         # Outputs go to <output_dir>/<run_name>/.
+  output_dir: runs
+  seed: 0
+  device: auto              # "auto" = CUDA if available, else CPU. Or "cuda:1", "cpu", ...
+
+loss:
+  name: mse                 # Photometric MSE on the coarse and the fine render.
+
+renderer:
+  num_coarse_samples: 64    # Evenly spread samples per ray.
+  num_fine_samples: 32      # Extra samples placed where the coarse pass found content. 0 = no fine pass.
+  background_color: [1.0, 1.0, 1.0]   # ShapeNet-SRN renders have a white background.
+  ray_chunk_size: 8192      # Rays rendered at once for full images. Lower it if evaluation runs out of memory.
+
+optimization:
+  optimizer: adam           # adam | adamw
+  betas: [0.9, 0.999]
+  weight_decay: 0.0
+  learning_rate: 1.0e-4     # Applies to every parameter group unless overridden below.
+  warmup_steps: 0
+  # Exponential decay: the learning rate is multiplied by decay_rate every
+  # decay_steps steps. The proposal does not fix these numbers yet; the values
+  # below lower the learning rate tenfold over the course of training.
+  decay_rate: 0.1
+  decay_steps: 400000
+  # Per parameter-group learning rate and warmup, keyed by group name. Example
+  # for a model whose encoder is pretrained:
+  #   group_overrides:
+  #     encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
+  group_overrides: {}
+
+training:
+  num_steps: 400000
+  batch_size: 4             # Scenes per step.
+  rays_per_scene: 256       # batch_size * rays_per_scene = 1,024 rays per step, as in the proposal.
+  views_per_scene: 8        # Views loaded per scene per step; sources and supervised rays come from these.
+  num_source_views: [1, 2, 3]   # One of these is picked at random each step.
+  num_workers: 4
+  log_every: 100
+  validate_every: 5000
+  checkpoint_every: 5000
+
+# Quick check on the validation split during training.
+validation:
+  num_scenes: 4
+  num_target_views: 4
+  source_views: [64]
+  metrics: [psnr, ssim]
+
+# Full protocol on the test split (`scene-recon evaluate`). One pass is run per
+# entry of source_view_sets. [64] and [64, 104] are the 1- and 2-view inputs of
+# the pixelNeRF benchmark; add a 3-view entry once its views are decided.
+evaluation:
+  source_view_sets: [[64], [64, 104]]
+  metrics: [psnr, ssim, lpips]
+  num_scenes: null          # null = every test scene.
+  num_target_views: null    # null = every view that is not a source view.
+  save_images: false        # Save each rendered view under <run_dir>/renders/.
