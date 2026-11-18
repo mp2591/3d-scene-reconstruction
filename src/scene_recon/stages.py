@@ -6,33 +6,48 @@
 
 The single-run commands (``scene-recon train``, ``evaluate``, ``profile``)
 and the suite runner both call these functions, so a run produces the same
-outputs whichever way it is started.
+outputs, and follows the same rules, whichever way it is started.
 
-``evaluation.json`` and ``profile.json`` record the settings they were
-produced with, which lets the suite runner tell whether they are still
-up to date.
+A checkpoint is only ever used with the settings it was trained with, and
+every results file records the checkpoint (by content hash), the settings
+and the software environment it was made with. See ``scene_recon.provenance``.
+
+``check_run_can_start`` builds and checks everything a run's stages will
+need, without training, so that mistakes surface in seconds.
 """
 
 from __future__ import annotations
 
-import json
 import logging
+import math
 import shutil
 from pathlib import Path
 from typing import Any
 
-from scene_recon.build import build_dataset, build_metrics, build_model, resolve_device
-from scene_recon.checkpoints import load_checkpoint
+from scene_recon.build import build_dataset, build_loss, build_metrics, build_model, resolve_device
+from scene_recon.checkpoints import TrainingProgress, load_checkpoint
 from scene_recon.config import Config
+from scene_recon.data import TrainingSchedule
 from scene_recon.data.base import SceneDataset
+from scene_recon.environment import environment
 from scene_recon.evaluation import Evaluator, check_source_views, save_preview
 from scene_recon.models.contract import check_model_contract
+from scene_recon.optim import build_optimizer_and_scheduler
 from scene_recon.profiling import count_parameters, measure_rendering_speed
+from scene_recon.provenance import (
+    check_checkpoint_matches_config,
+    checkpoint_record,
+    evaluation_settings,
+    profiling_settings,
+)
 from scene_recon.rendering import VolumeRenderer
-from scene_recon.run_files import RunFiles
-from scene_recon.training import Trainer
+from scene_recon.run_files import RunFiles, write_json
+from scene_recon.training import Trainer, check_training_settings
 
 logger = logging.getLogger(__name__)
+
+STAGES = ("train", "evaluate", "profile")
+"""All stages, in the order they are executed."""
 
 
 def run_training(config: Config, resume: bool = False) -> None:
@@ -51,21 +66,23 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
 
     Returns:
         The content written to ``evaluation.json``.
+
+    Raises:
+        ConfigError: If the checkpoint was trained with other settings than ``config``.
+        RuntimeError: If a metric comes out as NaN or infinite; nothing is written then.
     """
     files = RunFiles(config.run_dir)
     checkpoint_path = checkpoint_path or files.checkpoint
-    device = resolve_device(config.experiment.device)
-    model = build_model(config).to(device)
-    progress = load_checkpoint(checkpoint_path, model)
+    model, progress = _load_trained_model(config, checkpoint_path)
 
     settings = config.evaluation
+    device = resolve_device(config.experiment.device)
     evaluator = Evaluator(model, VolumeRenderer(config.renderer), build_metrics(settings.metrics), device)
     test_scenes = build_dataset(config, "test")
     check_evaluation_settings(config, test_scenes)
 
-    protocols = []
+    protocols, previews = [], {}
     for source_views in settings.source_view_sets:
-        num_source_views = len(source_views)
         logger.info("Evaluating with source views %s", source_views)
         result = evaluator.evaluate(
             test_scenes,
@@ -73,34 +90,41 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
             num_scenes=settings.num_scenes,
             num_target_views=settings.num_target_views,
             num_preview_scenes=settings.num_preview_scenes,
-            image_dir=files.renders(num_source_views) if settings.save_images else None,
+            image_dir=files.renders(len(source_views)) if settings.save_images else None,
         )
         logger.info("Source views %s: %s", source_views, result.mean)
-
-        # Replace the previews of an earlier evaluation, so none are left over.
-        preview_dir = files.previews(num_source_views)
-        shutil.rmtree(preview_dir, ignore_errors=True)
-        for preview in result.previews:
-            save_preview(preview, preview_dir / preview.scene_id)
-
+        non_finite = [name for name, value in result.mean.items() if not math.isfinite(value)]
+        if non_finite:
+            raise RuntimeError(
+                f"Evaluation with source views {source_views} produced non-finite {non_finite}; "
+                "the model's output is probably NaN. No results were written."
+            )
+        previews[len(source_views)] = result.previews
         protocols.append(
             {
                 "source_views": source_views,
-                "num_source_views": num_source_views,
+                "num_source_views": len(source_views),
                 "mean": result.mean,
                 "per_scene": result.per_scene,
                 "preview_scene_ids": [preview.scene_id for preview in result.previews],
             }
         )
 
+    # Replace the previews of an earlier evaluation, so none are left over.
+    for num_source_views, protocol_previews in previews.items():
+        preview_dir = files.previews(num_source_views)
+        shutil.rmtree(preview_dir, ignore_errors=True)
+        for preview in protocol_previews:
+            save_preview(preview, preview_dir / preview.scene_id)
+
     report = {
-        "checkpoint": str(checkpoint_path),
-        "training_step": progress.step,
-        "training_hours": progress.training_seconds / 3600,
-        "settings": evaluation_settings_snapshot(config),
+        "checkpoint": checkpoint_record(checkpoint_path, progress),
+        "settings": evaluation_settings(config),
+        "environment": environment(),
         "protocols": protocols,
     }
-    _write_json(report, files.evaluation)
+    write_json(report, files.evaluation)
+    logger.info("Wrote %s", files.evaluation)
     return report
 
 
@@ -116,9 +140,11 @@ def run_profiling(config: Config, checkpoint_path: Path | None = None) -> dict[s
     """
     files = RunFiles(config.run_dir)
     device = resolve_device(config.experiment.device)
-    model = build_model(config).to(device)
-    if checkpoint_path is not None or files.checkpoint.exists():
-        load_checkpoint(checkpoint_path or files.checkpoint, model)
+    checkpoint_path = checkpoint_path or (files.checkpoint if files.checkpoint.exists() else None)
+    if checkpoint_path is not None:
+        model, _ = _load_trained_model(config, checkpoint_path)
+    else:
+        model = build_model(config).to(device)
 
     test_scenes = build_dataset(config, "test")
     check_evaluation_settings(config, test_scenes)
@@ -139,10 +165,10 @@ def run_profiling(config: Config, checkpoint_path: Path | None = None) -> dict[s
     )
     height, width = views.image_size
     report = {
-        "device": str(device),
         "image_size": [height, width],
         "num_source_views": num_source_views,
-        "settings": profiling_settings_snapshot(config),
+        "settings": profiling_settings(config),
+        "environment": environment(),
         "parameters": count_parameters(model),
         "rendering": speed,
     }
@@ -153,7 +179,7 @@ def run_profiling(config: Config, checkpoint_path: Path | None = None) -> dict[s
         height,
         width,
     )
-    _write_json(report, files.profile)
+    write_json(report, files.profile)
     return report
 
 
@@ -168,8 +194,52 @@ def check_model(config: Config, image_size: tuple[int, int] | None = None) -> No
     if image_size is None:
         image_size = dataset_image_size(build_dataset(config, "test"))
     model = build_model(config).to(resolve_device(config.experiment.device))
-    check_model_contract(model, image_size=image_size)
+    _check_contract(model, config, image_size)
     logger.info("Model '%s' satisfies the pipeline contract.", config.model["name"])
+
+
+def check_run_can_start(config: Config, stages: list[str]) -> None:
+    """Build and check everything the given stages of a run will need, without training.
+
+    Only what the stages use is built: a profile-only run needs no training
+    data, loss or metrics. Checks: the datasets open and have the requested
+    views; an existing checkpoint was trained with these settings; the loss,
+    metrics (including optional packages such as LPIPS) and optimiser can be
+    built; the model satisfies the contract with the configured sample counts.
+
+    Raises:
+        Exception: The first problem found, as raised by the failing component.
+    """
+    files = RunFiles(config.run_dir)
+    if files.checkpoint.exists():
+        check_checkpoint_matches_config(files.checkpoint, config)
+
+    image_size = None
+    if "train" in stages:
+        train_scenes = build_dataset(config, "train")
+        validation_scenes = build_dataset(config, "val")
+        check_training_settings(config, validation_scenes)
+        TrainingSchedule(
+            train_scenes,
+            seed=config.experiment.seed,
+            batch_size=config.training.batch_size,
+            views_per_scene=config.training.views_per_scene,
+            num_source_views=config.training.num_source_views,
+        ).scene_plan(0)  # raises if training scenes have too few views
+        build_loss(config)
+        build_metrics(config.validation.metrics)
+        image_size = dataset_image_size(validation_scenes)
+    if "evaluate" in stages or "profile" in stages:
+        test_scenes = build_dataset(config, "test")
+        check_evaluation_settings(config, test_scenes)
+        image_size = dataset_image_size(test_scenes)
+    if "evaluate" in stages:
+        build_metrics(config.evaluation.metrics)
+
+    model = build_model(config).to(resolve_device(config.experiment.device))
+    if "train" in stages:
+        build_optimizer_and_scheduler(model, config.optimization)
+    _check_contract(model, config, image_size or (64, 64))
 
 
 def check_evaluation_settings(config: Config, test_scenes: SceneDataset) -> None:
@@ -184,28 +254,20 @@ def dataset_image_size(scenes: SceneDataset) -> tuple[int, int]:
     return scenes.load_scene(0, [0]).image_size
 
 
-def evaluation_settings_snapshot(config: Config) -> dict[str, Any]:
-    """The settings that determine evaluation results, apart from the weights."""
-    return {
-        "evaluation": config.raw["evaluation"],
-        "renderer": config.raw["renderer"],
-        "test_data": config.raw["data"]["test"],
-    }
+def _load_trained_model(config: Config, checkpoint_path: Path) -> tuple[Any, TrainingProgress]:
+    """Build the model and load a checkpoint into it, after checking that the two belong together."""
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"No checkpoint at {checkpoint_path}. Train the model first, or pass --checkpoint.")
+    check_checkpoint_matches_config(checkpoint_path, config)
+    model = build_model(config).to(resolve_device(config.experiment.device))
+    progress = load_checkpoint(checkpoint_path, model)
+    return model, progress
 
 
-def profiling_settings_snapshot(config: Config) -> dict[str, Any]:
-    """The settings that determine profiling results."""
-    return {
-        "profiling": config.raw["profiling"],
-        "renderer": config.raw["renderer"],
-        "model": config.raw["model"],
-        "source_views": config.evaluation.source_view_sets[0],
-        "test_data": config.raw["data"]["test"],
-    }
-
-
-def _write_json(content: dict, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as file:
-        json.dump(content, file, indent=2)
-    logger.info("Wrote %s", path)
+def _check_contract(model: Any, config: Config, image_size: tuple[int, int]) -> None:
+    check_model_contract(
+        model,
+        image_size=image_size,
+        num_coarse_samples=config.renderer.num_coarse_samples,
+        num_fine_samples=config.renderer.num_fine_samples,
+    )

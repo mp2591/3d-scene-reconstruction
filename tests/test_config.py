@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -77,3 +78,38 @@ def test_missing_base_file_is_named_in_the_error(tmp_path: Path):
 
     with pytest.raises(ConfigError, match="nowhere.yaml"):
         load_config(path)
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ("training.num_steps=-1", "training.num_steps must be at least 1"),
+        ("training.num_steps=2.9", "must be a whole number"),
+        ("training.num_steps=true", "must be a whole number"),
+        ("evaluation.save_images=1", "must be true or false"),
+        ("evaluation.source_view_sets=[]", "must contain at least one set of views"),
+        ("evaluation.source_view_sets=[[0, 0]]", "lists a view more than once"),
+        ("evaluation.num_scenes=0", "evaluation.num_scenes must be at least 1"),
+        ("validation.source_views=[]", "must contain at least one view index"),
+        ("renderer.num_coarse_samples=1", "renderer.num_coarse_samples must be at least 2"),
+        ("renderer.num_coarse_samples=2", "at least 3 when the fine pass is enabled"),
+        ("optimization.learning_rate=0", "learning_rate must be positive"),
+        ("optimization.betas=[0.9]", "betas must be two values"),
+    ],
+)
+def test_invalid_values_are_rejected(override: str, message: str):
+    with pytest.raises(ConfigError, match=re.escape(message)):
+        load_config(CONFIG_DIR / "smoke_test.yaml", overrides=[override])
+
+
+def test_every_invalid_value_is_reported_at_once():
+    with pytest.raises(ConfigError) as error:
+        load_config(CONFIG_DIR / "smoke_test.yaml", overrides=["training.num_steps=0", "training.batch_size=0"])
+
+    assert "training.num_steps" in str(error.value) and "training.batch_size" in str(error.value)
+
+
+def test_whole_number_written_in_scientific_notation_is_accepted():
+    config = load_config(CONFIG_DIR / "smoke_test.yaml", overrides=["training.num_steps=4.0e+2"])
+
+    assert config.training.num_steps == 400 and isinstance(config.training.num_steps, int)

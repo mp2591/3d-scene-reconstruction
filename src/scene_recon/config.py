@@ -10,6 +10,9 @@ A config is a YAML file. Three features keep configs short and safe:
   values without editing a file; the command line exposes this as ``--set``.
 * Validation. The pipeline's own settings are parsed into the dataclasses
   below. A misspelt or missing key is an error, never a silent default.
+  Every value is checked against its declared type (a whole number must be a
+  whole number, ``true`` is not a number) and against the rules in
+  ``_VALUE_RULES`` and ``_check_values``, such as "at least one training step".
 
 There are deliberately no default values in this file. Every setting is
 spelled out in ``configs/base.yaml``, so the YAML files are the single place
@@ -27,9 +30,11 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import math
+import types
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence, get_type_hints
+from typing import Any, Mapping, Sequence, Union, get_args, get_origin, get_type_hints
 
 import yaml
 
@@ -215,7 +220,7 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
     }
 
     _check_keys(raw["data"].keys(), set(DATA_SPLITS), where="'data'")
-    _check_source_view_sets(settings["evaluation"].source_view_sets)
+    _check_values(settings)
 
     return Config(
         data=copy.deepcopy(dict(raw["data"])),
@@ -301,22 +306,6 @@ def apply_override(raw: dict[str, Any], override: str) -> None:
     section[last_key] = yaml.safe_load(value_text)
 
 
-def _check_source_view_sets(source_view_sets: list[list[int]]) -> None:
-    """Each evaluation protocol must use a different number of views.
-
-    Results are labelled and plotted by the number of input views ("1 view",
-    "2 views"), so two protocols with the same number would be indistinguishable.
-    """
-    sizes = [len(views) for views in source_view_sets]
-    if len(set(sizes)) != len(sizes):
-        raise ConfigError(
-            f"evaluation.source_view_sets {source_view_sets} contains two sets with the same number of "
-            "views. Results are identified by the number of input views, so each set must have a different size."
-        )
-    if 0 in sizes:
-        raise ConfigError("evaluation.source_view_sets must not contain an empty set.")
-
-
 def _check_keys(actual: Any, expected: set[str], where: str) -> None:
     """Raise a readable error if a mapping has unknown or missing keys."""
     actual = set(actual)
@@ -339,20 +328,173 @@ def _parse_settings(settings_class: type, values: Mapping[str, Any], section: st
 
     parsed = {}
     for name in field_names:
-        parsed[name] = _coerce_number(values[name], type_hints[name], where=f"{section}.{name}")
+        parsed[name] = _convert(values[name], type_hints[name], where=f"{section}.{name}")
     return settings_class(**parsed)
 
 
-def _coerce_number(value: Any, expected_type: Any, where: str) -> Any:
-    """Convert a value to int or float when the setting is declared as one.
+def _convert(value: Any, expected_type: Any, where: str) -> Any:
+    """Check a value against a setting's declared type, converting where that is unambiguous.
 
-    This exists mainly because YAML reads ``1e-4`` (no decimal point) as a
-    string; without the conversion that typo would surface much later as a
-    confusing error inside the optimiser.
+    Conversions: a whole-number float such as ``4.0e+5`` becomes an int, and
+    a numeric string becomes a float (YAML reads ``1e-4``, without a decimal
+    point, as a string). Everything else must already have the right type.
     """
-    if expected_type not in (int, float) or isinstance(value, bool):
+    origin = get_origin(expected_type)
+
+    if expected_type is Any:
         return value
-    try:
-        return expected_type(value)
-    except (TypeError, ValueError) as error:
-        raise ConfigError(f"'{where}' must be a number, got {value!r}.") from error
+    if origin in (Union, types.UnionType):  # e.g. int | None
+        options = get_args(expected_type)
+        if value is None and type(None) in options:
+            return None
+        (inner_type,) = [option for option in options if option is not type(None)]
+        return _convert(value, inner_type, where)
+    if origin is list:
+        if not isinstance(value, list):
+            raise ConfigError(f"'{where}' must be a list, got {value!r}.")
+        (item_type,) = get_args(expected_type)
+        return [_convert(item, item_type, f"{where}[{index}]") for index, item in enumerate(value)]
+    if origin is dict:
+        if not isinstance(value, Mapping):
+            raise ConfigError(f"'{where}' must be a mapping, got {value!r}.")
+        return dict(value)
+    if expected_type is bool:
+        if not isinstance(value, bool):
+            raise ConfigError(f"'{where}' must be true or false, got {value!r}.")
+        return value
+    if expected_type is int:
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ConfigError(f"'{where}' must be a whole number, got {value!r}.")
+        return value
+    if expected_type is float:
+        if isinstance(value, str):
+            try:
+                value = float(value)
+            except ValueError:
+                pass
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ConfigError(f"'{where}' must be a finite number, got {value!r}.")
+        return float(value)
+    if expected_type is str:
+        if not isinstance(value, str):
+            raise ConfigError(f"'{where}' must be text, got {value!r}.")
+        return value
+    raise TypeError(f"Settings of type {expected_type} are not supported by the config parser.")
+
+
+# Smallest allowed value of numeric settings. A setting that is None (where
+# allowed, e.g. evaluation.num_scenes) is not checked.
+_VALUE_RULES: dict[str, int] = {
+    "renderer.num_coarse_samples": 2,
+    "renderer.num_fine_samples": 0,
+    "renderer.ray_chunk_size": 1,
+    "optimization.weight_decay": 0,
+    "optimization.warmup_steps": 0,
+    "optimization.decay_steps": 1,
+    "training.num_steps": 1,
+    "training.batch_size": 1,
+    "training.rays_per_scene": 1,
+    "training.views_per_scene": 1,
+    "training.num_workers": 0,
+    "training.log_every": 1,
+    "training.validate_every": 1,
+    "training.checkpoint_every": 1,
+    "validation.num_scenes": 1,
+    "validation.num_target_views": 1,
+    "evaluation.num_scenes": 1,
+    "evaluation.num_target_views": 1,
+    "evaluation.num_preview_scenes": 0,
+    "profiling.num_frames": 1,
+    "profiling.num_warmup_frames": 0,
+}
+
+
+def _check_values(settings: dict[str, Any]) -> None:
+    """Check that the settings' values make sense, and report every problem at once."""
+    problems = []
+
+    for setting, minimum in _VALUE_RULES.items():
+        section, name = setting.split(".")
+        value = getattr(settings[section], name)
+        if value is not None and value < minimum:
+            problems.append(f"{setting} must be at least {minimum}, got {value}.")
+
+    renderer = settings["renderer"]
+    if renderer.num_fine_samples > 0 and renderer.num_coarse_samples < 3:
+        problems.append(
+            "renderer.num_coarse_samples must be at least 3 when the fine pass is enabled "
+            "(fine samples are drawn between coarse samples)."
+        )
+    if len(renderer.background_color) != 3 or not all(0 <= value <= 1 for value in renderer.background_color):
+        problems.append("renderer.background_color must be three values between 0 and 1.")
+
+    optimization = settings["optimization"]
+    if optimization.learning_rate <= 0:
+        problems.append("optimization.learning_rate must be positive.")
+    if not 0 < optimization.decay_rate <= 1:
+        problems.append("optimization.decay_rate must be greater than 0 and at most 1.")
+    if len(optimization.betas) != 2 or not all(0 <= beta < 1 for beta in optimization.betas):
+        problems.append("optimization.betas must be two values in [0, 1).")
+
+    if not settings["training"].num_source_views or min(settings["training"].num_source_views) < 1:
+        problems.append("training.num_source_views must be a non-empty list of positive numbers.")
+
+    problems += _view_list_problems(settings["validation"].source_views, "validation.source_views")
+    if not settings["validation"].metrics:
+        problems.append("validation.metrics must name at least one metric.")
+
+    evaluation = settings["evaluation"]
+    if not evaluation.metrics:
+        problems.append("evaluation.metrics must name at least one metric.")
+    if not evaluation.source_view_sets:
+        problems.append("evaluation.source_view_sets must contain at least one set of views.")
+    for index, views in enumerate(evaluation.source_view_sets):
+        problems += _view_list_problems(views, f"evaluation.source_view_sets[{index}]")
+    sizes = [len(views) for views in evaluation.source_view_sets]
+    if len(set(sizes)) != len(sizes):
+        # Results are labelled and plotted by the number of input views, so
+        # two sets of the same size could not be told apart.
+        problems.append(
+            f"evaluation.source_view_sets {evaluation.source_view_sets} has two sets with the same number of "
+            "views; each set must have a different size, because results are identified by it."
+        )
+
+    if problems:
+        raise ConfigError("Invalid setting(s):\n  " + "\n  ".join(problems))
+
+
+def _view_list_problems(views: list[int], where: str) -> list[str]:
+    """A list of view indices must be non-empty, non-negative and free of repeats."""
+    if not views:
+        return [f"{where} must contain at least one view index."]
+    problems = []
+    if min(views) < 0:
+        problems.append(f"{where} must not contain negative view indices, got {views}.")
+    if len(set(views)) != len(views):
+        problems.append(f"{where} lists a view more than once, got {views}.")
+    return problems
+
+
+def flatten_settings(mapping: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
+    """Turn nested mappings into dotted names, e.g. ``{"a": {"b": 1}}`` -> ``{"a.b": 1}``.
+
+    Lists and other values are kept whole.
+    """
+    flat = {}
+    for key, value in mapping.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, Mapping) and value:
+            flat.update(flatten_settings(value, prefix=f"{name}."))
+        else:
+            flat[name] = value
+    return flat
+
+
+def setting_in_sections(setting: str, sections: Sequence[str]) -> bool:
+    """Whether a dotted setting name is one of ``sections`` or lies inside one of them.
+
+    Example: ``"data.test.split_dir"`` is in ``("data.test",)``; ``"data.train"`` is not.
+    """
+    return any(setting == section or setting.startswith(section + ".") for section in sections)

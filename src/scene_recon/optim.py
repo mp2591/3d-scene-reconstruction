@@ -29,6 +29,7 @@ from torch.optim.lr_scheduler import LambdaLR
 
 from scene_recon.config import OptimizationSettings
 from scene_recon.models.base import ReconstructionModel
+from scene_recon.models.contract import check_parameter_groups
 from scene_recon.registry import ConfigError
 
 _OPTIMIZER_CLASSES = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW}
@@ -41,12 +42,17 @@ def build_optimizer_and_scheduler(
     """Create the optimiser with one torch parameter group per model parameter group.
 
     The scheduler must be stepped once after every optimiser step.
+
+    Raises:
+        ModelContractError: If a trainable parameter is in no group, or in several.
+        ConfigError: If the optimiser settings do not fit the model's groups.
     """
     if settings.optimizer not in _OPTIMIZER_CLASSES:
         raise ConfigError(
             f"Unknown optimizer '{settings.optimizer}'. Available: {sorted(_OPTIMIZER_CLASSES)}."
         )
 
+    check_parameter_groups(model)
     groups = model.parameter_groups()
     _check_overrides(settings.group_overrides, [group.name for group in groups])
 

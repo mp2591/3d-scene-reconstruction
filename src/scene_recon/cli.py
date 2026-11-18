@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Sequence
 
 from scene_recon.config import load_config
+from scene_recon.models.contract import ModelContractError
 from scene_recon.registry import ConfigError
 from scene_recon.stages import check_model, run_evaluation, run_profiling, run_training
 from scene_recon.suite import PreflightError, load_suite, run_suite
@@ -43,6 +44,8 @@ def main(arguments: Sequence[str] | None = None) -> None:
         args.run(args)
     except ConfigError as error:
         raise SystemExit(f"Config error: {error}") from error
+    except ModelContractError as error:
+        raise SystemExit(f"Model check failed: {error}") from error
     except PreflightError as error:
         raise SystemExit(f"Suite not started. {error}") from error
 

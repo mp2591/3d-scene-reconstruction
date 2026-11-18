@@ -64,11 +64,15 @@ model appears in several suites.
 ## What happens when a suite runs
 
 **1. Every run is checked before anything starts.** For each run the config
-is validated, its datasets are opened, its view indices are checked against
-the data, and its model is built and checked against the pipeline's contract
-(see [writing_a_model.md](writing_a_model.md)). All problems of all runs are
-reported together, and nothing is trained until they are fixed. A typo in the
-last run costs seconds, not the days spent training the runs before it.
+is validated, and everything the requested stages will need is built: the
+datasets (with their view indices checked), the loss, the metrics (including
+optional packages such as LPIPS), the optimiser and its parameter groups, and
+the model, which is checked against the pipeline's contract (see
+[writing_a_model.md](writing_a_model.md)). A run that already has a
+checkpoint must request exactly the training settings it was trained with.
+All problems of all runs are reported together, and nothing is trained until
+they are fixed. A typo in the last run costs seconds, not the days spent
+training the runs before it.
 
 The runs must also be **measured identically**: the `evaluation`,
 `validation` and `profiling` sections and the validation and test data must
@@ -81,8 +85,10 @@ stages. Work that is already done is skipped:
 | Stage    | Skipped when                                                                   | Otherwise                       |
 |----------|--------------------------------------------------------------------------------|---------------------------------|
 | train    | the checkpoint has reached `training.num_steps`                                | resumed if a checkpoint exists, started if not |
-| evaluate | `evaluation.json` belongs to the current checkpoint and was made with the current evaluation, renderer and test-data settings | evaluated again |
-| profile  | `profile.json` was made with the current model, renderer and profiling settings | profiled again                  |
+| evaluate | `evaluation.json` was made from the current checkpoint file (compared by the hash of its content, not its name or step) with the current evaluation, renderer and test-data settings | evaluated again |
+| profile  | `profile.json` was made with the current model, renderer and profiling settings, on the same kind of device with the same PyTorch version | profiled again |
+
+A damaged or half-written results file counts as missing and is redone.
 
 As a result:
 
@@ -92,9 +98,15 @@ As a result:
   evaluates it again.
 - **Changing evaluation settings** (say, adding LPIPS) evaluates every run
   again without retraining.
-- **Changing a trained run's `model` section** is refused during the check,
-  because the checkpoint no longer fits the model. Give the run a new name, or
-  delete its directory to train it from scratch.
+- **Changing a trained run's training settings** (its model, seed, training
+  data, loss, rendering, optimisation or batch settings) is refused during the
+  check, with a list of what changed: the checkpoint was not trained that way.
+  Give the run a new name, or delete its directory to train it from scratch.
+  Only settings that do not change the trained weights may change for an
+  existing run: the step budget, device, workers, logging and checkpoint
+  intervals, and everything about measurement. The full list is
+  `CONTINUATION_SETTINGS` in
+  [`provenance.py`](../src/scene_recon/provenance.py).
 
 **3. If a run fails**, for example by running out of GPU memory, the error is
 logged, the suite moves on to the next run, and the command exits with an
@@ -102,7 +114,11 @@ error listing the failed runs once all runs are done. Fix the problem and run
 the suite again; finished runs are skipped.
 
 **4. The report is rewritten after every run**, so partial results can be
-read while later runs are still training.
+read while later runs are still training. It shows a run's results only while
+they still match the run's current checkpoint and settings; results that no
+longer match are left out of every table and figure and listed with the
+reason. If the report itself cannot be written, the error is logged and the
+remaining runs continue.
 
 ## Outputs
 

@@ -5,11 +5,13 @@ import torch
 from torch import Tensor, nn
 
 from scene_recon.build import build_model
-from scene_recon.config import Config
+from scene_recon.config import Config, RendererSettings
+from scene_recon.data.synthetic import SyntheticSpheresDataset
 from scene_recon.models.base import ParameterGroup, ReconstructionModel
 from scene_recon.models.contract import ModelContractError, check_model_contract
 from scene_recon.models.normalization import InputNormalization
 from scene_recon.registry import ConfigError
+from scene_recon.rendering import VolumeRenderer
 from scene_recon.structures import FieldOutput, SceneViews
 
 
@@ -96,3 +98,77 @@ def test_input_normalization_is_not_stored_in_checkpoints():
 def test_unknown_input_normalization_is_a_config_error():
     with pytest.raises(ConfigError, match="Available"):
         InputNormalization("cifar")
+
+
+class _RayAwareModel(_MinimalModel):
+    """Relies on what the pipeline promises: each ray's samples lie on that ray, ordered near to far."""
+
+    def query_field(self, scene_encoding, points, view_directions, level):
+        steps = points[:, :, 1:] - points[:, :, :-1]
+        along_ray = (steps * view_directions[:, :, None]).sum(dim=-1)
+        across_ray = steps - along_ray[..., None] * view_directions[:, :, None]
+        if (along_ray < 0).any():
+            raise ValueError("samples are not ordered from near to far")
+        if across_ray.abs().max() > 1e-4:
+            raise ValueError("samples are not on the given ray")
+        return super().query_field(scene_encoding, points, view_directions, level)
+
+
+def test_a_model_relying_on_ray_order_passes_the_check_and_renders():
+    model = _RayAwareModel()
+
+    check_model_contract(model)
+    renderer = VolumeRenderer(
+        RendererSettings(num_coarse_samples=8, num_fine_samples=8, background_color=[1.0, 1.0, 1.0], ray_chunk_size=50)
+    )
+    views = SyntheticSpheresDataset(num_scenes=1, num_views=2, image_size=8, seed=0).load_scene(0)
+    renderer.render_images(model, None, views)  # the real rendering path must accept it too
+
+
+def test_the_check_uses_the_configured_numbers_of_samples():
+    seen = {}
+
+    class RecordingModel(_MinimalModel):
+        def query_field(self, scene_encoding, points, view_directions, level):
+            seen[level] = points.shape[2]
+            return super().query_field(scene_encoding, points, view_directions, level)
+
+    check_model_contract(RecordingModel(), num_coarse_samples=5, num_fine_samples=3)
+
+    assert seen == {"coarse": 5, "fine": 8}
+
+
+def test_parameters_that_never_receive_a_gradient_are_reported():
+    class UnusedLayer(_MinimalModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.unused = nn.Linear(2, 2)
+
+    with pytest.raises(ModelContractError, match="receive no gradient.*unused"):
+        check_model_contract(UnusedLayer())
+
+
+def test_non_finite_gradients_are_reported():
+    class InfiniteSlope(_MinimalModel):
+        def __init__(self) -> None:
+            super().__init__()
+            self.scale = nn.Parameter(torch.ones(1))
+
+        def query_field(self, scene_encoding, points, view_directions, level):
+            field = super().query_field(scene_encoding, points, view_directions, level)
+            # Zero in value, but the square root's slope at zero is infinite.
+            hidden_nan = 0 * torch.sqrt(self.scale - self.scale.detach())
+            return FieldOutput(rgb=field.rgb, density=field.density + hidden_nan)
+
+    with pytest.raises(ModelContractError, match="NaN or infinite gradients"):
+        check_model_contract(InfiniteSlope())
+
+
+def test_the_check_leaves_no_gradients_and_restores_the_mode():
+    model = _MinimalModel()
+    model.eval()
+
+    check_model_contract(model)
+
+    assert not model.training
+    assert all(parameter.grad is None for parameter in model.parameters())

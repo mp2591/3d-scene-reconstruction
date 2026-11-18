@@ -1,6 +1,7 @@
 """Tests of suite files and the suite runner, on runs small enough for a CPU."""
 
 import csv
+import json
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import yaml
 
 from scene_recon import suite as suite_module
 from scene_recon.registry import ConfigError
+from scene_recon.report import write_report
 from scene_recon.run_files import RunFiles
 from scene_recon.suite import PreflightError, load_suite, run_suite
 
@@ -118,6 +120,9 @@ def test_every_broken_run_is_reported_at_once(tmp_path: Path):
         ({"runs": {"bad/name": {}}}, "Invalid run name"),
         ({"suite_name": "has space"}, "Invalid suite_name"),
         ({"extra_key": 1}, "Unknown key"),
+        ({"suite_name": ".."}, "Invalid suite_name"),
+        ({"runs": {".": {}}}, "Invalid run name"),
+        ({"runs": {"Run": {}, "run": {}}}, "differ only in upper/lower case"),
     ],
 )
 def test_malformed_suite_files_are_rejected(tmp_path: Path, change: dict, message: str):
@@ -227,7 +232,8 @@ def test_more_training_steps_resume_training_and_redo_evaluation(tmp_path: Path,
     assert training.calls == [("narrow", (), {"resume": True}), ("wide", (), {"resume": True})]
     assert [call[0] for call in evaluation.calls] == ["narrow", "wide"]
     for config in suite.runs.values():
-        assert '"training_step": 6' in RunFiles(config.run_dir).evaluation.read_text()
+        evaluation = json.loads(RunFiles(config.run_dir).evaluation.read_text())
+        assert evaluation["checkpoint"]["step"] == 6
 
 
 def test_changed_evaluation_settings_redo_only_the_evaluation(tmp_path: Path, monkeypatch):
@@ -280,5 +286,106 @@ def test_a_trained_run_whose_model_changed_is_not_resumed(tmp_path: Path):
     run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS)))
     changed = {**TWO_RUNS, "wide": {"model": {"decoder": {"hidden_width": 64}}}}
 
-    with pytest.raises(PreflightError, match="different model config"):
+    with pytest.raises(PreflightError, match="model.decoder.hidden_width: trained with 48, requested 64"):
         run_suite(load_suite(_write_suite(tmp_path, changed), overrides=["training.num_steps=6"]))
+
+
+
+# ---------------------------------------------------------------- provenance and recovery
+
+
+def test_a_finished_run_whose_training_settings_changed_is_not_skipped_silently(tmp_path: Path):
+    run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS)))
+    changed = {**TWO_RUNS, "wide": {**TWO_RUNS["wide"], "optimization": {"learning_rate": 0.05}}}
+
+    with pytest.raises(PreflightError, match="optimization.learning_rate: trained with 0.001, requested 0.05"):
+        run_suite(load_suite(_write_suite(tmp_path, changed)))
+
+
+def test_report_leaves_out_results_that_no_longer_match(tmp_path: Path):
+    run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS)))
+    changed = load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["evaluation.source_view_sets=[[0, 6]]"])
+
+    write_report(changed.name, changed.directory, changed.runs, {})
+
+    report = (changed.directory / "summary.md").read_text()
+    assert "## Quality with" not in report
+    assert "- **narrow**, evaluation: made with different evaluation" in report
+    with open(changed.directory / "summary.csv") as file:
+        rows = list(csv.DictReader(file))
+    assert all(row["status"] == "trained" for row in rows)
+    assert not any(column.startswith("psnr") for column in rows[0])
+
+
+def test_a_failed_reevaluation_does_not_bring_back_the_old_score(tmp_path: Path, monkeypatch):
+    run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS)))
+
+    def failing_evaluation(config, *args, **kwargs):
+        raise RuntimeError("evaluation crashed (simulated)")
+
+    monkeypatch.setattr(suite_module, "run_evaluation", failing_evaluation)
+    changed = load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["evaluation.source_view_sets=[[0, 6]]"])
+
+    failures = run_suite(changed)
+
+    assert set(failures) == {"narrow", "wide"}
+    report = (changed.directory / "summary.md").read_text()
+    assert "## Quality with" not in report and "| narrow | failed |" in report
+
+
+def test_unknown_metric_stops_the_suite_before_training(tmp_path: Path):
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["evaluation.metrics=[definitely_unknown_metric]"])
+
+    with pytest.raises(PreflightError, match="Unknown metric 'definitely_unknown_metric'"):
+        run_suite(suite)
+
+    assert not any(RunFiles(config.run_dir).checkpoint.exists() for config in suite.runs.values())
+
+
+def test_a_profile_only_suite_needs_no_training_data(tmp_path: Path):
+    runs = {"only_profiled": {"data": {"train": {"name": "srn", "split_dir": "/does/not/exist", "near": 0.8, "far": 1.8}}}}
+    suite = load_suite(_write_suite(tmp_path, runs, stages=["profile"]))
+
+    assert run_suite(suite) == {}
+    assert RunFiles(suite.runs["only_profiled"].run_dir).profile.is_file()
+
+
+def test_a_damaged_results_file_is_redone_and_does_not_stop_the_suite(tmp_path: Path, monkeypatch):
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
+    run_suite(suite)
+    narrow = RunFiles(suite.runs["narrow"].run_dir)
+    narrow.evaluation.write_text('{"checkpoint":')  # as if a crash cut the write short
+    narrow.profile.write_text("not json at all")
+    _CallRecorder(monkeypatch, "run_training", run_real_function=False)
+    evaluation = _CallRecorder(monkeypatch, "run_evaluation")
+    profiling = _CallRecorder(monkeypatch, "run_profiling")
+
+    assert run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS))) == {}
+
+    assert [call[0] for call in evaluation.calls] == ["narrow"]
+    assert [call[0] for call in profiling.calls] == ["narrow"]
+    assert json.loads(narrow.evaluation.read_text())["protocols"]
+
+
+def test_report_survives_damaged_files(tmp_path: Path):
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
+    run_suite(suite)
+    RunFiles(suite.runs["wide"].run_dir).profile.write_text("{")
+
+    write_report(suite.name, suite.directory, suite.runs, {})
+
+    assert "- **wide**, profile: profile.json is damaged" in (suite.directory / "summary.md").read_text()
+
+
+def test_output_directory_can_be_overridden_for_a_whole_suite(tmp_path: Path):
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=[f"experiment.output_dir={tmp_path / 'elsewhere'}"])
+
+    assert suite.directory == tmp_path / "elsewhere" / "test_suite"
+    assert all(config.run_dir.parent == suite.directory for config in suite.runs.values())
+
+
+def test_runs_cannot_choose_their_own_output_directory(tmp_path: Path):
+    runs = {**TWO_RUNS, "elsewhere": {"experiment": {"output_dir": str(tmp_path / "other")}}}
+
+    with pytest.raises(ConfigError, match="different experiment.output_dir"):
+        load_suite(_write_suite(tmp_path, runs))

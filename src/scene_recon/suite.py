@@ -22,28 +22,30 @@ use ``base`` (paths relative to the suite file) and any config section. A
 run's config is ``common``, then the run's own fragment, then any ``--set``
 overrides from the command line. The run's key becomes its
 ``experiment.run_name``, and all runs write into
-``<output_dir>/<suite_name>/``, with ``output_dir`` taken from
-``common``'s ``experiment.output_dir``.
+``<experiment.output_dir>/<suite_name>/``.
 
 Running a suite:
 
-1. Every run's config is built and validated, its datasets are opened and its
-   model is checked against the pipeline's contract. The runs must also use
-   identical measurement settings (see ``scene_recon.fairness``). Any problem
-   stops the suite here, before hours are spent on the first run.
+1. Every run's config is built and validated. The runs must use identical
+   measurement settings (see ``scene_recon.fairness``). Then everything each
+   run's stages need is built and checked, without training: datasets,
+   loss, metrics, optimiser, and the model against the pipeline's contract.
+   A run that already has a checkpoint must ask for exactly the settings it
+   was trained with (see ``scene_recon.provenance``). Any problem stops the
+   suite here, before hours are spent on the first run.
 2. The runs are executed one after another, each through the requested
-   stages. Work that is already done is skipped (see ``_run_stages``), so an
+   stages. Work that is still valid is skipped (see ``_run_stages``), so an
    interrupted suite is resumed by starting it again.
 3. After every run the suite report (tables and plots) is rewritten, so
    partial results can be inspected while later runs are still training.
 
-If a run fails, the error is logged and the suite moves on to the next run.
+If a run fails, or the report cannot be written, the error is logged and the
+suite moves on to the next run.
 """
 
 from __future__ import annotations
 
 import gc
-import json
 import logging
 import re
 from dataclasses import dataclass
@@ -53,39 +55,20 @@ from typing import Any, Mapping, Sequence
 import torch
 import yaml
 
-from scene_recon.build import build_dataset, build_model, resolve_device
 from scene_recon.checkpoints import read_progress
-from scene_recon.config import (
-    DATA_SPLITS,
-    Config,
-    apply_override,
-    merge_configs,
-    parse_config,
-    resolve_bases,
-)
+from scene_recon.config import Config, apply_override, merge_configs, parse_config, resolve_bases
 from scene_recon.fairness import check_identical_measurement
-from scene_recon.models.contract import check_model_contract
+from scene_recon.provenance import evaluation_status, profile_status
 from scene_recon.registry import ConfigError
 from scene_recon.report import write_report
 from scene_recon.run_files import RunFiles
-from scene_recon.stages import (
-    check_evaluation_settings,
-    dataset_image_size,
-    evaluation_settings_snapshot,
-    profiling_settings_snapshot,
-    run_evaluation,
-    run_profiling,
-    run_training,
-)
-from scene_recon.training import check_training_settings
+from scene_recon.stages import STAGES, check_run_can_start, run_evaluation, run_profiling, run_training
 
 logger = logging.getLogger(__name__)
 
-STAGES = ("train", "evaluate", "profile")
-"""All stages, in the order they are executed."""
-
 _SUITE_KEYS = {"suite_name", "stages", "common", "runs"}
-_VALID_NAME = re.compile(r"^[A-Za-z0-9_.+-]+$")
+# Letters, digits and _ . + -, but not "." or ".." alone, which are not directory names of their own.
+_VALID_NAME = re.compile(r"^(?!\.+$)[A-Za-z0-9_.+-]+$")
 
 
 class PreflightError(Exception):
@@ -125,32 +108,37 @@ def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
     runs = content["runs"]
     if not isinstance(runs, Mapping) or not runs:
         raise ConfigError(f"'runs' in {path} must be a non-empty mapping from run name to config.")
+    _check_run_names_are_distinct(list(runs))
 
     common = resolve_bases(content["common"] or {}, relative_to=path.parent)
-    output_dir = common.get("experiment", {}).get("output_dir")
-    if output_dir is None:
-        raise ConfigError(f"'common' in {path} must set experiment.output_dir (usually through base.yaml).")
-    suite_directory = Path(output_dir) / suite_name
 
     # Every run is checked before reporting, so that one attempt lists all mistakes.
-    configs, problems = {}, []
+    raw_configs, problems = {}, {}
     for run_name, fragment in runs.items():
         try:
             run_name = _checked_name(run_name, "run name")
             raw = merge_configs(common, resolve_bases(fragment or {}, relative_to=path.parent))
             for override in overrides:
                 apply_override(raw, override)
-            # The run's key names the run, and every run writes into the suite's directory.
-            raw["experiment"] = {
-                **raw.get("experiment", {}),
-                "run_name": run_name,
-                "output_dir": str(suite_directory),
-            }
+            raw_configs[run_name] = raw
+        except ConfigError as error:
+            problems[run_name] = str(error)
+
+    # The output directory is shared, so it can only be decided from the runs that merged.
+    suite_directory = Path(_shared_output_dir(raw_configs)) / suite_name if raw_configs else Path(suite_name)
+    configs = {}
+    for run_name, raw in raw_configs.items():
+        # The run's key names the run, and every run writes into the suite's directory.
+        raw["experiment"] = {**raw.get("experiment", {}), "run_name": run_name, "output_dir": str(suite_directory)}
+        try:
             configs[run_name] = parse_config(raw)
         except ConfigError as error:
-            problems.append(f"  {run_name}: {error}")
+            problems[run_name] = str(error)
+
     if problems:
-        raise ConfigError(f"{len(problems)} run(s) in {path} have config problems:\n" + "\n".join(problems))
+        # Listed in suite order, whichever check found the problem.
+        listed = [f"  {name}: {problems[name]}" for name in runs if name in problems]
+        raise ConfigError(f"{len(problems)} run(s) in {path} have config problems:\n" + "\n".join(listed))
 
     # Runs are only comparable if they are measured in exactly the same way.
     check_identical_measurement(configs)
@@ -180,31 +168,22 @@ def run_suite(suite: Suite) -> dict[str, str]:
             failures[run_name] = f"{type(error).__name__}: {error}"
         finally:
             _release_memory()
-        write_report(suite.name, suite.directory, suite.runs, failures)
+
+        try:
+            write_report(suite.name, suite.directory, suite.runs, failures)
+        except Exception:  # noqa: BLE001 - a broken report must not cost the remaining runs
+            logger.exception("The suite report could not be written; continuing with the next run.")
 
     return failures
 
 
 def _preflight(suite: Suite) -> None:
-    """Find every problem that would stop a run, before any run starts.
-
-    Checks, for each run: that its datasets can be opened, that its view
-    indices exist, that its model builds and satisfies the contract, and that
-    an existing checkpoint was trained with the same model config.
-    """
+    """Find every problem that would stop a run, before any run starts."""
     problems = []
     for run_name, config in suite.runs.items():
         logger.info("Checking run '%s'", run_name)
         try:
-            datasets = {split: build_dataset(config, split) for split in DATA_SPLITS}
-            if "train" in suite.stages:
-                check_training_settings(config, datasets["val"])
-                _check_checkpoint_matches_model(config)
-            check_evaluation_settings(config, datasets["test"])
-
-            model = build_model(config).to(resolve_device(config.experiment.device))
-            check_model_contract(model, image_size=dataset_image_size(datasets["test"]))
-            del model
+            check_run_can_start(config, suite.stages)
         except Exception as error:  # noqa: BLE001 - collect every problem, then report them together
             logger.debug("Preflight check of run '%s' failed", run_name, exc_info=True)
             problems.append(f"  {run_name}: {type(error).__name__}: {error}")
@@ -218,18 +197,17 @@ def _preflight(suite: Suite) -> None:
 
 
 def _run_stages(config: Config, stages: list[str]) -> None:
-    """Execute the requested stages of one run, skipping work that is already done.
+    """Execute the requested stages of one run, skipping work that is still valid.
 
     * train: skipped if the checkpoint has reached ``training.num_steps``;
       resumed if a checkpoint exists but has not; started otherwise.
-    * evaluate: skipped if ``evaluation.json`` belongs to the current
-      checkpoint and was made with the current evaluation settings.
-    * profile: skipped if ``profile.json`` was made with the current settings.
+    * evaluate: skipped if ``evaluation.json`` was made from the current
+      checkpoint file (same content) with the current measurement settings.
+    * profile: skipped if ``profile.json`` was made with the current
+      settings on the same kind of device with the same software.
     """
-    files = RunFiles(config.run_dir)
-
     if "train" in stages:
-        progress = read_progress(files.checkpoint)
+        progress = read_progress(RunFiles(config.run_dir).checkpoint)
         if progress is None:
             run_training(config)
         elif progress.step < config.training.num_steps:
@@ -239,47 +217,33 @@ def _run_stages(config: Config, stages: list[str]) -> None:
             logger.info("Training already finished (%d steps); skipping.", progress.step)
 
     if "evaluate" in stages:
-        if _evaluation_is_current(config, files):
+        status = evaluation_status(config)
+        if status.is_current:
             logger.info("Evaluation is up to date; skipping.")
         else:
+            logger.info("Evaluating (%s).", status.reason)
             run_evaluation(config)
 
     if "profile" in stages:
-        if _output_settings_match(files.profile, profiling_settings_snapshot(config)):
+        status = profile_status(config)
+        if status.is_current:
             logger.info("Profile is up to date; skipping.")
         else:
+            logger.info("Profiling (%s).", status.reason)
             run_profiling(config)
 
 
-def _evaluation_is_current(config: Config, files: RunFiles) -> bool:
-    """Whether evaluation.json was produced from the current checkpoint with the current settings."""
-    progress = read_progress(files.checkpoint)
-    if progress is None or not _output_settings_match(files.evaluation, evaluation_settings_snapshot(config)):
-        return False
-    return json.loads(files.evaluation.read_text())["training_step"] == progress.step
-
-
-def _output_settings_match(output_file: Path, settings: dict[str, Any]) -> bool:
-    """Whether a JSON output file exists and records exactly these settings."""
-    if not output_file.is_file():
-        return False
-    recorded = json.loads(output_file.read_text()).get("settings")
-    # A round trip through JSON gives the current settings the same types
-    # (lists, not tuples) as the recorded ones.
-    return recorded == json.loads(json.dumps(settings))
-
-
-def _check_checkpoint_matches_model(config: Config) -> None:
-    """Refuse to resume a checkpoint that was trained with a different model config."""
-    files = RunFiles(config.run_dir)
-    if not files.checkpoint.exists() or not files.config.exists():
-        return
-    saved_model = yaml.safe_load(files.config.read_text()).get("model")
-    if saved_model != config.raw["model"]:
+def _shared_output_dir(raw_configs: dict[str, dict[str, Any]]) -> str:
+    """The output directory all runs agree on, after overrides."""
+    output_dirs = {raw.get("experiment", {}).get("output_dir") for raw in raw_configs.values()}
+    if None in output_dirs:
+        raise ConfigError("Every run needs experiment.output_dir (usually set through base.yaml in 'common').")
+    if len(output_dirs) > 1:
         raise ConfigError(
-            f"{files.checkpoint} was trained with a different model config. Give the run a new name, "
-            f"or delete {config.run_dir} to train it from scratch."
+            f"All runs of a suite write into one directory, but they set different experiment.output_dir values "
+            f"{sorted(output_dirs)}. Set it in 'common' (or with --set) rather than in individual runs."
         )
+    return output_dirs.pop()
 
 
 def _check_suite_keys(content: Any, path: Path) -> None:
@@ -297,9 +261,23 @@ def _checked_name(name: Any, what: str) -> str:
     """Names become directory names, so they are restricted to safe characters."""
     if not isinstance(name, str) or not _VALID_NAME.match(name):
         raise ConfigError(
-            f"Invalid {what} {name!r}: use only letters, digits and the characters _ . + -"
+            f"Invalid {what} {name!r}: use letters, digits and the characters _ . + - "
+            "(and not just dots)."
         )
     return name
+
+
+def _check_run_names_are_distinct(names: list[Any]) -> None:
+    """Run names that differ only in upper/lower case share a directory on macOS and Windows."""
+    seen: dict[str, Any] = {}
+    for name in names:
+        key = str(name).lower()
+        if key in seen:
+            raise ConfigError(
+                f"Run names {seen[key]!r} and {name!r} differ only in upper/lower case; on some systems they "
+                "would share a directory. Rename one of them."
+            )
+        seen[key] = name
 
 
 def _checked_stages(stages: Any) -> list[str]:

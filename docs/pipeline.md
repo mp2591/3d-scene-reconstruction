@@ -50,10 +50,17 @@ it belongs to the model (weight initialisation, dropout). As a result:
   numbers it draws itself. Only the fine-pass sample positions differ, because
   they depend on each model's own coarse prediction.
 - **A resumed run continues exactly where it stopped.** The data of step
-  *n* does not depend on what happened before step *n*, and checkpoints also
-  store PyTorch's global random state, so the model's own randomness
-  continues too. On a CPU, an interrupted and resumed run ends with the same
-  weights, bit for bit, as an uninterrupted one (a test checks this).
+  *n* does not depend on what happened before step *n*. Checkpoints also
+  store the global random states (PyTorch, Python, NumPy), and the data
+  loader has its own generator, so the model's own randomness (dropout,
+  stochastic depth) continues exactly too. On a CPU, an interrupted and
+  resumed run ends with the same weights, bit for bit, as an uninterrupted
+  one; a test checks this for a model with dropout, with and without
+  data-loading worker processes.
+- **A run keeps its settings.** A checkpoint can only be resumed with the
+  settings it was trained with, apart from e.g. the step budget (see
+  [`provenance.py`](../src/scene_recon/provenance.py)), so a run's weights
+  always correspond to one config.
 - **Workers and devices make no difference.** The choices are made in the
   main process, on the CPU, before any data is loaded.
 

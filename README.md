@@ -105,9 +105,10 @@ not from the setup. The pipeline makes sure of that:
 | What                     | Guarantee                                                                                         |
 |--------------------------|---------------------------------------------------------------------------------------------------|
 | **Input images**         | Every model receives the same images in the same form: RGB, values in [0, 1], at the dataset's native resolution (128×128 for ShapeNet-SRN), no augmentation. Normalisation for a pretrained backbone happens inside its encoder ([below](#3-normalise-the-input-inside-the-encoder)). |
-| **Training data**        | Every model with the same seed sees exactly the same training data, step by step: the same scenes, loaded views, input views, supervised pixels and sample positions along rays. It does not matter how the model initialises its weights or uses randomness, whether the run was interrupted and resumed, how many data-loading workers are used, or whether it runs on a CPU or a GPU. |
+| **Training data**        | Every model with the same seed sees exactly the same training data, step by step: the same scenes, loaded views, input views, supervised pixels and coarse sample positions along rays. (Fine-pass positions depend on each model's own coarse prediction, as hierarchical sampling intends.) It does not matter how the model initialises its weights or uses randomness, whether the run was interrupted and resumed, how many data-loading workers are used, or whether it runs on a CPU or a GPU. |
 | **Measurement**          | Evaluation is deterministic: every model renders the same views of the same test scenes from the same input views and is scored by the same code. A suite refuses to start if its runs differ in any measurement setting (evaluation, validation, profiling, validation or test data). |
 | **Everything else**      | May differ between runs on purpose (the model, an encoder's learning rate...). The suite report lists every differing setting, so it is visible what was varied and that everything else was held fixed. |
+| **Provenance**           | Every result is tied to what produced it. A checkpoint is only continued, evaluated or profiled with the exact settings it was trained with; changing, say, the learning rate of a trained run is refused instead of silently mixed in. Evaluations record the checkpoint by the hash of its content, profiles record the device and software, and the report shows a result only while it still matches. |
 
 One limit: training on a GPU is not repeatable bit for bit, because some
 GPU operations add numbers in a varying order. Two runs of the same model and
@@ -196,6 +197,7 @@ The rules:
 | Work with **any** number of source views V (1 to 3 in the proposal); pool or attend over views instead of concatenating a fixed number. | V changes from step to step, and evaluation runs with 1, 2 and 3 views. |
 | Create new tensors on the input's device: `torch.zeros(..., device=points.device)`. Never call `.cuda()`. | The same code runs on a CPU (tests) and on any GPU. |
 | `level` tells the coarse pass from the fine pass. Use one network for both (ignore `level`) or one each, as pixelNeRF does. | Hierarchical sampling queries the model twice. |
+| Every trainable parameter must affect the output. Delete unused layers (e.g. a backbone's classification head) or freeze them with `requires_grad = False`. | Unused parameters waste optimiser memory and usually signal a wiring mistake; `check-model` reports them. |
 
 `geometry.py` provides the camera maths a pixel-aligned model needs:
 `world_to_camera`, `rotate_directions_to_camera`, `project_to_pixels` and
@@ -320,11 +322,15 @@ model:
 scene-recon check-model --config configs/my_experiment.yaml
 ```
 
-This builds the model and runs it on random inputs at the dataset's image
-size, with 1 and 3 input views. It reports the first broken rule in plain
-words: wrong shapes, colours outside [0, 1], negative density, NaNs, or
-parameters missing from the parameter groups. It takes seconds. A suite runs
-the same check for every run before it starts.
+This builds the model and runs it on random scenes at the dataset's image
+size, with 1 and 3 input views, querying real samples along real camera rays
+with your configured numbers of samples per ray, in training and in
+evaluation mode. It reports the first broken rule in plain words: wrong
+shapes, colours outside [0, 1], negative density, NaNs, parameters missing
+from the parameter groups, or parameters that receive no gradient or a
+non-finite one (remove or freeze parameters you don't use). It takes seconds.
+A suite runs the same check, plus everything else each run will need, before
+it starts.
 
 Then add the model as a run to a suite file:
 
@@ -399,6 +405,8 @@ src/scene_recon/
   run_files.py           Where each output of a run is stored.
   suite.py               Loading a suite file and running its experiments in order.
   fairness.py            What must match across runs, and what differs.
+  provenance.py          Which checkpoint and settings produced a result, and whether it is still valid.
+  environment.py         The software, hardware and source revision recorded with every result.
   report.py  plots.py    The suite report: tables and figures.
 tests/                   Unit tests and end-to-end tests.
 ```
@@ -414,6 +422,8 @@ The tests run on a CPU in under a minute. They include:
 - a test that renders an analytically known scene through the full ray
   casting and volume rendering code and compares the result with the exact image
 - tests that two different models are trained on identical data, and that an
-  interrupted and resumed run ends with exactly the same weights as an
-  uninterrupted one
+  interrupted and resumed run (with dropout) ends with exactly the same
+  weights as an uninterrupted one
+- tests that results are never attributed to the wrong settings, checkpoint
+  or device, and that damaged results files are redone
 - end-to-end tests of every command and of suites

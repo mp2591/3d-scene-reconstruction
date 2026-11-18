@@ -42,6 +42,7 @@ from scene_recon.data import SceneDataset, TrainingSchedule, training_batches
 from scene_recon.evaluation import Evaluator, check_source_views
 from scene_recon.metrics import mse_to_psnr
 from scene_recon.optim import build_optimizer_and_scheduler
+from scene_recon.provenance import check_checkpoint_matches_config
 from scene_recon.registry import ConfigError
 from scene_recon.rendering import VolumeRenderer, final_output, sample_training_rays
 from scene_recon.run_files import RunFiles
@@ -91,6 +92,9 @@ class Trainer:
         self.checkpoint_path = self.files.checkpoint
         self.progress = TrainingProgress()
         if resume:
+            # Continuing with other training settings would leave weights that
+            # no config describes; only e.g. the step budget may change.
+            check_checkpoint_matches_config(self.checkpoint_path, config)
             self.progress = load_checkpoint(self.checkpoint_path, self.model, self.optimizer, self.scheduler)
             logger.info("Resumed from %s at step %d", self.checkpoint_path, self.progress.step)
         elif self.checkpoint_path.exists():

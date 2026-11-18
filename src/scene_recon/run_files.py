@@ -12,13 +12,16 @@ Every run writes into its own directory, ``<experiment.output_dir>/<experiment.r
     profile.json                     parameter counts and rendering speed  (written by `profile`)
 
 This module is the only place that knows these names. Everything that reads
-or writes a run's outputs goes through ``RunFiles``.
+or writes a run's outputs goes through ``RunFiles``, and results files are
+written with ``write_json``, which never leaves a half-written file behind.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 
 @dataclass(frozen=True)
@@ -54,3 +57,37 @@ class RunFiles:
     def renders(self, num_source_views: int) -> Path:
         """Directory of all renders of one evaluation protocol (only with ``evaluation.save_images``)."""
         return self.run_dir / "renders" / f"{num_source_views}_source_views"
+
+
+def write_atomically(path: Path, write: Callable[[Path], Any]) -> None:
+    """Write a file through a temporary file that is then moved into place.
+
+    A crash while writing therefore never leaves a truncated file behind:
+    the path holds either the complete old content or the complete new one.
+
+    Args:
+        path: The file to write.
+        write: Writes the content to the temporary path it is given.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(path.name + ".tmp")
+    write(temporary_path)
+    temporary_path.replace(path)
+
+
+def write_json(content: dict[str, Any], path: Path) -> None:
+    """Write a results file atomically."""
+    write_atomically(path, lambda temporary_path: temporary_path.write_text(json.dumps(content, indent=2)))
+
+
+def read_json(path: Path) -> dict[str, Any] | None:
+    """Read a results file, or return ``None`` if it is missing or damaged.
+
+    A damaged file (e.g. from a crash under an older version that wrote files
+    directly) is treated like a missing one, so the work is simply redone.
+    """
+    try:
+        content = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    return content if isinstance(content, dict) else None

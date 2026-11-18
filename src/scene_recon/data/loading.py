@@ -10,6 +10,7 @@ from __future__ import annotations
 from itertools import count
 from typing import Iterator
 
+import torch
 from torch.utils.data import DataLoader, Dataset, Sampler
 
 from scene_recon.data.base import SceneDataset
@@ -55,5 +56,9 @@ def training_batches(schedule: TrainingSchedule, start_step: int, num_workers: i
         batch_sampler=_StepPlans(schedule, start_step),
         num_workers=num_workers,
         collate_fn=SceneViews.concatenate,
+        # Without its own generator, the loader would draw a seed from
+        # PyTorch's global generator, which belongs to the model: a resumed
+        # run would then continue the model's randomness (dropout) differently.
+        generator=torch.Generator().manual_seed(schedule.seed),
     )
     yield from loader

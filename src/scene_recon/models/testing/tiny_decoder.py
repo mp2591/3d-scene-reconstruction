@@ -21,12 +21,16 @@ class TinyPooledMLPDecoder(nn.Module):
     number of source views.
     """
 
-    def __init__(self, num_features: int, hidden_width: int = 64, num_frequencies: int = 4) -> None:
+    def __init__(
+        self, num_features: int, hidden_width: int = 64, num_frequencies: int = 4, dropout: float = 0.0
+    ) -> None:
         """
         Args:
             num_features: Size of the image feature vector sampled for each point.
             hidden_width: Width of the hidden layers.
             num_frequencies: Number of sine/cosine frequencies used to encode point positions.
+            dropout: Dropout probability after the per-view layers. Exists so that
+                tests can check training with randomness inside the model.
         """
         super().__init__()
         self.num_frequencies = num_frequencies
@@ -38,6 +42,7 @@ class TinyPooledMLPDecoder(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_width, hidden_width),
             nn.ReLU(),
+            nn.Dropout(dropout),
         )
         self.pooled_mlp = nn.Sequential(
             nn.Linear(hidden_width, hidden_width),
