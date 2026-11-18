@@ -1,3 +1,5 @@
+import dataclasses
+import math
 from typing import Any
 
 import pytest
@@ -6,6 +8,8 @@ from torch import Tensor
 
 from scene_recon.config import RendererSettings
 from scene_recon.data.synthetic import SyntheticSpheresDataset
+from scene_recon.build import build_model
+from scene_recon.config import Config
 from scene_recon.metrics import PSNR
 from scene_recon.models.base import ReconstructionModel
 from scene_recon.rendering import VolumeRenderer, rays_for_full_images, sample_training_rays
@@ -176,3 +180,38 @@ def test_rendering_the_true_scene_reproduces_the_dataset_images():
     # Only the sphere's silhouette, where a pixel is partly covered, may differ.
     psnr = PSNR()(rendered[0], views.images[0])
     assert psnr.min() > 30
+
+
+def test_a_partly_transparent_medium_matches_the_exact_integral():
+    """A uniform fog of density sigma and colour c fills depths [0.8, 1.3]; behind it is empty space.
+
+    Light passing through fog of thickness L keeps exp(-sigma * L) of its
+    intensity, so the ray's opacity is 1 - exp(-sigma * L) and its colour is
+    c times that opacity plus the white background times the rest.
+    """
+    sigma, fog_end, fog_color = 2.0, 1.3, torch.tensor([0.2, 0.4, 0.6])
+    depths = torch.linspace(0.8, 1.8, 2001)[:-1].expand(1, 1, 2000)  # 2000 segments of 0.0005
+    density = torch.where(depths < fog_end, sigma, 0.0)
+    field = FieldOutput(rgb=fog_color.expand(1, 1, 2000, 3), density=density)
+
+    output = composite_along_rays(field, depths, WHITE)
+
+    expected_opacity = 1 - math.exp(-sigma * (fog_end - 0.8))
+    assert output.opacity.item() == pytest.approx(expected_opacity, abs=2e-3)
+    expected_rgb = fog_color * expected_opacity + WHITE * (1 - expected_opacity)
+    assert torch.allclose(output.rgb[0, 0], expected_rgb, atol=2e-3)
+
+
+def test_rendered_images_do_not_depend_on_the_ray_chunk_size(smoke_config: Config):
+    model = build_model(smoke_config).eval()
+    views = SyntheticSpheresDataset(num_scenes=1, num_views=3, image_size=12, seed=0).load_scene(0)
+    encoding = model.encode_scene(views.select_views([0]))
+
+    small_chunks, _ = VolumeRenderer(dataclasses.replace(_settings(16, 8), ray_chunk_size=7)).render_images(
+        model, encoding, views
+    )
+    one_chunk, _ = VolumeRenderer(dataclasses.replace(_settings(16, 8), ray_chunk_size=100_000)).render_images(
+        model, encoding, views
+    )
+
+    assert torch.allclose(small_chunks, one_chunk, atol=1e-6)

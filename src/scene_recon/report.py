@@ -11,13 +11,17 @@ results can be inspected while later runs are still training::
     plots/renders_<n>_source_views.png        the same views rendered by every run, next to the truth
 
 The report only reads the files each run wrote (see ``scene_recon.run_files``),
-so it can be regenerated at any time without touching the models.
+so it can be regenerated at any time without touching the models. It shows
+a run's evaluation or profile only if it still matches the run's current
+checkpoint and settings (see ``scene_recon.provenance``); out-of-date or
+damaged results are left out of every table and figure, and listed with the
+reason instead.
 """
 
 from __future__ import annotations
 
 import csv
-import json
+import io
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -37,8 +41,9 @@ from scene_recon.plots import (
     plot_training_curves,
     run_styles,
 )
+from scene_recon.provenance import evaluation_status, profile_status
 from scene_recon.registry import METRICS, ConfigError
-from scene_recon.run_files import RunFiles
+from scene_recon.run_files import RunFiles, write_atomically
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +69,9 @@ class RunResult:
     preview_scene_ids: dict[int, list[str]] = field(default_factory=dict)
     """Number of source views -> scenes with a saved preview render."""
 
+    left_out: list[str] = field(default_factory=list)
+    """Saved results that are not shown because they are out of date or damaged, with the reason."""
+
 
 def write_report(suite_name: str, directory: Path, runs: dict[str, Config], failures: dict[str, str]) -> None:
     """Write the tables and figures of a suite.
@@ -85,27 +93,35 @@ def write_report(suite_name: str, directory: Path, runs: dict[str, Config], fail
 
 
 def _collect(name: str, config: Config, failed: bool) -> RunResult:
+    """Read what a run has produced, keeping only results that still describe the run."""
     files = RunFiles(config.run_dir)
     result = RunResult(name=name, status="not started", files=files)
 
     progress = read_progress(files.checkpoint)
+    finished_training = progress is not None and progress.step >= config.training.num_steps
     if progress is not None:
         result.training_step = progress.step
         result.training_hours = progress.training_seconds / 3600
-        result.status = "trained" if progress.step >= config.training.num_steps else "training"
+        result.status = (
+            "trained" if finished_training else f"training (step {progress.step:,} of {config.training.num_steps:,})"
+        )
 
-    if files.evaluation.is_file():
-        evaluation = json.loads(files.evaluation.read_text())
-        for protocol in evaluation["protocols"]:
+    evaluation = evaluation_status(config)
+    if evaluation.is_current:
+        for protocol in evaluation.content["protocols"]:
             count = len(protocol["source_views"])
             result.metrics[count] = protocol["mean"]
             result.preview_scene_ids[count] = protocol.get("preview_scene_ids", [])
-        result.status = "evaluated"
+        result.status = "evaluated" if finished_training else f"evaluated at step {progress.step:,}"
+    elif evaluation.state != "missing":
+        result.left_out.append(f"evaluation: {evaluation.reason}")
 
-    if files.profile.is_file():
-        profile = json.loads(files.profile.read_text())
-        result.parameters = profile["parameters"]["total"]
-        result.frames_per_second = profile["rendering"]["frames_per_second"]
+    profile = profile_status(config)
+    if profile.is_current:
+        result.parameters = profile.content["parameters"]["total"]
+        result.frames_per_second = profile.content["rendering"]["frames_per_second"]
+    elif profile.state != "missing":
+        result.left_out.append(f"profile: {profile.reason}")
 
     if failed:
         result.status = "failed"
@@ -134,22 +150,23 @@ def _write_csv(results: list[RunResult], path: Path) -> None:
     quality_columns = [f"{metric}_{count}v" for count in view_counts for metric in metric_names]
     columns = ["run", "status", "training_steps", "training_hours", "parameters", "frames_per_second"]
 
-    with open(path, "w", newline="") as file:
-        writer = csv.DictWriter(file, fieldnames=columns + quality_columns)
-        writer.writeheader()
-        for result in results:
-            row = {
-                "run": result.name,
-                "status": result.status,
-                "training_steps": result.training_step,
-                "training_hours": result.training_hours,
-                "parameters": result.parameters,
-                "frames_per_second": result.frames_per_second,
-            }
-            for count, per_metric in result.metrics.items():
-                for metric, value in per_metric.items():
-                    row[f"{metric}_{count}v"] = value
-            writer.writerow(row)
+    file = io.StringIO()
+    writer = csv.DictWriter(file, fieldnames=columns + quality_columns)
+    writer.writeheader()
+    for result in results:
+        row = {
+            "run": result.name,
+            "status": result.status,
+            "training_steps": result.training_step,
+            "training_hours": result.training_hours,
+            "parameters": result.parameters,
+            "frames_per_second": result.frames_per_second,
+        }
+        for count, per_metric in result.metrics.items():
+            for metric, value in per_metric.items():
+                row[f"{metric}_{count}v"] = value
+        writer.writerow(row)
+    write_atomically(path, lambda temporary_path: temporary_path.write_text(file.getvalue()))
 
 
 def _write_markdown(
@@ -178,6 +195,16 @@ def _write_markdown(
             f"| {_format(result.frames_per_second, '{:.2f}')} |"
         )
 
+    left_out = [(result.name, reason) for result in results for reason in result.left_out]
+    if left_out:
+        lines += [
+            "",
+            "Some saved results no longer match their run's current checkpoint or settings, or are damaged. "
+            "They are left out of every table and figure; running the suite again redoes them:",
+            "",
+            *[f"- **{name}**, {reason}" for name, reason in left_out],
+        ]
+
     lines += ["", *_differences_section(results, differences)]
 
     metric_names = _metric_names(results)
@@ -205,7 +232,7 @@ def _write_markdown(
         lines += ["", "## Failed runs", "", "Full error messages are in the suite log.", ""]
         lines += [f"- **{name}**: `{message}`" for name, message in failures.items()]
 
-    path.write_text("\n".join(lines) + "\n")
+    write_atomically(path, lambda temporary_path: temporary_path.write_text("\n".join(lines) + "\n"))
 
 
 def _differences_section(results: list[RunResult], differences: dict[str, dict]) -> list[str]:

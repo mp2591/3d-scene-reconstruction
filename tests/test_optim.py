@@ -6,6 +6,7 @@ from torch import Tensor, nn
 from scene_recon.config import OptimizationSettings
 from scene_recon.models.base import ParameterGroup, ReconstructionModel
 from scene_recon.optim import build_optimizer_and_scheduler, learning_rate_factor
+from scene_recon.models.contract import ModelContractError
 from scene_recon.registry import ConfigError
 from scene_recon.structures import FieldOutput, SceneViews
 
@@ -114,3 +115,12 @@ def test_override_of_an_unsupported_setting_is_rejected():
 
     with pytest.raises(ConfigError, match="momentum"):
         build_optimizer_and_scheduler(_ThreeGroupModel(), settings)
+
+
+def test_parameters_missing_from_every_group_stop_the_optimiser_from_being_built():
+    class ForgetsTheDecoder(_ThreeGroupModel):
+        def parameter_groups(self) -> list[ParameterGroup]:
+            return super().parameter_groups()[:2]
+
+    with pytest.raises(ModelContractError, match="in no parameter group"):
+        build_optimizer_and_scheduler(ForgetsTheDecoder(), _settings())

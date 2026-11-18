@@ -77,9 +77,22 @@ like the files described on this page.
 
 ## Rules beyond spelling
 
-* Each entry of `evaluation.source_view_sets` must have a different number of
-  views. Results are labelled and plotted by the number of input views, so two
-  sets of the same size could not be told apart.
+Every value is checked against its declared type and against value rules,
+and all problems are reported at once:
+
+* **Types.** Whole numbers must be whole numbers (`2.9` and `true` are
+  rejected; `4.0e+5` is accepted as 400000), true/false settings must be
+  `true` or `false`, and lists must contain the right kind of values.
+* **Ranges.** Counts and intervals must be meaningful: at least one training
+  step, at least one evaluated scene, a positive learning rate, and so on.
+  The minimums are listed in `_VALUE_RULES` in
+  [`config.py`](../src/scene_recon/config.py).
+* **Samples per ray.** At least 2 coarse samples, and at least 3 when the
+  fine pass is enabled (fine samples are drawn between coarse samples).
+* **View lists.** Source view lists must be non-empty and must not repeat a
+  view. Each entry of `evaluation.source_view_sets` must have a different
+  number of views: results are labelled and plotted by the number of input
+  views, so two sets of the same size could not be told apart.
 
 ## Reproducing a run
 

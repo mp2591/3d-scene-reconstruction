@@ -140,7 +140,13 @@ the result.
 
    The random test images have the size of the dataset's images, so encoders
    with a fixed input size (such as position embeddings) are checked at the
-   size they will see.
+   size they will see. The queried points are real samples along real camera
+   rays, ordered from near to far, with the configured numbers of samples per
+   ray, so a decoder that attends along rays is checked on the input it will
+   actually get. The check also runs a backward pass: every trainable
+   parameter must receive a finite gradient. Delete or freeze
+   (`requires_grad = False`) parameters your model does not use, such as a
+   pretrained backbone's classification head.
 
 6. **Train**, on its own or as one run of a suite ([suites.md](suites.md)).
 

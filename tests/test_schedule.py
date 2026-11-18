@@ -129,13 +129,25 @@ def test_different_models_are_trained_on_identical_data(smoke_config: Config, mo
     assert fingerprints == data_seen_by_small
 
 
-def test_an_interrupted_run_ends_exactly_like_an_uninterrupted_one(smoke_config: Config):
-    uninterrupted = Trainer(_config(smoke_config, "uninterrupted", num_steps=6))
+def _with_dropout(config: Config) -> Config:
+    model = {**config.raw["model"], "decoder": {**config.raw["model"]["decoder"], "dropout": 0.3}}
+    return parse_config({**config.raw, "model": model})
+
+
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_an_interrupted_run_ends_exactly_like_an_uninterrupted_one(smoke_config: Config, num_workers: int):
+    """Holds for a model with dropout, i.e. randomness inside the model, and with worker processes."""
+
+    def config(run_name: str, num_steps: int) -> Config:
+        return _with_dropout(_config(smoke_config, run_name, num_steps=num_steps, num_workers=num_workers))
+
+    uninterrupted = Trainer(config("uninterrupted", 6))
     uninterrupted.train()
 
-    Trainer(_config(smoke_config, "interrupted", num_steps=3)).train()
+    Trainer(config("interrupted", 3)).train()
     torch.manual_seed(12345)  # whatever happened to the global random state in between
-    resumed = Trainer(_config(smoke_config, "interrupted", num_steps=6), resume=True)
+    random.seed(12345)
+    resumed = Trainer(config("interrupted", 6), resume=True)
     resumed.train()
 
     for name, weights in uninterrupted.model.state_dict().items():

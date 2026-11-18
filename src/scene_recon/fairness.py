@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from scene_recon.config import Config
+from scene_recon.config import Config, flatten_settings, setting_in_sections
 from scene_recon.registry import ConfigError
 
 MEASUREMENT_SETTINGS = ("evaluation", "validation", "profiling", "data.val", "data.test")
@@ -53,7 +53,7 @@ def check_identical_measurement(configs: Mapping[str, Config]) -> None:
     differences = {
         setting: values
         for setting, values in differing_settings(configs).items()
-        if _is_within(setting, MEASUREMENT_SETTINGS)
+        if setting_in_sections(setting, MEASUREMENT_SETTINGS)
     }
     if not differences:
         return
@@ -75,14 +75,14 @@ def differing_settings(configs: Mapping[str, Config]) -> dict[str, dict[str, Any
         Dotted setting name -> run name -> value, in config order. A run
         without the setting has the value ``MISSING``.
     """
-    flattened = {run: _flatten(config.raw) for run, config in configs.items()}
+    flattened = {run: flatten_settings(config.raw) for run, config in configs.items()}
     all_settings: list[str] = []
     for settings in flattened.values():
         all_settings.extend(name for name in settings if name not in all_settings)
 
     differences = {}
     for setting in all_settings:
-        if _is_within(setting, _RUN_IDENTITY):
+        if setting_in_sections(setting, _RUN_IDENTITY):
             continue
         values = {run: settings.get(setting, MISSING) for run, settings in flattened.items()}
         if len({json.dumps(value, sort_keys=True) for value in values.values()}) > 1:
@@ -92,25 +92,9 @@ def differing_settings(configs: Mapping[str, Config]) -> dict[str, dict[str, Any
 
 def trained_on_identical_data(differences: Mapping[str, Any]) -> bool:
     """Whether none of the differing settings changes the training data."""
-    return not any(_is_within(setting, TRAINING_DATA_SETTINGS) for setting in differences)
+    return not any(setting_in_sections(setting, TRAINING_DATA_SETTINGS) for setting in differences)
 
 
 def format_value(value: Any) -> str:
     """A compact, readable form of a setting's value."""
     return value if isinstance(value, str) else json.dumps(value)
-
-
-def _flatten(mapping: Mapping[str, Any], prefix: str = "") -> dict[str, Any]:
-    """Turn nested mappings into dotted names; lists and other values are kept whole."""
-    flat = {}
-    for key, value in mapping.items():
-        name = f"{prefix}{key}"
-        if isinstance(value, Mapping) and value:
-            flat.update(_flatten(value, prefix=f"{name}."))
-        else:
-            flat[name] = value
-    return flat
-
-
-def _is_within(setting: str, sections: tuple[str, ...]) -> bool:
-    return any(setting == section or setting.startswith(section + ".") for section in sections)
