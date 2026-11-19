@@ -424,7 +424,10 @@ tests/                   Unit tests and end-to-end tests.
 pytest
 ```
 
-The tests run on a CPU in under a minute. They include:
+GitHub runs the same tests on every push and pull request, on Python 3.10
+and 3.13 ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)).
+
+The tests run on a CPU in about a minute. They include:
 
 - a test that renders an analytically known scene through the full ray
   casting and volume rendering code and compares the result with the exact image
