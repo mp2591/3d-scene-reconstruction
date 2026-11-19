@@ -23,6 +23,8 @@ from scene_recon.run_files import RunFiles
 from scene_recon.stages import run_evaluation, run_profiling
 from scene_recon.training import Trainer
 
+from conftest import write_srn_image
+
 
 def _changed(config: Config, section: str, **changes) -> Config:
     """A copy of ``config`` with some settings of one section replaced."""
@@ -196,3 +198,21 @@ def test_results_record_the_data_they_came_from(smoke_config: Config):
     expected = {"dataset": "synthetic_spheres", "num_scenes": 32, "num_views": 12, "image_size": 16, "seed": 0}
     assert state["training_data"] == expected
     assert report["settings"]["test_data_fingerprint"]["seed"] == 2
+
+
+# ---------------------------------------------------------------- profiling workload (R8)
+
+
+def test_a_profile_is_stale_after_the_images_are_replaced_by_larger_ones(srn_config: Config):
+    """The review's reproduction: 8x8 images replaced by 16x16 ones at the same paths, config unchanged."""
+    run_profiling(srn_config)
+    assert profile_status(srn_config).is_current
+
+    test_dir = Path(srn_config.data["test"]["split_dir"])
+    for image in test_dir.glob("*/rgb/*.png"):
+        write_srn_image(image, image_size=16, grey_level=50)
+
+    status = profile_status(srn_config)
+    assert status.state == "stale" and "test data" in status.reason
+    assert run_profiling(srn_config)["image_size"] == [16, 16]
+    assert profile_status(srn_config).is_current

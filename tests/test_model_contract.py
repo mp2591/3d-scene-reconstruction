@@ -5,13 +5,14 @@ import torch
 from torch import Tensor, nn
 
 from scene_recon.build import build_model
-from scene_recon.config import Config, RendererSettings
+from scene_recon.config import Config, RendererSettings, parse_config
 from scene_recon.data.synthetic import SyntheticSpheresDataset
 from scene_recon.models.base import ParameterGroup, ReconstructionModel
 from scene_recon.models.contract import ModelContractError, check_model_contract
 from scene_recon.models.normalization import InputNormalization
-from scene_recon.registry import ConfigError
+from scene_recon.registry import MODELS, ConfigError
 from scene_recon.rendering import VolumeRenderer
+from scene_recon.stages import check_run_can_start
 from scene_recon.structures import FieldOutput, SceneViews
 
 
@@ -172,3 +173,59 @@ def test_the_check_leaves_no_gradients_and_restores_the_mode():
 
     assert not model.training
     assert all(parameter.grad is None for parameter in model.parameters())
+
+
+# ---------------------------------------------------------------- stage-aware checks (R6)
+
+
+class _FrozenModel(_MinimalModel):
+    """A model used only for inference: nothing in it is trainable."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.requires_grad_(False)
+
+
+if "frozen_test_model" not in MODELS.names():
+    MODELS.register("frozen_test_model")(_FrozenModel)
+
+
+class _TwoViewFusion(_MinimalModel):
+    """Has a learned fusion weight that only the two-view path uses."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.two_view_weight = nn.Parameter(torch.ones(4))
+
+    def encode_scene(self, source_views: SceneViews):
+        return source_views.num_views
+
+    def query_field(self, scene_encoding, points, view_directions, level):
+        output = self.layer(points)
+        if scene_encoding == 2:
+            output = output * self.two_view_weight
+        return FieldOutput(rgb=torch.sigmoid(output[..., :3]), density=torch.relu(output[..., 3]))
+
+
+def test_a_frozen_model_passes_inference_checks_without_a_backward_pass():
+    check_model_contract(_FrozenModel(), inference_view_counts=[1, 2], training_view_counts=None)
+
+
+def test_a_frozen_model_is_told_clearly_that_it_cannot_be_trained():
+    with pytest.raises(ModelContractError, match="no trainable parameters"):
+        check_model_contract(_FrozenModel(), training_view_counts=[1, 2])
+
+
+def test_preflight_of_a_frozen_model_depends_on_the_requested_stages(smoke_config: Config):
+    config = parse_config({**smoke_config.raw, "model": {"name": "frozen_test_model"}})
+
+    check_run_can_start(config, ["evaluate", "profile"])
+    with pytest.raises(ModelContractError, match="no trainable parameters"):
+        check_run_can_start(config, ["train"])
+
+
+def test_a_parameter_used_only_with_two_views_passes_when_two_view_training_is_configured():
+    check_model_contract(_TwoViewFusion(), training_view_counts=[1, 2, 3])
+
+    with pytest.raises(ModelContractError, match=r"training view counts \[1, 3\].*two_view_weight"):
+        check_model_contract(_TwoViewFusion(), training_view_counts=[1, 3])

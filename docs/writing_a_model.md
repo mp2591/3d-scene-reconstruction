@@ -143,10 +143,14 @@ the result.
    size they will see. The queried points are real samples along real camera
    rays, ordered from near to far, with the configured numbers of samples per
    ray, so a decoder that attends along rays is checked on the input it will
-   actually get. The check also runs a backward pass: every trainable
-   parameter must receive a finite gradient. Delete or freeze
-   (`requires_grad = False`) parameters your model does not use, such as a
-   pretrained backbone's classification head.
+   actually get, with the numbers of input views your config uses. If the
+   model will be trained, the check also runs a backward pass with each
+   configured number of training views (`training.num_source_views`): every
+   trainable parameter must receive a finite gradient from at least one of
+   them. Delete or freeze (`requires_grad = False`) parameters your model
+   does not use, such as a pretrained backbone's classification head. A
+   fully frozen model can be evaluated and profiled; check it with
+   `--stages evaluate profile`.
 
 6. **Train**, on its own or as one run of a suite ([suites.md](suites.md)).
 

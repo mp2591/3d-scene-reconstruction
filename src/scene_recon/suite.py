@@ -68,7 +68,7 @@ from scene_recon.fairness import check_identical_measurement
 from scene_recon.provenance import evaluation_status, profile_status
 from scene_recon.registry import ConfigError
 from scene_recon.report import write_report
-from scene_recon.run_files import RunFiles
+from scene_recon.run_files import RunFiles, SuiteFiles
 from scene_recon.stages import STAGES, check_run_can_start, run_evaluation, run_profiling, run_training
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,15 @@ _VALID_NAME = re.compile(r"^(?!\.+$)[A-Za-z0-9_.+-]+$")
 
 class PreflightError(Exception):
     """Raised when one or more runs of a suite cannot start. The message lists every problem found."""
+
+
+class SuiteReportError(Exception):
+    """Raised after all runs if the final suite report could not be written."""
+
+    def __init__(self, message: str, failures: dict[str, str]) -> None:
+        super().__init__(message)
+        self.failures = failures
+        """Runs that failed, as ``run_suite`` would have returned them."""
 
 
 @dataclass(frozen=True)
@@ -133,7 +142,7 @@ def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
     raw_configs, problems = {}, {}
     for run_name, fragment in runs.items():
         try:
-            run_name = _checked_name(run_name, "run name")
+            run_name = _checked_run_name(run_name)
             raw = merge_configs(common, resolve_bases(fragment or {}, relative_to=path.parent))
             for override in overrides:
                 apply_override(raw, override)
@@ -183,10 +192,13 @@ def run_suite(suite: Suite) -> dict[str, str]:
 
     Raises:
         PreflightError: If any run cannot start. Nothing is executed then.
+        SuiteReportError: If, after all runs, the report could not be written.
+            A report that fails after an earlier run does not stop later runs.
     """
     _preflight(suite)
 
     failures: dict[str, str] = {}
+    report_error: str | None = None
     for position, (run_name, config) in enumerate(suite.runs.items(), start=1):
         logger.info("==== Run %d of %d: %s ====", position, len(suite.runs), run_name)
         try:
@@ -199,9 +211,13 @@ def run_suite(suite: Suite) -> dict[str, str]:
 
         try:
             write_report(suite.name, suite.directory, suite.grouped_runs(), failures)
-        except Exception:  # noqa: BLE001 - a broken report must not cost the remaining runs
+            report_error = None
+        except Exception as error:  # noqa: BLE001 - a broken report must not cost the remaining runs
             logger.exception("The suite report could not be written; continuing with the next run.")
+            report_error = f"{type(error).__name__}: {error}"
 
+    if report_error is not None:
+        raise SuiteReportError(f"The suite report could not be written: {report_error}", failures)
     return failures
 
 
@@ -292,6 +308,17 @@ def _checked_name(name: Any, what: str) -> str:
         raise ConfigError(
             f"Invalid {what} {name!r}: use letters, digits and the characters _ . + - "
             "(and not just dots)."
+        )
+    return name
+
+
+def _checked_run_name(name: Any) -> str:
+    """A run name also must not be the name of one of the suite's own outputs, in any upper/lower case."""
+    name = _checked_name(name, "run name")
+    if name.lower() in SuiteFiles.reserved_names():
+        raise ConfigError(
+            f"Run name {name!r} is reserved: the suite writes a file or directory of that name next to the "
+            f"runs. Reserved names: {sorted(SuiteFiles.reserved_names())}."
         )
     return name
 

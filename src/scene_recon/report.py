@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -37,7 +38,7 @@ from typing import Mapping
 import numpy as np
 
 import scene_recon.metrics  # noqa: F401  (registers the metrics, whose display settings are read below)
-from scene_recon.checkpoints import read_progress
+from scene_recon.checkpoints import read_checkpoint_training_data, read_progress
 from scene_recon.comparison import PairedDifference, Summary, average_over_seeds, paired_difference, summarize
 from scene_recon.config import Config
 from scene_recon.evaluation import load_preview_images
@@ -51,7 +52,7 @@ from scene_recon.plots import (
 )
 from scene_recon.provenance import evaluation_status, profile_status
 from scene_recon.registry import METRICS, ConfigError
-from scene_recon.run_files import RunFiles, write_atomically
+from scene_recon.run_files import RunFiles, SuiteFiles, write_atomically
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,9 @@ class RunResult:
     left_out: list[str] = field(default_factory=list)
     """Saved results that are not shown because they are out of date or damaged, with the reason."""
 
+    training_data: dict | None = None
+    """The training-data fingerprint recorded in the run's checkpoint, if it has one."""
+
 
 @dataclass
 class GroupResult:
@@ -105,15 +109,28 @@ class GroupResult:
             [run.metrics[count][metric] for run in self.evaluated if metric in run.metrics.get(count, {})]
         )
 
-    def scene_scores(self, count: int, metric: str) -> dict[str, float]:
-        """Per-scene values of one metric, averaged over seeds."""
+    def scene_scores(self, count: int, metric: str, seeds: set[int]) -> dict[str, float]:
+        """Per-scene values of one metric, averaged over the given seeds."""
         return average_over_seeds(
             [
                 {scene: values[metric] for scene, values in run.per_scene[count].items() if metric in values}
                 for run in self.evaluated
-                if count in run.per_scene
+                if run.seed in seeds and count in run.per_scene
             ]
         )
+
+    def seeds_with_result(self, count: int, metric: str) -> set[int]:
+        """The seeds whose evaluation has per-scene values of this metric for this number of views."""
+        return {
+            run.seed
+            for run in self.evaluated
+            if any(metric in values for values in run.per_scene.get(count, {}).values())
+        }
+
+    @property
+    def seeds(self) -> list[int]:
+        """Every seed this run is meant to be trained with."""
+        return [run.seed for run in self.replicates]
 
     @property
     def status(self) -> str:
@@ -166,10 +183,11 @@ def write_report(
     seeds = [config.experiment.seed for config in next(iter(groups.values())).values()]
     comparisons = _paired_comparisons(results)
 
-    plots_dir = directory / "plots"
+    files = SuiteFiles(directory)
+    plots_dir = files.plots
     plots_dir.mkdir(parents=True, exist_ok=True)
-    _write_csv(results, directory / "summary.csv")
-    _write_comparison_csv(comparisons, directory / "paired_comparison.csv")
+    _write_csv(results, files.summary_csv)
+    _write_comparison_csv(comparisons, files.paired_comparison_csv)
     figures = _write_figures(results, plots_dir, multiple_seeds=len(seeds) > 1)
     _write_markdown(
         suite_name,
@@ -179,9 +197,9 @@ def write_report(
         figures,
         failures,
         differing_settings(first_configs),
-        directory / "summary.md",
+        files.summary_markdown,
     )
-    logger.info("Suite report updated: %s", directory / "summary.md")
+    logger.info("Suite report updated: %s", files.summary_markdown)
 
 
 def _collect(key: str, config: Config, failed: bool) -> RunResult:
@@ -192,6 +210,7 @@ def _collect(key: str, config: Config, failed: bool) -> RunResult:
     progress = read_progress(files.checkpoint)
     finished_training = progress is not None and progress.step >= config.training.num_steps
     if progress is not None:
+        result.training_data = read_checkpoint_training_data(files.checkpoint)
         result.training_step = progress.step
         result.training_hours = progress.training_seconds / 3600
         result.status = (
@@ -232,21 +251,41 @@ class _Comparison:
     metric: str
     difference: PairedDifference
 
+    seeds: list[int]
+    """The seeds compared: those both runs have results for."""
+
+    partial: bool
+    """True if some of the suite's seeds are not (yet) available on both sides."""
+
 
 def _paired_comparisons(results: list[GroupResult]) -> list[_Comparison]:
-    """Every evaluated run against the reference: the first evaluated run of the suite."""
-    evaluated = [group for group in results if group.evaluated]
-    if len(evaluated) < 2:
+    """Every run against the reference, the first run of the suite file, seed by seed.
+
+    Only seeds that both runs have results for are compared, so a seed that
+    has finished for one run but not yet for the other cannot shift the
+    difference. If the reference has no results yet, nothing is compared; the
+    report says so instead of silently picking another reference.
+    """
+    if len(results) < 2 or not results[0].evaluated:
         return []
-    reference, others = evaluated[0], evaluated[1:]
+    reference, others = results[0], results[1:]
     comparisons = []
     for count in _view_counts(results):
         for metric in _metric_names(results):
-            reference_scores = reference.scene_scores(count, metric)
+            reference_seeds = reference.seeds_with_result(count, metric)
             for group in others:
-                difference = paired_difference(group.scene_scores(count, metric), reference_scores)
-                if difference is not None:
-                    comparisons.append(_Comparison(group.name, reference.name, count, metric, difference))
+                seeds = reference_seeds & group.seeds_with_result(count, metric)
+                if not seeds:
+                    continue
+                difference = paired_difference(
+                    group.scene_scores(count, metric, seeds), reference.scene_scores(count, metric, seeds)
+                )
+                if difference is None:
+                    continue
+                partial = seeds != set(reference.seeds) or seeds != set(group.seeds)
+                comparisons.append(
+                    _Comparison(group.name, reference.name, count, metric, difference, sorted(seeds), partial)
+                )
     return comparisons
 
 
@@ -304,6 +343,8 @@ def _write_comparison_csv(comparisons: list[_Comparison], path: Path) -> None:
         "ci95_low",
         "ci95_high",
         "num_scenes",
+        "seeds",
+        "partial",
         "verdict",
     ]
     file = io.StringIO()
@@ -321,6 +362,8 @@ def _write_comparison_csv(comparisons: list[_Comparison], path: Path) -> None:
                 "ci95_low": difference.low,
                 "ci95_high": difference.high,
                 "num_scenes": difference.num_scenes,
+                "seeds": " ".join(map(str, comparison.seeds)),
+                "partial": comparison.partial,
                 "verdict": difference.verdict(_metric_presentation(comparison.metric)[1]),
             }
         )
@@ -394,7 +437,7 @@ def _write_markdown(
                 cells.append(f"**{text}**" if is_best else text)
             lines.append(f"| {group.name} | " + " | ".join(cells) + " |")
 
-    lines += _comparison_section(comparisons, metric_names, multiple_seeds)
+    lines += _comparison_section(results, comparisons, metric_names, multiple_seeds)
 
     if figures:
         lines += ["", "## Figures", ""]
@@ -409,22 +452,45 @@ def _write_markdown(
 
 
 def _differences_section(results: list[GroupResult], differences: dict[str, dict], multiple_seeds: bool) -> list[str]:
-    """What was varied between the runs, so the reader knows everything else was held fixed."""
-    lines = ["## What differs between runs", ""]
-    if not differences:
-        return lines + ["Nothing: all runs use identical settings."]
+    """What was varied between the runs, so the reader knows everything else was held fixed.
 
-    lines.append(
-        "Every setting not listed here is identical for all runs. The measurement settings "
-        "(evaluation, validation, profiling, and the validation and test data) are always identical; "
-        "the suite does not start otherwise."
-    )
-    if trained_on_identical_data(differences):
+    Whether the runs were trained on identical data is judged from what their
+    checkpoints recorded, not only from the current config: a dataset can be
+    replaced in place between two runs.
+    """
+    lines = ["## What differs between runs", ""]
+    recorded = [run.training_data for group in results for run in group.replicates]
+    all_recorded = all(fingerprint is not None for fingerprint in recorded)
+    recorded_data_differs = len({_canonical_json(fp) for fp in recorded if fp is not None}) > 1
+
+    if not differences and not recorded_data_differs:
+        lines.append("Nothing: all runs use identical settings.")
+    else:
         lines.append(
-            "For each seed, all runs were trained on identical data, step for step."
-            if multiple_seeds
-            else "All runs were trained on identical data, step for step."
+            "Every setting not listed here is identical for all runs. The measurement settings "
+            "(evaluation, validation, profiling, and the validation and test data) are always identical; "
+            "the suite does not start otherwise."
         )
+    if recorded_data_differs:
+        lines.append(
+            "**Warning: the runs' checkpoints record different training data** (see the last row of the "
+            "table). Their results are not a comparison on equal data."
+        )
+    elif trained_on_identical_data(differences):
+        if all_recorded:
+            lines.append(
+                "For each seed, all runs were trained on identical data, step for step, as their checkpoints confirm."
+                if multiple_seeds
+                else "All runs were trained on identical data, step for step, as their checkpoints confirm."
+            )
+        else:
+            lines.append(
+                "All runs are configured to train on identical data, step for step; this is confirmed from "
+                "their checkpoints once every run has been trained."
+            )
+    if not differences and not recorded_data_differs:
+        return lines
+
     lines += [
         "",
         "| Setting | " + " | ".join(group.name for group in results) + " |",
@@ -433,39 +499,74 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
     for setting, values in differences.items():
         cells = [_table_cell(values.get(group.name, MISSING)) for group in results]
         lines.append(f"| `{setting}` | " + " | ".join(cells) + " |")
+    if recorded_data_differs:
+        cells = [_describe_training_data(group) for group in results]
+        lines.append("| training data recorded in the checkpoint | " + " | ".join(cells) + " |")
     return lines
 
 
-def _comparison_section(comparisons: list[_Comparison], metric_names: list[str], multiple_seeds: bool) -> list[str]:
-    if not comparisons:
+def _describe_training_data(group: GroupResult) -> str:
+    """A short, readable identifier of the training data in a run's checkpoints."""
+    descriptions = []
+    for run in group.replicates:
+        fingerprint = run.training_data
+        if fingerprint is None:
+            text = MISSING
+        elif "content_sha256" in fingerprint:
+            text = f"`{fingerprint.get('dataset', '')} {fingerprint['content_sha256'][:12]}`"
+        else:
+            text = _table_cell(fingerprint)
+        if text not in descriptions:
+            descriptions.append(text)
+    return ", ".join(descriptions)
+
+
+def _canonical_json(value) -> str:
+    return json.dumps(value, sort_keys=True)
+
+
+def _comparison_section(
+    results: list[GroupResult], comparisons: list[_Comparison], metric_names: list[str], multiple_seeds: bool
+) -> list[str]:
+    if len(results) < 2:
         return []
-    reference = comparisons[0].reference
-    lines = [
-        "",
-        f"## Paired comparison with {reference}",
-        "",
+    reference = results[0].name
+    lines = ["", f"## Paired comparison with {reference}", ""]
+    if not comparisons:
+        return lines + [
+            f"Not available yet: the reference run {reference} (the first run of the suite file) and at least "
+            "one other run need current evaluations of the same seeds."
+        ]
+
+    lines.append(
         f"Every model is evaluated on the same test scenes, so runs are compared scene by scene: for each "
         f"scene, a run's score minus {reference}'s, averaged over the scenes, with its 95% confidence interval. "
-        "A run is called better or worse only when the interval excludes zero.",
-    ]
+        "A run is called better or worse only when the interval excludes zero."
+    )
     if multiple_seeds:
-        lines.append("Each run's per-scene scores are first averaged over its seeds.")
+        lines.append(
+            "Only seeds that both runs have results for are compared, and each run's per-scene scores are "
+            "averaged over those seeds. *Partial* marks a comparison that does not yet cover every seed."
+        )
 
     for count in sorted({comparison.count for comparison in comparisons}):
         runs = list(dict.fromkeys(c.run for c in comparisons if c.count == count))
+        seeds_header = " Seeds compared |" if multiple_seeds else ""
         lines += [
             "",
             f"### {_views(count).capitalize()}",
             "",
-            "| Run | " + " | ".join(_metric_header(metric) for metric in metric_names) + " |",
-            "|---|" + "---|" * len(metric_names),
+            "| Run |" + seeds_header + " " + " | ".join(_metric_header(metric) for metric in metric_names) + " |",
+            "|---|" + ("---|" if multiple_seeds else "") + "---|" * len(metric_names),
         ]
         for run in runs:
-            cells = []
-            for metric in metric_names:
-                match = [c for c in comparisons if c.run == run and c.count == count and c.metric == metric]
-                cells.append(_format_difference(match[0]) if match else "–")
-            lines.append(f"| {run} | " + " | ".join(cells) + " |")
+            matches = {c.metric: c for c in comparisons if c.run == run and c.count == count}
+            cells = [_format_difference(matches[metric]) if metric in matches else "–" for metric in metric_names]
+            seeds_cell = ""
+            if multiple_seeds:
+                first = next(iter(matches.values()))
+                seeds_cell = " " + ", ".join(map(str, first.seeds)) + (" (partial)" if first.partial else "") + " |"
+            lines.append(f"| {run} |" + seeds_cell + " " + " | ".join(cells) + " |")
     return lines
 
 

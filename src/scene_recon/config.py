@@ -121,7 +121,8 @@ class ValidationSettings:
     source_views: list[int]
     """View indices given to the model as input."""
 
-    metrics: list[str]
+    metrics: list[str | dict[str, Any]]
+    """Metric names (``psnr``), or mappings with constructor options (``{name: lpips, network: alex}``)."""
 
 
 @dataclass(frozen=True)
@@ -131,7 +132,8 @@ class EvaluationSettings:
     source_view_sets: list[list[int]]
     """One evaluation pass is run per entry, e.g. ``[[64], [64, 104]]`` for 1 and 2 input views."""
 
-    metrics: list[str]
+    metrics: list[str | dict[str, Any]]
+    """Metric names (``psnr``), or mappings with constructor options (``{name: lpips, network: alex}``)."""
 
     num_scenes: int | None
     """Limit the number of test scenes. ``null`` evaluates all of them."""
@@ -220,6 +222,9 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
     }
 
     _check_keys(raw["data"].keys(), set(DATA_SPLITS), where="'data'")
+    settings["optimization"] = dataclasses.replace(
+        settings["optimization"], group_overrides=_parse_group_overrides(settings["optimization"].group_overrides)
+    )
     _check_values(settings)
 
     return Config(
@@ -343,12 +348,18 @@ def _convert(value: Any, expected_type: Any, where: str) -> Any:
 
     if expected_type is Any:
         return value
-    if origin in (Union, types.UnionType):  # e.g. int | None
+    if origin in (Union, types.UnionType):  # e.g. int | None, or str | dict[str, Any]
         options = get_args(expected_type)
         if value is None and type(None) in options:
             return None
-        (inner_type,) = [option for option in options if option is not type(None)]
-        return _convert(value, inner_type, where)
+        alternatives = [option for option in options if option is not type(None)]
+        for option in alternatives:
+            try:
+                return _convert(value, option, where)
+            except ConfigError:
+                continue
+        expected = " or ".join(_describe_type(option) for option in alternatives)
+        raise ConfigError(f"'{where}' must be {expected}, got {value!r}.")
     if origin is list:
         if not isinstance(value, list):
             raise ConfigError(f"'{where}' must be a list, got {value!r}.")
@@ -382,6 +393,59 @@ def _convert(value: Any, expected_type: Any, where: str) -> Any:
             raise ConfigError(f"'{where}' must be text, got {value!r}.")
         return value
     raise TypeError(f"Settings of type {expected_type} are not supported by the config parser.")
+
+
+def _describe_type(expected_type: Any) -> str:
+    """How a setting type is named in error messages."""
+    origin = get_origin(expected_type) or expected_type
+    names = {
+        str: "text",
+        int: "a whole number",
+        float: "a number",
+        bool: "true or false",
+        list: "a list",
+        dict: "a mapping",
+    }
+    return names.get(origin, str(expected_type))
+
+
+GROUP_OVERRIDE_SETTINGS = {"learning_rate": float, "warmup_steps": int}
+"""The settings a parameter group can override in ``optimization.group_overrides``, with their types."""
+
+
+def _parse_group_overrides(overrides: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Check every group override with the same rules as the setting it overrides.
+
+    A learning rate must be a finite positive number and a warmup a whole
+    number of steps, zero or more; anything else is reported, all at once.
+    """
+    parsed, problems = {}, []
+    for group, values in overrides.items():
+        where = f"optimization.group_overrides.{group}"
+        if not isinstance(group, str) or not isinstance(values, Mapping):
+            problems.append(f"{where} must map a parameter group name to its settings, got {values!r}.")
+            continue
+        unknown = sorted(set(values) - set(GROUP_OVERRIDE_SETTINGS))
+        if unknown:
+            problems.append(
+                f"{where} has unknown key(s) {unknown}; a group can override {sorted(GROUP_OVERRIDE_SETTINGS)}."
+            )
+            continue
+        parsed[group] = {}
+        for name, value in values.items():
+            try:
+                converted = _convert(value, GROUP_OVERRIDE_SETTINGS[name], where=f"{where}.{name}")
+            except ConfigError as error:
+                problems.append(str(error))
+                continue
+            if name == "learning_rate" and converted <= 0:
+                problems.append(f"{where}.learning_rate must be positive, got {converted}.")
+            if name == "warmup_steps" and converted < 0:
+                problems.append(f"{where}.warmup_steps must be at least 0, got {converted}.")
+            parsed[group][name] = converted
+    if problems:
+        raise ConfigError("Invalid setting(s):\n  " + "\n  ".join(problems))
+    return parsed
 
 
 # Smallest allowed value of numeric settings. A setting that is None (where
@@ -442,12 +506,10 @@ def _check_values(settings: dict[str, Any]) -> None:
         problems.append("training.num_source_views must be a non-empty list of positive numbers.")
 
     problems += _view_list_problems(settings["validation"].source_views, "validation.source_views")
-    if not settings["validation"].metrics:
-        problems.append("validation.metrics must name at least one metric.")
+    problems += _metric_list_problems(settings["validation"].metrics, "validation.metrics")
 
     evaluation = settings["evaluation"]
-    if not evaluation.metrics:
-        problems.append("evaluation.metrics must name at least one metric.")
+    problems += _metric_list_problems(evaluation.metrics, "evaluation.metrics")
     if not evaluation.source_view_sets:
         problems.append("evaluation.source_view_sets must contain at least one set of views.")
     for index, views in enumerate(evaluation.source_view_sets):
@@ -463,6 +525,27 @@ def _check_values(settings: dict[str, Any]) -> None:
 
     if problems:
         raise ConfigError("Invalid setting(s):\n  " + "\n  ".join(problems))
+
+
+def _metric_list_problems(entries: list[str | dict[str, Any]], where: str) -> list[str]:
+    """A metric list must be non-empty, name every metric, and not list a metric twice.
+
+    Whether the names and options fit a registered metric is checked when the
+    metrics are built (in a suite's preflight, before any training).
+    """
+    if not entries:
+        return [f"{where} must name at least one metric."]
+    problems, names = [], []
+    for index, entry in enumerate(entries):
+        name = entry if isinstance(entry, str) else entry.get("name")
+        if not isinstance(name, str) or not name:
+            problems.append(f"{where}[{index}] must have a 'name' naming the metric, got {entry!r}.")
+        else:
+            names.append(name)
+    repeated = sorted({name for name in names if names.count(name) > 1})
+    if repeated:
+        problems.append(f"{where} lists {repeated} more than once; results are stored by metric name.")
+    return problems
 
 
 def _view_list_problems(views: list[int], where: str) -> list[str]:

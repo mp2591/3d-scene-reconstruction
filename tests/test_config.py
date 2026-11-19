@@ -5,7 +5,9 @@ import pytest
 import yaml
 
 from scene_recon.config import load_yaml_with_bases, load_config
-from scene_recon.registry import ConfigError
+from scene_recon.build import build_metrics
+from scene_recon.metrics import PSNR
+from scene_recon.registry import METRICS, ConfigError
 
 from conftest import CONFIG_DIR
 
@@ -113,3 +115,72 @@ def test_whole_number_written_in_scientific_notation_is_accepted():
     config = load_config(CONFIG_DIR / "smoke_test.yaml", overrides=["training.num_steps=4.0e+2"])
 
     assert config.training.num_steps == 400 and isinstance(config.training.num_steps, int)
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ("{encoder: {learning_rate: .nan}}", "must be a finite number"),
+        ("{encoder: {learning_rate: -0.001}}", "learning_rate must be positive"),
+        ("{encoder: {learning_rate: true}}", "must be a finite number"),
+        ("{encoder: {warmup_steps: 2.9}}", "must be a whole number"),
+        ("{encoder: {momentum: 0.9}}", "unknown key"),
+    ],
+)
+def test_invalid_group_overrides_are_rejected(override: str, message: str):
+    with pytest.raises(ConfigError, match=message):
+        load_config(CONFIG_DIR / "smoke_test.yaml", overrides=[f"optimization.group_overrides={override}"])
+
+
+def test_valid_group_overrides_are_converted():
+    config = load_config(
+        CONFIG_DIR / "smoke_test.yaml",
+        overrides=["optimization.group_overrides={encoder: {learning_rate: 1e-5, warmup_steps: 4.0e+2}}"],
+    )
+
+    assert config.optimization.group_overrides == {"encoder": {"learning_rate": 1e-5, "warmup_steps": 400}}
+
+
+# A tiny metric with an option, registered once for the tests below; it needs no downloads.
+if "scaled_psnr" not in METRICS.names():
+
+    @METRICS.register("scaled_psnr")
+    class ScaledPSNR(PSNR):
+        def __init__(self, scale: float = 1.0) -> None:
+            super().__init__()
+            self.scale = scale
+
+
+def test_metrics_can_be_names_or_mappings_with_options():
+    config = load_config(
+        CONFIG_DIR / "smoke_test.yaml",
+        overrides=[
+            "evaluation.metrics=[psnr, {name: scaled_psnr, scale: 2.0}]",
+            "validation.metrics=[{name: lpips, network: alex}]",
+        ],
+    )
+
+    metrics = build_metrics(config.evaluation.metrics)
+    assert list(metrics) == ["psnr", "scaled_psnr"] and metrics["scaled_psnr"].scale == 2.0
+    assert config.validation.metrics == [{"name": "lpips", "network": "alex"}]
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    [
+        ("evaluation.metrics=[{network: alex}]", "must have a 'name'"),
+        ("evaluation.metrics=[{name: 5}]", "must have a 'name'"),
+        ("evaluation.metrics=[7]", "must be text or a mapping"),
+        ("evaluation.metrics=[psnr, {name: psnr}]", "more than once"),
+    ],
+)
+def test_malformed_metric_entries_are_rejected(override: str, message: str):
+    with pytest.raises(ConfigError, match=re.escape(message)):
+        load_config(CONFIG_DIR / "smoke_test.yaml", overrides=[override])
+
+
+def test_unknown_metric_option_is_reported_when_the_metric_is_built():
+    config = load_config(CONFIG_DIR / "smoke_test.yaml", overrides=["evaluation.metrics=[{name: scaled_psnr, scal: 2}]"])
+
+    with pytest.raises(ConfigError, match="scaled_psnr"):
+        build_metrics(config.evaluation.metrics)

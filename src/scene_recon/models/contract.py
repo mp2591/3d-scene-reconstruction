@@ -1,14 +1,17 @@
 """A self-check for new models.
 
 ``check_model_contract`` runs a model on small random scenes and verifies
-everything the pipeline relies on:
+everything the pipeline relies on, for the stages the model will be used in:
 
-* output shapes and value ranges, for 1 and 3 source views, at both
-  rendering levels, with the run's own numbers of samples per ray;
-* the same in evaluation mode;
-* every trainable parameter receives a finite gradient, so nothing is dead
-  weight and nothing explodes;
-* a consistent set of parameter groups.
+* always (evaluation, profiling, validation): in evaluation mode, output
+  shapes and value ranges at both rendering levels, with the run's own
+  numbers of samples per ray, for every number of source views the run's
+  evaluation and validation protocols use;
+* for training only: the same in training mode, for every number of source
+  views training uses; every trainable parameter receives a finite gradient
+  from at least one of them (so nothing is dead weight and nothing
+  explodes); a consistent set of parameter groups. A model without trainable
+  parameters can be evaluated and profiled, but not trained.
 
 The 3D points it queries are real samples along real camera rays, ordered
 from near to far, exactly as the renderer produces them, so a model that
@@ -23,6 +26,7 @@ failed run. Suites run it for every run before starting.
 from __future__ import annotations
 
 import math
+from typing import Sequence
 
 import torch
 from torch import Tensor
@@ -35,7 +39,6 @@ from scene_recon.structures import Cameras, FieldOutput, RayBundle, SceneViews
 # Size of the random test problem. Small enough to run instantly on a CPU.
 _NUM_SCENES = 2
 _NUM_RAYS = 5
-_SOURCE_VIEW_COUNTS = (1, 3)
 _NEAR, _FAR = 0.8, 1.8
 _CAMERA_DISTANCE = 1.3
 
@@ -49,6 +52,8 @@ def check_model_contract(
     image_size: int | tuple[int, int] = 64,
     num_coarse_samples: int = 7,
     num_fine_samples: int = 7,
+    inference_view_counts: Sequence[int] = (1, 3),
+    training_view_counts: Sequence[int] | None = (1, 3),
 ) -> None:
     """Verify that a model satisfies the ``ReconstructionModel`` contract.
 
@@ -64,13 +69,23 @@ def check_model_contract(
             in ``renderer.num_coarse_samples``.
         num_fine_samples: Extra samples per ray in the fine pass, as
             configured in ``renderer.num_fine_samples``. 0 skips the fine level.
+        inference_view_counts: Numbers of source views checked in evaluation mode.
+        training_view_counts: Numbers of source views checked in training mode,
+            as in ``training.num_source_views``. ``None`` if the model will not
+            be trained; then no training checks are made.
 
     Raises:
         ModelContractError: With a description of the first violation found.
     """
     if not isinstance(model, ReconstructionModel):
         raise ModelContractError(f"{type(model).__name__} must subclass ReconstructionModel.")
-    check_parameter_groups(model)
+    if training_view_counts is not None:
+        check_parameter_groups(model)
+        if not any(parameter.requires_grad for parameter in model.parameters()):
+            raise ModelContractError(
+                "The model has no trainable parameters, so it cannot be trained. It can still be evaluated "
+                "and profiled; request only those stages."
+            )
 
     if isinstance(image_size, int):
         image_size = (image_size, image_size)
@@ -82,28 +97,30 @@ def check_model_contract(
     was_training = model.training
     model.zero_grad(set_to_none=True)
     try:
-        for num_source_views in _SOURCE_VIEW_COUNTS:
-            source_views = _random_source_views(num_source_views, image_size).to(device)
-            rays = _random_rays(image_size, device)
-
-            # As in training: outputs are checked and every level contributes to a backward pass.
-            model.train()
-            total = 0.0
-            for level, num_samples in sample_counts.items():
-                where = f"query_field(level='{level}') with {num_source_views} source view(s), training mode"
-                field = _query(model, source_views, rays, num_samples, level)
-                _check_field_output(field, num_samples, where)
-                total = total + field.rgb.mean() + field.density.mean()
-            total.backward()
-
-            # As in evaluation.
-            model.eval()
-            with torch.no_grad():
+        # As in evaluation, profiling and validation.
+        model.eval()
+        with torch.no_grad():
+            for num_source_views in sorted(set(inference_view_counts)):
+                source_views = _random_source_views(num_source_views, image_size).to(device)
+                rays = _random_rays(image_size, device)
                 for level, num_samples in sample_counts.items():
                     where = f"query_field(level='{level}') with {num_source_views} source view(s), evaluation mode"
                     _check_field_output(_query(model, source_views, rays, num_samples, level), num_samples, where)
 
-        _check_gradients(model)
+        # As in training: outputs are checked and every level contributes to a backward pass.
+        if training_view_counts is not None:
+            model.train()
+            for num_source_views in sorted(set(training_view_counts)):
+                source_views = _random_source_views(num_source_views, image_size).to(device)
+                rays = _random_rays(image_size, device)
+                total = 0.0
+                for level, num_samples in sample_counts.items():
+                    where = f"query_field(level='{level}') with {num_source_views} source view(s), training mode"
+                    field = _query(model, source_views, rays, num_samples, level)
+                    _check_field_output(field, num_samples, where)
+                    total = total + field.rgb.mean() + field.density.mean()
+                total.backward()
+            _check_gradients(model, sorted(set(training_view_counts)))
     finally:
         model.zero_grad(set_to_none=True)
         model.train(was_training)
@@ -169,14 +186,16 @@ def _check_tensor(tensor: Tensor, name: str, expected_shape: tuple[int, ...], wh
         raise ModelContractError(f"{where}: {name} contains NaN or infinite values.")
 
 
-def _check_gradients(model: ReconstructionModel) -> None:
-    """Every trainable parameter must receive a finite gradient from the outputs."""
+def _check_gradients(model: ReconstructionModel, view_counts: list[int]) -> None:
+    """Every trainable parameter must receive a finite gradient with at least one trained view count."""
     trainable = [(name, parameter) for name, parameter in model.named_parameters() if parameter.requires_grad]
     unused = [name for name, parameter in trainable if parameter.grad is None]
     if unused:
         raise ModelContractError(
-            f"{len(unused)} trainable parameter tensor(s) receive no gradient, so training would never change "
-            f"them (e.g. {', '.join(unused[:3])}). Remove them, or freeze them with requires_grad = False."
+            f"{len(unused)} trainable parameter tensor(s) receive no gradient with any of the configured "
+            f"training view counts {view_counts}, so training would never change them "
+            f"(e.g. {', '.join(unused[:3])}). Remove them, freeze them with requires_grad = False, or train "
+            "with the view counts that use them (training.num_source_views)."
         )
     non_finite = [name for name, parameter in trainable if not torch.isfinite(parameter.grad).all()]
     if non_finite:

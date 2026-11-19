@@ -164,7 +164,13 @@ def evaluation_settings(config: Config) -> dict[str, Any]:
 
 
 def profiling_settings(config: Config) -> dict[str, Any]:
-    """The settings and the hardware that determine a speed measurement."""
+    """The settings, workload and hardware that determine a speed measurement.
+
+    The workload is identified by the test data itself, not only its config:
+    the same config can point to images of another resolution, which changes
+    how many rays a frame has.
+    """
+    test_scenes = build_dataset(config, "test")
     return _canonical(
         {
             "profiling": config.raw["profiling"],
@@ -172,6 +178,8 @@ def profiling_settings(config: Config) -> dict[str, Any]:
             "model": config.raw["model"],
             "source_views": config.evaluation.source_view_sets[0],
             "test_data": config.raw["data"]["test"],
+            "test_data_fingerprint": test_scenes.fingerprint(),
+            "image_size": list(test_scenes.load_scene(0, [0]).image_size),
             "device": device_description(resolve_device(config.experiment.device)),
         }
     )
@@ -223,7 +231,7 @@ def profile_status(config: Config) -> OutputStatus:
     if problem is not None:
         return problem
     if content["settings"] != profiling_settings(config):
-        return OutputStatus("stale", "made with different settings, device or software", content)
+        return OutputStatus("stale", "made with different settings, test data, device or software", content)
     return OutputStatus("current", "", content)
 
 

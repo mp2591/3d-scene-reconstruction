@@ -2,8 +2,10 @@
 
 import dataclasses
 import json
+import shutil
 
 import pytest
+import torch
 
 from scene_recon import cli
 from scene_recon.build import build_model
@@ -11,6 +13,7 @@ from scene_recon.checkpoints import load_checkpoint
 from scene_recon.config import Config, parse_config
 from scene_recon.profiling import count_parameters
 from scene_recon.registry import ConfigError
+from scene_recon.stages import check_run_can_start
 from scene_recon.training import Trainer
 
 
@@ -108,3 +111,85 @@ def test_command_line_reports_config_mistakes_without_a_stack_trace(smoke_config
 def test_config_dataclasses_are_immutable(smoke_config: Config):
     with pytest.raises(dataclasses.FrozenInstanceError):
         smoke_config.training.batch_size = 99
+
+
+def test_training_stops_before_a_non_finite_loss_changes_the_weights(smoke_config: Config):
+    from scene_recon.run_files import RunFiles
+
+    trainer = Trainer(smoke_config)
+    real_loss = trainer.loss_function
+
+    def nan_loss(renders, target_rgb):
+        terms = real_loss(renders, target_rgb)
+        return {**terms, "total": terms["total"] * float("nan")}
+
+    trainer.loss_function = nan_loss
+    weights_before = {name: value.clone() for name, value in trainer.model.state_dict().items()}
+
+    with pytest.raises(RuntimeError, match="training loss is nan"):
+        trainer.train()
+
+    assert all(torch.equal(value, weights_before[name]) for name, value in trainer.model.state_dict().items())
+    assert not RunFiles(smoke_config.run_dir).checkpoint.exists()
+
+
+def test_weights_with_nan_are_never_written_to_a_checkpoint(smoke_config: Config):
+    from scene_recon.run_files import RunFiles
+
+    trainer = Trainer(smoke_config)
+    with torch.no_grad():
+        next(trainer.model.parameters()).fill_(float("nan"))
+
+    with pytest.raises(RuntimeError, match="no checkpoint was written"):
+        trainer._save_checkpoint()
+    assert not RunFiles(smoke_config.run_dir).checkpoint.exists()
+
+
+# ---------------------------------------------------------------- protocols that cannot run (R7)
+
+
+def _with_changes(config: Config, **sections) -> Config:
+    raw = dict(config.raw)
+    for section, changes in sections.items():
+        if section.startswith("data_"):
+            split = section.removeprefix("data_")
+            raw["data"] = {**raw["data"], split: {**raw["data"][split], **changes}}
+        else:
+            raw[section] = {**raw[section], **changes}
+    return parse_config(raw)
+
+
+def test_an_evaluation_protocol_using_every_view_is_rejected_before_training(smoke_config: Config):
+    """The review's reproduction: two test views, both given to the model."""
+    config = _with_changes(smoke_config, data_test={"num_views": 2}, evaluation={"source_view_sets": [[0, 1]]})
+
+    with pytest.raises(ConfigError, match="uses every view of scene 0"):
+        check_run_can_start(config, ["train", "evaluate"])
+
+
+def test_a_validation_protocol_using_every_view_is_rejected_before_training(smoke_config: Config):
+    config = _with_changes(smoke_config, data_val={"num_views": 1}, validation={"source_views": [0]})
+
+    with pytest.raises(ConfigError, match="validation.source_views.*uses every view"):
+        check_run_can_start(config, ["train"])
+
+
+def test_a_profile_only_run_needs_a_view_to_render(smoke_config: Config):
+    config = _with_changes(smoke_config, data_test={"num_views": 1}, evaluation={"source_view_sets": [[0]]})
+
+    with pytest.raises(ConfigError, match="uses every view"):
+        check_run_can_start(config, ["profile"])
+
+
+def test_a_later_scene_with_fewer_views_is_caught(tmp_path):
+    from conftest import CONFIG_DIR, srn_overrides, write_srn_scene, write_srn_splits
+    from scene_recon.config import load_config
+
+    splits = write_srn_splits(tmp_path / "srn", num_views=6)
+    shutil.rmtree(splits["test"] / "car_b")
+    write_srn_scene(splits["test"] / "car_b", num_views=2, image_size=8)  # the second scene has 2 views only
+    overrides = srn_overrides(splits, tmp_path / "runs") + ["evaluation.source_view_sets=[[0, 1]]"]
+    config = load_config(CONFIG_DIR / "smoke_test.yaml", overrides=overrides)
+
+    with pytest.raises(ConfigError, match="uses every view of scene 1"):
+        check_run_can_start(config, ["evaluate"])

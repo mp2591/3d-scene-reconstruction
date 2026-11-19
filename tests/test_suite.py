@@ -2,6 +2,8 @@
 
 import csv
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -11,9 +13,9 @@ from scene_recon import suite as suite_module
 from scene_recon.registry import ConfigError
 from scene_recon.report import write_report
 from scene_recon.run_files import RunFiles
-from scene_recon.suite import PreflightError, load_suite, run_suite
+from scene_recon.suite import PreflightError, SuiteReportError, load_suite, run_suite
 
-from conftest import CONFIG_DIR
+from conftest import CONFIG_DIR, srn_overrides, write_srn_splits
 
 
 def _write_suite(tmp_path: Path, runs: dict, stages: list[str] | None = None, seeds: list[int] | None = None) -> Path:
@@ -443,3 +445,120 @@ def test_single_seed_report_also_compares_runs_scene_by_scene(tmp_path: Path):
     report = (suite.directory / "summary.md").read_text()
 
     assert "## Paired comparison with narrow" in report and "±" not in report
+
+
+# ---------------------------------------------------------------- follow-up review (#2)
+
+
+def _write_srn_suite(path: Path, runs: dict) -> Path:
+    content = {
+        "suite_name": "srn_suite",
+        "stages": ["train", "evaluate"],
+        "common": {"base": str(CONFIG_DIR / "smoke_test.yaml")},
+        "runs": runs,
+    }
+    path.write_text(yaml.safe_dump(content, sort_keys=False))
+    return path
+
+
+def _run_cli_in_new_process(suite_file: Path, overrides: list[str]) -> subprocess.CompletedProcess:
+    command = [sys.executable, "-m", "scene_recon", "run-suite", "--config", str(suite_file), "--set", *overrides]
+    return subprocess.run(command, capture_output=True, text=True, timeout=600)
+
+
+def test_a_finished_run_is_not_reused_after_its_training_data_changed(tmp_path: Path):
+    """R1: the review's reproduction, with two separate command-line processes."""
+    splits = write_srn_splits(tmp_path / "srn")
+    overrides = srn_overrides(splits, tmp_path / "runs")
+    first = _run_cli_in_new_process(_write_srn_suite(tmp_path / "suite.yaml", {"run_a": {}}), overrides)
+    assert first.returncode == 0, first.stderr
+
+    # Change the training data at the same path, as replacing a dataset copy would.
+    intrinsics = splits["train"] / "car_a" / "intrinsics.txt"
+    intrinsics.write_text(intrinsics.read_text().replace("131.25", "262.5"))
+    runs = {"run_a": {}, "run_b": {"model": {"decoder": {"hidden_width": 32}}}}
+    second = _run_cli_in_new_process(_write_srn_suite(tmp_path / "suite.yaml", runs), overrides)
+
+    assert second.returncode != 0
+    assert "run_a" in second.stderr and "trained on different data" in second.stderr
+    assert not (tmp_path / "runs" / "srn_suite" / "run_b" / "checkpoints").exists()
+
+
+def test_report_warns_when_checkpoints_record_different_training_data(smoke_config, monkeypatch):
+    from scene_recon.config import parse_config
+    from scene_recon.data.synthetic import SyntheticSpheresDataset
+    from scene_recon.training import Trainer
+
+    def config_for(run_name: str):
+        return parse_config({**smoke_config.raw, "experiment": {**smoke_config.raw["experiment"], "run_name": run_name}})
+
+    Trainer(config_for("before")).train()
+    real_fingerprint = SyntheticSpheresDataset.fingerprint
+    monkeypatch.setattr(SyntheticSpheresDataset, "fingerprint", lambda self: {**real_fingerprint(self), "version": 2})
+    Trainer(config_for("after")).train()
+
+    groups = {name: {name: config_for(name)} for name in ("before", "after")}
+    write_report("mixed", smoke_config.run_dir.parent, groups, {})
+
+    report = (smoke_config.run_dir.parent / "summary.md").read_text()
+    assert "Warning: the runs' checkpoints record different training data" in report
+    assert "| training data recorded in the checkpoint |" in report
+    assert "trained on identical data" not in report
+
+
+def test_suites_reject_invalid_group_overrides_before_anything_runs(tmp_path: Path):
+    runs = {**TWO_RUNS, "nan_lr": {"optimization": {"group_overrides": {"encoder": {"learning_rate": float("nan")}}}}}
+
+    with pytest.raises(ConfigError, match="(?s)nan_lr.*must be a finite number"):
+        load_suite(_write_suite(tmp_path, runs))
+
+
+# ---------------------------------------------------------------- suite outputs and run names (R9)
+
+
+@pytest.mark.parametrize(
+    "name", ["summary.md", "Summary.MD", "summary.csv", "paired_comparison.csv", "plots", "summary.md.tmp"]
+)
+def test_run_names_that_collide_with_suite_outputs_are_rejected(tmp_path: Path, name: str):
+    with pytest.raises(ConfigError, match="is reserved"):
+        load_suite(_write_suite(tmp_path, {name: {}}))
+
+
+def test_a_run_named_like_the_suite_log_is_rejected_by_the_command_line(tmp_path: Path):
+    from scene_recon import cli
+
+    suite_file = _write_suite(tmp_path, {"suite.log": {}})
+
+    with pytest.raises(SystemExit, match="is reserved"):
+        cli.main(["run-suite", "--config", str(suite_file)])
+    assert not (tmp_path / "runs" / "test_suite" / "suite.log").exists()
+
+
+def test_a_report_that_keeps_failing_fails_the_suite_after_all_runs(tmp_path: Path, monkeypatch):
+    def broken_report(*args, **kwargs):
+        raise OSError("disk full (simulated)")
+
+    monkeypatch.setattr(suite_module, "write_report", broken_report)
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
+
+    with pytest.raises(SuiteReportError, match="disk full") as error:
+        run_suite(suite)
+
+    assert error.value.failures == {}
+    assert all(RunFiles(config.run_dir).evaluation.is_file() for config in suite.runs.values())
+
+
+def test_a_report_that_fails_once_does_not_fail_the_suite(tmp_path: Path, monkeypatch):
+    real_write_report, calls = suite_module.write_report, []
+
+    def flaky_report(*args, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError("temporary failure (simulated)")
+        return real_write_report(*args, **kwargs)
+
+    monkeypatch.setattr(suite_module, "write_report", flaky_report)
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
+
+    assert run_suite(suite) == {}
+    assert (suite.directory / "summary.md").is_file()

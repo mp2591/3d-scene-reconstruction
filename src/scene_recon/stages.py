@@ -22,7 +22,7 @@ import logging
 import math
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from scene_recon.build import build_dataset, build_loss, build_metrics, build_model, resolve_device
 from scene_recon.checkpoints import TrainingProgress, load_checkpoint
@@ -30,12 +30,13 @@ from scene_recon.config import Config
 from scene_recon.data import TrainingSchedule
 from scene_recon.data.base import SceneDataset
 from scene_recon.environment import environment
-from scene_recon.evaluation import Evaluator, check_source_views, save_preview
+from scene_recon.evaluation import Evaluator, check_protocol_feasible, save_preview
 from scene_recon.models.contract import check_model_contract
 from scene_recon.optim import build_optimizer_and_scheduler
 from scene_recon.profiling import count_parameters, measure_rendering_speed
 from scene_recon.provenance import (
     check_checkpoint_matches_config,
+    check_training_data_unchanged,
     checkpoint_record,
     evaluation_settings,
     profiling_settings,
@@ -183,18 +184,22 @@ def run_profiling(config: Config, checkpoint_path: Path | None = None) -> dict[s
     return report
 
 
-def check_model(config: Config, image_size: tuple[int, int] | None = None) -> None:
+def check_model(
+    config: Config, image_size: tuple[int, int] | None = None, stages: Sequence[str] = STAGES
+) -> None:
     """Build the model of ``config`` and verify it against the pipeline's contract.
 
     Args:
         config: The run whose model to check.
         image_size: Size of the random test images. Defaults to the size of
             the test split's images.
+        stages: The stages the model will be used in; training checks
+            (backward pass, gradients, parameter groups) only apply to "train".
     """
     if image_size is None:
         image_size = dataset_image_size(build_dataset(config, "test"))
     model = build_model(config).to(resolve_device(config.experiment.device))
-    _check_contract(model, config, image_size)
+    _check_contract(model, config, image_size, stages)
     logger.info("Model '%s' satisfies the pipeline contract.", config.model["name"])
 
 
@@ -203,7 +208,9 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
 
     Only what the stages use is built: a profile-only run needs no training
     data, loss or metrics. Checks: the datasets open and have the requested
-    views; an existing checkpoint was trained with these settings; the loss,
+    views; an existing checkpoint was trained with these settings and, when
+    training is requested (even if it is already finished and will be
+    skipped), on the data the training split holds now; the loss,
     metrics (including optional packages such as LPIPS) and optimiser can be
     built; the model satisfies the contract with the configured sample counts.
 
@@ -226,6 +233,10 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
             views_per_scene=config.training.views_per_scene,
             num_source_views=config.training.num_source_views,
         ).scene_plan(0)  # raises if training scenes have too few views
+        if files.checkpoint.exists():
+            # Also for a finished run: its checkpoint is reused in the comparison
+            # as if it had been trained on the current data.
+            check_training_data_unchanged(files.checkpoint, train_scenes)
         build_loss(config)
         build_metrics(config.validation.metrics)
         image_size = dataset_image_size(validation_scenes)
@@ -237,16 +248,21 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
         build_metrics(config.evaluation.metrics)
 
     model = build_model(config).to(resolve_device(config.experiment.device))
+    _check_contract(model, config, image_size or (64, 64), stages)
     if "train" in stages:
         build_optimizer_and_scheduler(model, config.optimization)
-    _check_contract(model, config, image_size or (64, 64))
 
 
 def check_evaluation_settings(config: Config, test_scenes: SceneDataset) -> None:
-    """Make sure every evaluation source view exists in the test scenes."""
-    num_views = test_scenes.num_views(0)
+    """Make sure every evaluation protocol can run on every test scene it will use.
+
+    This also covers profiling, which renders a view of the first test scene
+    from the first protocol's source views.
+    """
     for source_views in config.evaluation.source_view_sets:
-        check_source_views(source_views, num_views, where="evaluation.source_view_sets")
+        check_protocol_feasible(
+            test_scenes, source_views, config.evaluation.num_scenes, where="evaluation.source_view_sets"
+        )
 
 
 def dataset_image_size(scenes: SceneDataset) -> tuple[int, int]:
@@ -264,10 +280,18 @@ def _load_trained_model(config: Config, checkpoint_path: Path) -> tuple[Any, Tra
     return model, progress
 
 
-def _check_contract(model: Any, config: Config, image_size: tuple[int, int]) -> None:
+def _check_contract(model: Any, config: Config, image_size: tuple[int, int], stages: Sequence[str]) -> None:
+    """Check the model with the view counts the requested stages will use."""
+    inference_view_counts = set()
+    if "evaluate" in stages or "profile" in stages:
+        inference_view_counts |= {len(views) for views in config.evaluation.source_view_sets}
+    if "train" in stages:
+        inference_view_counts.add(len(config.validation.source_views))  # validation runs in evaluation mode
     check_model_contract(
         model,
         image_size=image_size,
         num_coarse_samples=config.renderer.num_coarse_samples,
         num_fine_samples=config.renderer.num_fine_samples,
+        inference_view_counts=sorted(inference_view_counts),
+        training_view_counts=config.training.num_source_views if "train" in stages else None,
     )
