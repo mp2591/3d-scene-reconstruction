@@ -167,9 +167,12 @@ def test_a_profile_from_another_device_is_stale(smoke_config: Config):
 def _pretend_the_data_changed(monkeypatch) -> None:
     """Same config, different content: as if the dataset directory had been replaced."""
     real_fingerprint = SyntheticSpheresDataset.fingerprint
-    monkeypatch.setattr(
-        SyntheticSpheresDataset, "fingerprint", lambda self: {**real_fingerprint(self), "files_sha256": "changed"}
-    )
+
+    def changed_fingerprint(self):
+        fingerprint = real_fingerprint(self)
+        return {**fingerprint, "seed": fingerprint["seed"] + 1000}  # same format, other content
+
+    monkeypatch.setattr(SyntheticSpheresDataset, "fingerprint", changed_fingerprint)
 
 
 def test_an_evaluation_on_other_test_data_is_stale(smoke_config: Config, monkeypatch):
@@ -216,3 +219,26 @@ def test_a_profile_is_stale_after_the_images_are_replaced_by_larger_ones(srn_con
     assert status.state == "stale" and "test data" in status.reason
     assert run_profiling(srn_config)["image_size"] == [16, 16]
     assert profile_status(srn_config).is_current
+
+
+# ---------------------------------------------------------------- older fingerprint formats (#3 compatibility note)
+
+
+def test_a_checkpoint_with_an_older_fingerprint_format_is_explained_not_called_different_data(srn_config: Config):
+    from scene_recon.stages import check_run_can_start
+
+    Trainer(srn_config).train()
+    checkpoint = RunFiles(srn_config.run_dir).checkpoint
+    state = torch.load(checkpoint, weights_only=True)
+    # The format of the previous version: names and sizes only, which cannot confirm the content.
+    state["training_data"] = {"dataset": "srn", "num_scenes": 2, "files_sha256": "0" * 64}
+    torch.save(state, checkpoint)
+
+    with pytest.raises(ConfigError, match="older fingerprint format") as error:
+        check_run_can_start(srn_config, ["train"])
+    assert "different data" not in str(error.value)
+    with pytest.raises(ConfigError, match="older fingerprint format"):
+        Trainer(_changed(srn_config, "training", num_steps=srn_config.training.num_steps + 1), resume=True)
+
+    run_evaluation(srn_config)  # evaluation does not need the training data
+    assert evaluation_status(srn_config).is_current

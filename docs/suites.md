@@ -70,9 +70,13 @@ datasets (with their view indices checked), the loss, the metrics (including
 optional packages such as LPIPS), the optimiser and its parameter groups, and
 the model, which is checked against the pipeline's contract (see
 [writing_a_model.md](writing_a_model.md)), only with the checks its stages
-need (a model used only for evaluation and profiling may be fully frozen).
-Every evaluation, validation and profiling protocol must leave at least one
-view to render in every scene it uses. A run that already has a checkpoint
+need (a model used only for evaluation and profiling may be fully frozen,
+or have no parameters at all). Every evaluation and validation protocol must
+leave at least one view to render in every scene it uses; profiling only
+needs that for the one view it renders (the first test scene, with the first
+evaluation source-view set). Evaluation without training needs a checkpoint,
+unless the model has no trainable parameters: such a model cannot be
+trained, so it is evaluated as built. A run that already has a checkpoint
 must request exactly the training settings it was trained with and, when the
 suite trains, the training data must still be the data the checkpoint
 recorded, even for a run that has finished and would be skipped. All
@@ -173,6 +177,17 @@ confidence interval (Student's t over scenes). A run is called *better* or
 *no clear difference*. The same numbers are in `paired_comparison.csv`. If
 the reference has no results yet, the report says so rather than comparing
 against another run.
+
+A result only counts for the comparison once the run's requested training
+has finished. If, say, a suite extends training from 4 000 to 6 000 steps and
+one run's extension fails, that run's evaluation of its 4 000-step checkpoint
+is still a valid measurement of that checkpoint, but not of the requested
+experiment. The report shows it in the quality tables marked with \*, with
+its actual step count, and leaves it out of best values, figures and paired
+comparisons, saying why. It counts again once the training finishes. When a
+suite does not request training (`stages: [evaluate]`), the existing
+checkpoints are what is being compared, so their results always count. A run
+whose evaluation finished but whose profiling failed keeps its comparison.
 
 Whether the runs were trained on identical data is read from what their
 checkpoints recorded, not only from the config; if the checkpoints record

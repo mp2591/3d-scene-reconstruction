@@ -21,6 +21,13 @@ a run's evaluation or profile only if it still matches the run's current
 checkpoint and settings (see ``scene_recon.provenance``); out-of-date or
 damaged results are left out of every table and figure, and listed with the
 reason instead.
+
+A current result is also only *eligible* for the requested experiment if the
+suite requested no training, or its checkpoint has reached the requested
+number of training steps. A result that is current but not eligible, e.g.
+the evaluation of the old checkpoint after a training extension failed, is
+*interim*: the quality tables still show it, marked, with its actual step,
+but it is left out of best values, figures and paired comparisons.
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from functools import reduce
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import numpy as np
 
@@ -91,6 +98,15 @@ class RunResult:
     training_data: dict | None = None
     """The training-data fingerprint recorded in the run's checkpoint, if it has one."""
 
+    requested_steps: int = 0
+    """``training.num_steps`` of the run's config."""
+
+    eligible: bool = False
+    """Whether its results count for the requested experiment (see the module docstring)."""
+
+    interim_reason: str = ""
+    """Why current results are not eligible, if they are not."""
+
 
 @dataclass
 class GroupResult:
@@ -100,30 +116,43 @@ class GroupResult:
     replicates: list[RunResult]
 
     @property
-    def evaluated(self) -> list[RunResult]:
+    def with_results(self) -> list[RunResult]:
+        """Seeds with a current evaluation, eligible or interim."""
         return [replicate for replicate in self.replicates if replicate.metrics]
 
-    def summary(self, count: int, metric: str) -> Summary | None:
-        """Mean and spread over seeds of one metric for one number of input views."""
-        return summarize(
-            [run.metrics[count][metric] for run in self.evaluated if metric in run.metrics.get(count, {})]
-        )
+    @property
+    def eligible(self) -> list[RunResult]:
+        """Seeds whose results count for the requested experiment."""
+        return [replicate for replicate in self.with_results if replicate.eligible]
+
+    @property
+    def interim(self) -> list[RunResult]:
+        """Seeds with current results that do not (yet) count for the requested experiment."""
+        return [replicate for replicate in self.with_results if not replicate.eligible]
+
+    def summary(self, count: int, metric: str, interim: bool = False) -> Summary | None:
+        """Mean and spread over seeds of one metric for one number of input views.
+
+        Uses the eligible seeds, or with ``interim=True`` the interim ones.
+        """
+        runs = self.interim if interim else self.eligible
+        return summarize([run.metrics[count][metric] for run in runs if metric in run.metrics.get(count, {})])
 
     def scene_scores(self, count: int, metric: str, seeds: set[int]) -> dict[str, float]:
         """Per-scene values of one metric, averaged over the given seeds."""
         return average_over_seeds(
             [
                 {scene: values[metric] for scene, values in run.per_scene[count].items() if metric in values}
-                for run in self.evaluated
+                for run in self.eligible
                 if run.seed in seeds and count in run.per_scene
             ]
         )
 
     def seeds_with_result(self, count: int, metric: str) -> set[int]:
-        """The seeds whose evaluation has per-scene values of this metric for this number of views."""
+        """The eligible seeds whose evaluation has per-scene values of this metric for this number of views."""
         return {
             run.seed
-            for run in self.evaluated
+            for run in self.eligible
             if any(metric in values for values in run.per_scene.get(count, {}).values())
         }
 
@@ -148,6 +177,15 @@ class GroupResult:
         return min(steps) if steps else None
 
     @property
+    def training_steps_text(self) -> str:
+        """The saved step count, and the requested one if training has not reached it."""
+        step = self.training_step
+        if step is None:
+            return "–"
+        requested = max(run.requested_steps for run in self.replicates)
+        return f"{step:,}" if step >= requested else f"{step:,} of {requested:,}"
+
+    @property
     def training_hours(self) -> float | None:
         return _mean_or_none([run.training_hours for run in self.replicates])
 
@@ -165,6 +203,7 @@ def write_report(
     directory: Path,
     groups: Mapping[str, Mapping[str, Config]],
     failures: Mapping[str, str],
+    stages: Sequence[str],
 ) -> None:
     """Write the tables and figures of a suite.
 
@@ -174,9 +213,16 @@ def write_report(
         groups: Every run of the suite file, in suite order, mapped to its
             executed runs (one per seed): ``{run name: {key: config}}``.
         failures: Executed runs that failed, by key, mapped to their error message.
+        stages: The stages the suite was asked to run. If they include
+            "train", results only count once training reached its requested
+            number of steps.
     """
+    training_requested = "train" in stages
     results = [
-        GroupResult(name, [_collect(key, config, failed=key in failures) for key, config in runs.items()])
+        GroupResult(
+            name,
+            [_collect(key, config, key in failures, training_requested) for key, config in runs.items()],
+        )
         for name, runs in groups.items()
     ]
     first_configs = {name: next(iter(runs.values())) for name, runs in groups.items()}
@@ -202,10 +248,16 @@ def write_report(
     logger.info("Suite report updated: %s", files.summary_markdown)
 
 
-def _collect(key: str, config: Config, failed: bool) -> RunResult:
+def _collect(key: str, config: Config, failed: bool, training_requested: bool) -> RunResult:
     """Read what a run has produced, keeping only results that still describe the run."""
     files = RunFiles(config.run_dir)
-    result = RunResult(key=key, seed=config.experiment.seed, status="not started", files=files)
+    result = RunResult(
+        key=key,
+        seed=config.experiment.seed,
+        status="not started",
+        files=files,
+        requested_steps=config.training.num_steps,
+    )
 
     progress = read_progress(files.checkpoint)
     finished_training = progress is not None and progress.step >= config.training.num_steps
@@ -224,7 +276,18 @@ def _collect(key: str, config: Config, failed: bool) -> RunResult:
             result.metrics[count] = protocol["mean"]
             result.per_scene[count] = protocol.get("per_scene", {})
             result.preview_scene_ids[count] = protocol.get("preview_scene_ids", [])
-        result.status = "evaluated" if finished_training else f"evaluated at step {progress.step:,}"
+        if progress is None:  # a model without trainable parameters, evaluated as built
+            result.status = "evaluated (model as built)"
+            result.eligible = True
+        elif finished_training or not training_requested:
+            result.status = "evaluated" if finished_training else f"evaluated at step {progress.step:,}"
+            result.eligible = True
+        else:
+            result.status = f"evaluated at step {progress.step:,}"
+            result.interim_reason = (
+                f"evaluated at step {progress.step:,}, but {config.training.num_steps:,} training steps were "
+                "requested" + (" and training failed" if failed else " and have not been reached yet")
+            )
     elif evaluation.state != "missing":
         result.left_out.append(f"evaluation: {evaluation.reason}")
 
@@ -266,7 +329,7 @@ def _paired_comparisons(results: list[GroupResult]) -> list[_Comparison]:
     difference. If the reference has no results yet, nothing is compared; the
     report says so instead of silently picking another reference.
     """
-    if len(results) < 2 or not results[0].evaluated:
+    if len(results) < 2 or not results[0].eligible:
         return []
     reference, others = results[0], results[1:]
     comparisons = []
@@ -296,14 +359,14 @@ def _metric_names(results: list[GroupResult]) -> list[str]:
     """Every metric reported by any run, in the order the runs list them."""
     names: list[str] = []
     for group in results:
-        for run in group.evaluated:
+        for run in group.with_results:
             for per_metric in run.metrics.values():
                 names.extend(name for name in per_metric if name not in names)
     return names
 
 
 def _view_counts(results: list[GroupResult]) -> list[int]:
-    return sorted({count for group in results for run in group.evaluated for count in run.metrics})
+    return sorted({count for group in results for run in group.with_results for count in run.metrics})
 
 
 def _write_csv(results: list[GroupResult], path: Path) -> None:
@@ -402,7 +465,7 @@ def _write_markdown(
     ]
     for group in results:
         lines.append(
-            f"| {group.name} | {group.status} | {_format(group.training_step, '{:,}')} "
+            f"| {group.name} | {group.status} | {group.training_steps_text} "
             f"| {_format_duration(group.training_hours)} "
             f"| {_format_count(group.parameters)} "
             f"| {_format(group.frames_per_second, '{:.2f}')} |"
@@ -427,15 +490,30 @@ def _write_markdown(
         lines.append("|---|" + "--:|" * len(metric_names))
         best = {metric: _best_value(results, count, metric) for metric in metric_names}
         for group in results:
-            if not any(count in run.metrics for run in group.evaluated):
+            if not any(count in run.metrics for run in group.with_results):
                 continue
             cells = []
             for metric in metric_names:
                 summary = group.summary(count, metric)
+                interim_summary = group.summary(count, metric, interim=True)
+                if summary is None and interim_summary is not None:
+                    # Shown for information only; marked and never "best".
+                    cells.append(_format_summary(interim_summary, metric, len(seeds)) + " *")
+                    continue
                 text = _format_summary(summary, metric, len(seeds))
                 is_best = summary is not None and summary.mean == best[metric]
                 cells.append(f"**{text}**" if is_best else text)
             lines.append(f"| {group.name} | " + " | ".join(cells) + " |")
+
+    interim = [(run.key, run.interim_reason) for group in results for run in group.interim]
+    if interim:
+        lines += [
+            "",
+            "\\* Interim: evaluated before the requested training finished. Shown for information only; left out "
+            "of best values, figures and paired comparisons:",
+            "",
+            *[f"- **{key}**: {reason}" for key, reason in interim],
+        ]
 
     lines += _comparison_section(results, comparisons, metric_names, multiple_seeds)
 
@@ -532,11 +610,17 @@ def _comparison_section(
         return []
     reference = results[0].name
     lines = ["", f"## Paired comparison with {reference}", ""]
+    not_compared = [
+        f"- **{group.name}**: " + "; ".join(run.interim_reason for run in group.interim)
+        for group in results
+        if group.interim and not group.eligible
+    ]
     if not comparisons:
-        return lines + [
+        lines.append(
             f"Not available yet: the reference run {reference} (the first run of the suite file) and at least "
-            "one other run need current evaluations of the same seeds."
-        ]
+            "one other run need current evaluations of the same seeds, made after their requested training finished."
+        )
+        return lines + (["", "Waiting for:", "", *not_compared] if not_compared else [])
 
     lines.append(
         f"Every model is evaluated on the same test scenes, so runs are compared scene by scene: for each "
@@ -567,6 +651,8 @@ def _comparison_section(
                 first = next(iter(matches.values()))
                 seeds_cell = " " + ", ".join(map(str, first.seeds)) + (" (partial)" if first.partial else "") + " |"
             lines.append(f"| {run} |" + seeds_cell + " " + " | ".join(cells) + " |")
+    if not_compared:
+        lines += ["", "Not compared, because their requested training has not finished:", "", *not_compared]
     return lines
 
 
@@ -655,7 +741,7 @@ def _write_figures(results: list[GroupResult], plots_dir: Path, multiple_seeds: 
     styles = run_styles([group.name for group in results])
     metric_names = _metric_names(results)
     headline = _HEADLINE_METRIC if _HEADLINE_METRIC in metric_names else (metric_names or [None])[0]
-    evaluated = [group for group in results if group.evaluated]
+    evaluated = [group for group in results if group.eligible]
     figures = []
 
     if evaluated:
@@ -770,7 +856,7 @@ def _plot_render_comparison(results: list[GroupResult], count: int, path: Path) 
     """
     shown = []
     for group in results:
-        run = next((run for run in group.evaluated if run.preview_scene_ids.get(count)), None)
+        run = next((run for run in group.eligible if run.preview_scene_ids.get(count)), None)
         if run is not None:
             shown.append((group.name, run))
     if not shown:

@@ -24,6 +24,8 @@ import shutil
 from pathlib import Path
 from typing import Any, Sequence
 
+import torch
+
 from scene_recon.build import build_dataset, build_loss, build_metrics, build_model, resolve_device
 from scene_recon.checkpoints import TrainingProgress, load_checkpoint
 from scene_recon.config import Config
@@ -36,11 +38,13 @@ from scene_recon.optim import build_optimizer_and_scheduler
 from scene_recon.profiling import count_parameters, measure_rendering_speed
 from scene_recon.provenance import (
     check_checkpoint_matches_config,
+    untrained_model_record,
     check_training_data_unchanged,
     checkpoint_record,
     evaluation_settings,
     profiling_settings,
 )
+from scene_recon.registry import ConfigError
 from scene_recon.rendering import VolumeRenderer
 from scene_recon.run_files import RunFiles, write_json
 from scene_recon.training import Trainer, check_training_settings
@@ -61,6 +65,12 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
 
     Writes ``evaluation.json`` and the preview renders into the run directory.
 
+    A model without trainable parameters (frozen, or analytic) cannot be
+    trained, so it never has a checkpoint: it is evaluated as built, and the
+    results record a hash of its weights instead of a checkpoint. Any other
+    model must have a checkpoint, so random untrained weights are never
+    measured by mistake.
+
     Args:
         config: The run to evaluate.
         checkpoint_path: Weights to load. Defaults to the run's latest checkpoint.
@@ -70,11 +80,18 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
 
     Raises:
         ConfigError: If the checkpoint was trained with other settings than ``config``.
+        FileNotFoundError: If a model with trainable parameters has no checkpoint.
         RuntimeError: If a metric comes out as NaN or infinite; nothing is written then.
     """
     files = RunFiles(config.run_dir)
-    checkpoint_path = checkpoint_path or files.checkpoint
-    model, progress = _load_trained_model(config, checkpoint_path)
+    weights_record: dict[str, Any]
+    if checkpoint_path is None and not files.checkpoint.exists() and not _has_trainable_parameters(config):
+        model = build_model(config).to(resolve_device(config.experiment.device))
+        weights_record = {"checkpoint": None, "untrained_model": untrained_model_record(config, model)}
+    else:
+        checkpoint_path = checkpoint_path or files.checkpoint
+        model, progress = _load_trained_model(config, checkpoint_path)
+        weights_record = {"checkpoint": checkpoint_record(checkpoint_path, progress)}
 
     settings = config.evaluation
     device = resolve_device(config.experiment.device)
@@ -119,7 +136,7 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
             save_preview(preview, preview_dir / preview.scene_id)
 
     report = {
-        "checkpoint": checkpoint_record(checkpoint_path, progress),
+        **weights_record,
         "settings": evaluation_settings(config),
         "environment": environment(),
         "protocols": protocols,
@@ -148,7 +165,7 @@ def run_profiling(config: Config, checkpoint_path: Path | None = None) -> dict[s
         model = build_model(config).to(device)
 
     test_scenes = build_dataset(config, "test")
-    check_evaluation_settings(config, test_scenes)
+    check_profiling_settings(config, test_scenes)
     source_view_indices = config.evaluation.source_view_sets[0]
     target_view_index = next(
         index for index in range(test_scenes.num_views(0)) if index not in source_view_indices
@@ -198,8 +215,9 @@ def check_model(
     """
     if image_size is None:
         image_size = dataset_image_size(build_dataset(config, "test"))
-    model = build_model(config).to(resolve_device(config.experiment.device))
-    _check_contract(model, config, image_size, stages)
+    device = resolve_device(config.experiment.device)
+    model = build_model(config).to(device)
+    _check_contract(model, config, image_size, stages, device)
     logger.info("Model '%s' satisfies the pipeline contract.", config.model["name"])
 
 
@@ -242,32 +260,55 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
         image_size = dataset_image_size(validation_scenes)
     if "evaluate" in stages or "profile" in stages:
         test_scenes = build_dataset(config, "test")
-        check_evaluation_settings(config, test_scenes)
         image_size = dataset_image_size(test_scenes)
     if "evaluate" in stages:
+        check_evaluation_settings(config, test_scenes)
         build_metrics(config.evaluation.metrics)
+    if "profile" in stages:
+        check_profiling_settings(config, test_scenes)
 
-    model = build_model(config).to(resolve_device(config.experiment.device))
-    _check_contract(model, config, image_size or (64, 64), stages)
+    device = resolve_device(config.experiment.device)
+    model = build_model(config).to(device)
+    _check_contract(model, config, image_size or (64, 64), stages, device)
+    trainable = any(parameter.requires_grad for parameter in model.parameters())
+    if "evaluate" in stages and "train" not in stages and not files.checkpoint.exists() and trainable:
+        raise ConfigError(
+            f"{config.run_dir} has no checkpoint to evaluate, and its model has trainable parameters, so "
+            "evaluating it as built would measure untrained weights. Add the 'train' stage, or train the run first."
+        )
     if "train" in stages:
         build_optimizer_and_scheduler(model, config.optimization)
 
 
 def check_evaluation_settings(config: Config, test_scenes: SceneDataset) -> None:
-    """Make sure every evaluation protocol can run on every test scene it will use.
-
-    This also covers profiling, which renders a view of the first test scene
-    from the first protocol's source views.
-    """
+    """Make sure every evaluation protocol can run on every test scene it will use."""
     for source_views in config.evaluation.source_view_sets:
         check_protocol_feasible(
             test_scenes, source_views, config.evaluation.num_scenes, where="evaluation.source_view_sets"
         )
 
 
+def check_profiling_settings(config: Config, test_scenes: SceneDataset) -> None:
+    """Make sure profiling can run: it renders one view of the first test scene from the first source-view set.
+
+    Only that scene and that set matter; later scenes and protocols, which
+    only evaluation uses, do not affect profiling.
+    """
+    check_protocol_feasible(
+        test_scenes,
+        config.evaluation.source_view_sets[0],
+        num_scenes=1,
+        where="profiling (first test scene, evaluation.source_view_sets[0])",
+    )
+
+
 def dataset_image_size(scenes: SceneDataset) -> tuple[int, int]:
     """(height, width) of a dataset's images, read from its first view."""
     return scenes.load_scene(0, [0]).image_size
+
+
+def _has_trainable_parameters(config: Config) -> bool:
+    return any(parameter.requires_grad for parameter in build_model(config).parameters())
 
 
 def _load_trained_model(config: Config, checkpoint_path: Path) -> tuple[Any, TrainingProgress]:
@@ -280,11 +321,15 @@ def _load_trained_model(config: Config, checkpoint_path: Path) -> tuple[Any, Tra
     return model, progress
 
 
-def _check_contract(model: Any, config: Config, image_size: tuple[int, int], stages: Sequence[str]) -> None:
-    """Check the model with the view counts the requested stages will use."""
+def _check_contract(
+    model: Any, config: Config, image_size: tuple[int, int], stages: Sequence[str], device: torch.device
+) -> None:
+    """Check the model with the view counts the requested stages will actually use."""
     inference_view_counts = set()
-    if "evaluate" in stages or "profile" in stages:
+    if "evaluate" in stages:
         inference_view_counts |= {len(views) for views in config.evaluation.source_view_sets}
+    if "profile" in stages:
+        inference_view_counts.add(len(config.evaluation.source_view_sets[0]))  # profiling uses the first set only
     if "train" in stages:
         inference_view_counts.add(len(config.validation.source_views))  # validation runs in evaluation mode
     check_model_contract(
@@ -294,4 +339,5 @@ def _check_contract(model: Any, config: Config, image_size: tuple[int, int], sta
         num_fine_samples=config.renderer.num_fine_samples,
         inference_view_counts=sorted(inference_view_counts),
         training_view_counts=config.training.num_source_views if "train" in stages else None,
+        device=device,
     )

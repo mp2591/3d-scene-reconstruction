@@ -17,6 +17,12 @@ the suite alike:
    Only if it was made from the very same checkpoint file, identified by the
    SHA-256 hash of its content, and with the current measurement settings.
 
+   A model without trainable parameters (frozen, or analytic) cannot be
+   trained and has no checkpoint; it is evaluated as built, and its
+   evaluation records the model's config and a hash of its weights instead
+   (``untrained_model_record``). Both are needed: an analytic model may have
+   no weights at all, so only its config tells two versions apart.
+
 3. **Does a saved profile still describe the run?** ``profile_status``.
    Only if it was made with the current model, rendering and profiling
    settings, on the same kind of device with the same software.
@@ -34,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from scene_recon.build import build_dataset, resolve_device
+from scene_recon.build import build_dataset, build_model, resolve_device
 from scene_recon.checkpoints import TrainingProgress, read_checkpoint_config, read_checkpoint_training_data
 from scene_recon.config import Config, flatten_settings, setting_in_sections
 from scene_recon.data.base import SceneDataset
@@ -114,6 +120,16 @@ def check_training_data_unchanged(checkpoint_path: Path, train_scenes: SceneData
     if trained_on is None:  # a checkpoint from before fingerprints were recorded
         return
     current = _canonical(train_scenes.fingerprint())
+    if set(trained_on) != set(current):
+        # E.g. an SRN checkpoint from before content hashing ("files_sha256"):
+        # its fingerprint cannot tell whether the content is the same, so the
+        # current files cannot be trusted to be the ones it was trained on.
+        raise ConfigError(
+            f"{checkpoint_path} records its training data in an older fingerprint format "
+            f"({_show(trained_on)}), which cannot confirm that the training split still holds the same "
+            "content. It cannot be resumed or reused for training; start a new run to train. It can still "
+            "be evaluated and profiled."
+        )
     if _canonical(trained_on) != current:
         raise ConfigError(
             f"{checkpoint_path} was trained on different data than the training split now contains "
@@ -136,6 +152,21 @@ def _file_digest(path: str, size: int, modified_ns: int) -> str:
         for block in iter(lambda: file.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def model_weights_digest(model: Any) -> str:
+    """SHA-256 of a model's saved state (parameters and persistent buffers): which weights it holds."""
+    digest = hashlib.sha256()
+    for name, tensor in model.state_dict().items():
+        values = tensor.detach().cpu().contiguous()
+        digest.update(f"{name}\t{values.dtype}\t{tuple(values.shape)}\n".encode())
+        digest.update(values.numpy().tobytes() if values.numel() else b"")
+    return digest.hexdigest()
+
+
+def untrained_model_record(config: Config, model: Any) -> dict[str, Any]:
+    """What identifies a model evaluated as built: its config and its weights."""
+    return _canonical({"config": config.raw["model"], "weights_sha256": model_weights_digest(model)})
 
 
 def checkpoint_record(checkpoint_path: Path, progress: TrainingProgress) -> dict[str, Any]:
@@ -213,12 +244,19 @@ def evaluation_status(config: Config) -> OutputStatus:
     content, problem = _read_result(files.evaluation, required_keys=("checkpoint", "settings", "protocols"))
     if problem is not None:
         return problem
-    if not files.checkpoint.is_file():
-        return OutputStatus("stale", "the run has no checkpoint", content)
     if content["settings"] != evaluation_settings(config):
         return OutputStatus(
             "stale", "made with different evaluation, rendering or test-data settings, or other test data", content
         )
+    if content["checkpoint"] is None:
+        # Made from a model without trainable parameters, as built (see run_evaluation).
+        if files.checkpoint.is_file():
+            return OutputStatus("stale", "made from the model as built, but the run now has a checkpoint", content)
+        if content.get("untrained_model") != untrained_model_record(config, build_model(config)):
+            return OutputStatus("stale", "made from a model built with other settings or weights", content)
+        return OutputStatus("current", "", content)
+    if not files.checkpoint.is_file():
+        return OutputStatus("stale", "the run has no checkpoint", content)
     if content["checkpoint"].get("sha256") != checkpoint_digest(files.checkpoint):
         return OutputStatus("stale", "made from a different checkpoint than the run's current one", content)
     return OutputStatus("current", "", content)

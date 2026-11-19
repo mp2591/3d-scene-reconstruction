@@ -149,8 +149,9 @@ the result.
    trainable parameter must receive a finite gradient from at least one of
    them. Delete or freeze (`requires_grad = False`) parameters your model
    does not use, such as a pretrained backbone's classification head. A
-   fully frozen model can be evaluated and profiled; check it with
-   `--stages evaluate profile`.
+   model without trainable parameters (fully frozen, or analytic with no
+   parameters at all) can be evaluated and profiled, as built and without a
+   checkpoint; check it with `--stages evaluate profile`.
 
 6. **Train**, on its own or as one run of a suite ([suites.md](suites.md)).
 

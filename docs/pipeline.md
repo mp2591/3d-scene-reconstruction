@@ -166,6 +166,12 @@ same size, is recognised. The SRN loader keeps the hash for the rest of the
 process only while every file's size, modification time, change time and
 inode are unchanged, and hashes again otherwise.
 
+Checkpoints from before content hashing record an older SRN fingerprint
+(`files_sha256`: names and sizes only). It cannot confirm that the files
+still hold the same content, so such a checkpoint is not resumed or reused
+for training; the error says so. It can still be evaluated and profiled.
+To train further, start a new run.
+
 ## Adding a loss or a metric
 
 Both follow the same registry pattern; see

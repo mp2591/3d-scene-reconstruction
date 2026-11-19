@@ -25,6 +25,7 @@ failed run. Suites run it for every run before starting.
 
 from __future__ import annotations
 
+import itertools
 import math
 from typing import Sequence
 
@@ -54,6 +55,7 @@ def check_model_contract(
     num_fine_samples: int = 7,
     inference_view_counts: Sequence[int] = (1, 3),
     training_view_counts: Sequence[int] | None = (1, 3),
+    device: torch.device | None = None,
 ) -> None:
     """Verify that a model satisfies the ``ReconstructionModel`` contract.
 
@@ -73,6 +75,9 @@ def check_model_contract(
         training_view_counts: Numbers of source views checked in training mode,
             as in ``training.num_source_views``. ``None`` if the model will not
             be trained; then no training checks are made.
+        device: Where to run the check, i.e. where the model lives. Defaults to
+            the device of the model's first parameter or buffer, or the CPU
+            for a model with neither (e.g. an analytic model).
 
     Raises:
         ModelContractError: With a description of the first violation found.
@@ -89,7 +94,7 @@ def check_model_contract(
 
     if isinstance(image_size, int):
         image_size = (image_size, image_size)
-    device = next(model.parameters()).device
+    device = device if device is not None else _model_device(model)
     sample_counts = {LEVEL_COARSE: num_coarse_samples}
     if num_fine_samples > 0:
         sample_counts[LEVEL_FINE] = num_coarse_samples + num_fine_samples
@@ -124,6 +129,13 @@ def check_model_contract(
     finally:
         model.zero_grad(set_to_none=True)
         model.train(was_training)
+
+
+def _model_device(model: ReconstructionModel) -> torch.device:
+    """The device of the model's first parameter or buffer; the CPU if it has neither."""
+    for tensor in itertools.chain(model.parameters(), model.buffers()):
+        return tensor.device
+    return torch.device("cpu")
 
 
 def check_parameter_groups(model: ReconstructionModel) -> None:

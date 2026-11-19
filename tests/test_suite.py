@@ -310,7 +310,7 @@ def test_report_leaves_out_results_that_no_longer_match(tmp_path: Path):
     run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS)))
     changed = load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["evaluation.source_view_sets=[[0, 6]]"])
 
-    write_report(changed.name, changed.directory, changed.grouped_runs(), {})
+    write_report(changed.name, changed.directory, changed.grouped_runs(), {}, changed.stages)
 
     report = (changed.directory / "summary.md").read_text()
     assert "## Quality with" not in report
@@ -376,7 +376,7 @@ def test_report_survives_damaged_files(tmp_path: Path):
     run_suite(suite)
     RunFiles(suite.runs["wide"].run_dir).profile.write_text("{")
 
-    write_report(suite.name, suite.directory, suite.grouped_runs(), {})
+    write_report(suite.name, suite.directory, suite.grouped_runs(), {}, suite.stages)
 
     assert "- **wide**, profile: profile.json is damaged" in (suite.directory / "summary.md").read_text()
 
@@ -498,7 +498,7 @@ def test_report_warns_when_checkpoints_record_different_training_data(smoke_conf
     Trainer(config_for("after")).train()
 
     groups = {name: {name: config_for(name)} for name in ("before", "after")}
-    write_report("mixed", smoke_config.run_dir.parent, groups, {})
+    write_report("mixed", smoke_config.run_dir.parent, groups, {}, ["train", "evaluate", "profile"])
 
     report = (smoke_config.run_dir.parent / "summary.md").read_text()
     assert "Warning: the runs' checkpoints record different training data" in report
@@ -562,3 +562,86 @@ def test_a_report_that_fails_once_does_not_fail_the_suite(tmp_path: Path, monkey
 
     assert run_suite(suite) == {}
     assert (suite.directory / "summary.md").is_file()
+
+
+# ---------------------------------------------------------------- results of unfinished training (#3 N3)
+
+
+def _fail_training_of(monkeypatch, run_name: str) -> None:
+    """Make training of one run fail before it writes a new checkpoint (a simulated crash)."""
+    real_training = suite_module.run_training
+
+    def training(config, *args, **kwargs):
+        if config.experiment.run_name == run_name:
+            raise RuntimeError("training crashed (simulated)")
+        return real_training(config, *args, **kwargs)
+
+    monkeypatch.setattr(suite_module, "run_training", training)
+
+
+def _comparison_rows(suite) -> list[dict]:
+    with open(suite.directory / "paired_comparison.csv") as file:
+        return list(csv.DictReader(file))
+
+
+def test_a_failed_training_extension_is_not_compared_as_a_finished_experiment(tmp_path: Path, monkeypatch):
+    """The review's scenario: both runs extended from 4 to 6 steps; the reference's extension fails."""
+    run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS)))
+    _fail_training_of(monkeypatch, "narrow")
+    extended = load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["training.num_steps=6"])
+
+    assert list(run_suite(extended)) == ["narrow"]
+
+    report = (extended.directory / "summary.md").read_text()
+    assert "| narrow | failed | 4 of 6 |" in report and "| wide | evaluated | 6 |" in report
+    quality = report.split("## Quality with 1 input view")[1].split("##")[0]
+    assert " *" in quality.split("| narrow |")[1].split("\n")[0]  # the step-4 score, marked interim
+    comparison = report.split("## Paired comparison with narrow")[1].split("## ")[0]
+    assert "Not available yet" in comparison
+    assert "evaluated at step 4, but 6 training steps were requested and training failed" in comparison
+    assert _comparison_rows(extended) == []
+
+    # Once the extension succeeds, the ordinary comparison is back.
+    monkeypatch.undo()
+    assert run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["training.num_steps=6"])) == {}
+    assert {row["run"] for row in _comparison_rows(extended)} == {"wide"}
+
+
+def test_an_unfinished_candidate_is_listed_as_not_compared(tmp_path: Path, monkeypatch):
+    runs = {**TWO_RUNS, "third": {"model": {"decoder": {"hidden_width": 24}}}}
+    run_suite(load_suite(_write_suite(tmp_path, runs)))
+    _fail_training_of(monkeypatch, "wide")
+    extended = load_suite(_write_suite(tmp_path, runs), overrides=["training.num_steps=6"])
+
+    run_suite(extended)
+
+    assert {row["run"] for row in _comparison_rows(extended)} == {"third"}
+    report = (extended.directory / "summary.md").read_text()
+    assert "Not compared, because their requested training has not finished" in report
+    assert "- **wide**: evaluated at step 4, but 6 training steps were requested and training failed" in report
+
+
+def test_evaluating_existing_checkpoints_only_still_compares_them(tmp_path: Path):
+    run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS)))
+    # No training requested: the step-4 checkpoints are what is being compared, whatever num_steps says.
+    evaluation_only = load_suite(
+        _write_suite(tmp_path, TWO_RUNS, stages=["evaluate"]), overrides=["training.num_steps=6"]
+    )
+
+    assert run_suite(evaluation_only) == {}
+    assert {row["run"] for row in _comparison_rows(evaluation_only)} == {"wide"}
+
+
+def test_a_profiling_failure_after_a_finished_evaluation_keeps_the_comparison(tmp_path: Path, monkeypatch):
+    real_profiling = suite_module.run_profiling
+
+    def profiling(config, *args, **kwargs):
+        if config.experiment.run_name == "wide":
+            raise RuntimeError("profiling crashed (simulated)")
+        return real_profiling(config, *args, **kwargs)
+
+    monkeypatch.setattr(suite_module, "run_profiling", profiling)
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
+
+    assert list(run_suite(suite)) == ["wide"]
+    assert {row["run"] for row in _comparison_rows(suite)} == {"wide"}

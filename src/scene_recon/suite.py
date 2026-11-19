@@ -210,7 +210,7 @@ def run_suite(suite: Suite) -> dict[str, str]:
             _release_memory()
 
         try:
-            write_report(suite.name, suite.directory, suite.grouped_runs(), failures)
+            write_report(suite.name, suite.directory, suite.grouped_runs(), failures, suite.stages)
             report_error = None
         except Exception as error:  # noqa: BLE001 - a broken report must not cost the remaining runs
             logger.exception("The suite report could not be written; continuing with the next run.")

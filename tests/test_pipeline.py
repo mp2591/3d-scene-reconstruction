@@ -193,3 +193,51 @@ def test_a_later_scene_with_fewer_views_is_caught(tmp_path):
 
     with pytest.raises(ConfigError, match="uses every view of scene 1"):
         check_run_can_start(config, ["evaluate"])
+
+
+# ---------------------------------------------------------------- profiling validates only what it renders (#3 N1)
+
+
+def _srn_config_with_test_views(tmp_path, views_per_test_scene: list[int], extra_overrides: list[str]) -> Config:
+    """An on-disk SRN config whose test scenes have the given numbers of views (scene A first)."""
+    from conftest import CONFIG_DIR, srn_overrides, write_srn_scene, write_srn_splits
+    from scene_recon.config import load_config
+
+    splits = write_srn_splits(tmp_path / "srn", num_views=6)
+    shutil.rmtree(splits["test"])
+    for scene, num_views in zip(("car_a", "car_b"), views_per_test_scene):
+        write_srn_scene(splits["test"] / scene, num_views=num_views, image_size=8)
+    overrides = srn_overrides(splits, tmp_path / "runs") + extra_overrides
+    return load_config(CONFIG_DIR / "smoke_test.yaml", overrides=overrides)
+
+
+def test_profiling_ignores_later_scenes_it_never_renders(tmp_path):
+    """The review's example: scene A has 3 views, scene B 2; source views [0, 1] for both scenes."""
+    from scene_recon.stages import run_profiling
+
+    config = _srn_config_with_test_views(
+        tmp_path, [3, 2], ["evaluation.source_view_sets=[[0, 1]]", "evaluation.num_scenes=2"]
+    )
+
+    check_run_can_start(config, ["profile"])
+    assert run_profiling(config)["image_size"] == [8, 8]
+    with pytest.raises(ConfigError, match="uses every view of scene 1"):
+        check_run_can_start(config, ["evaluate"])
+    with pytest.raises(ConfigError, match="uses every view of scene 1"):
+        check_run_can_start(config, ["evaluate", "profile"])
+
+
+def test_profiling_still_needs_a_target_view_in_the_first_scene(tmp_path):
+    config = _srn_config_with_test_views(tmp_path, [2, 6], ["evaluation.source_view_sets=[[0, 1]]"])
+
+    with pytest.raises(ConfigError, match=r"profiling.*uses every view of scene 0"):
+        check_run_can_start(config, ["profile"])
+
+
+def test_unused_later_protocols_do_not_affect_profiling(tmp_path):
+    # The second protocol uses every view of scene A, so it cannot be evaluated, but profiling never uses it.
+    config = _srn_config_with_test_views(tmp_path, [3, 3], ["evaluation.source_view_sets=[[0], [0, 1, 2]]"])
+
+    check_run_can_start(config, ["profile"])
+    with pytest.raises(ConfigError, match="uses every view"):
+        check_run_can_start(config, ["evaluate"])

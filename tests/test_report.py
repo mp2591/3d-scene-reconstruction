@@ -19,7 +19,7 @@ from scene_recon.run_files import RunFiles
 
 
 def _run(key: str, metrics: dict, seed: int = 0) -> RunResult:
-    return RunResult(key=key, seed=seed, status="evaluated", files=RunFiles(Path(key)), metrics=metrics)
+    return RunResult(key=key, seed=seed, status="evaluated", files=RunFiles(Path(key)), metrics=metrics, eligible=True)
 
 
 def _group(name: str, *per_seed_metrics: dict) -> GroupResult:
@@ -103,6 +103,7 @@ def _seeded_group(name: str, scores_per_seed: dict[int, float | None], seeds: li
             run.per_scene = {1: per_scene}
             run.metrics = {1: {"psnr": base + 0.37 * 4.5}}
             run.status = "evaluated"
+            run.eligible = True
         replicates.append(run)
     return GroupResult(name, replicates)
 

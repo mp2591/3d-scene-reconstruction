@@ -12,8 +12,11 @@ from scene_recon.models.contract import ModelContractError, check_model_contract
 from scene_recon.models.normalization import InputNormalization
 from scene_recon.registry import MODELS, ConfigError
 from scene_recon.rendering import VolumeRenderer
-from scene_recon.stages import check_run_can_start
+from scene_recon.provenance import evaluation_status
+from scene_recon.stages import check_run_can_start, run_evaluation
 from scene_recon.structures import FieldOutput, SceneViews
+
+from test_rendering import _OracleSphereModel
 
 
 class _MinimalModel(ReconstructionModel):
@@ -229,3 +232,75 @@ def test_a_parameter_used_only_with_two_views_passes_when_two_view_training_is_c
 
     with pytest.raises(ModelContractError, match=r"training view counts \[1, 3\].*two_view_weight"):
         check_model_contract(_TwoViewFusion(), training_view_counts=[1, 3])
+
+
+# ---------------------------------------------------------------- models without parameters (#3 N2)
+
+
+class _AnalyticSphere(_OracleSphereModel):
+    """The rendering tests' analytic model, with defaults so a config can select it. It has no parameters."""
+
+    def __init__(self, radius: float = 0.5) -> None:
+        super().__init__(radius, torch.tensor([0.4, 0.5, 0.6]))
+
+
+class _BufferOnlyModel(ReconstructionModel):
+    """Keeps its fixed values in a buffer, not in parameters."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("weights", torch.rand(3, 4))
+
+    def encode_scene(self, source_views: SceneViews):
+        return None
+
+    def query_field(self, scene_encoding, points, view_directions, level):
+        output = points @ self.weights
+        return FieldOutput(rgb=torch.sigmoid(output[..., :3]), density=torch.relu(output[..., 3]))
+
+
+if "analytic_sphere_test_model" not in MODELS.names():
+    MODELS.register("analytic_sphere_test_model")(_AnalyticSphere)
+
+
+def test_a_parameterless_model_passes_the_inference_check():
+    """The review's direct reproduction."""
+    model = _OracleSphereModel(0.5, torch.tensor([0.4, 0.5, 0.6]))
+    assert list(model.parameters()) == []
+
+    check_model_contract(model, inference_view_counts=[1], training_view_counts=None)
+
+
+def test_a_buffer_only_model_passes_on_its_device():
+    model = _BufferOnlyModel()
+
+    check_model_contract(model, training_view_counts=None)  # device taken from the buffer
+    check_model_contract(model, training_view_counts=None, device=torch.device("cpu"))
+
+
+def test_a_parameterless_model_passes_inference_preflight_but_cannot_be_trained(smoke_config: Config):
+    config = parse_config({**smoke_config.raw, "model": {"name": "analytic_sphere_test_model"}})
+
+    check_run_can_start(config, ["evaluate", "profile"])
+    with pytest.raises(ModelContractError, match="no trainable parameters"):
+        check_run_can_start(config, ["train"])
+
+
+def test_a_model_without_trainable_parameters_is_evaluated_as_built(smoke_config: Config):
+    config = parse_config({**smoke_config.raw, "model": {"name": "analytic_sphere_test_model"}})
+
+    report = run_evaluation(config)
+
+    assert report["checkpoint"] is None
+    assert report["untrained_model"]["config"] == {"name": "analytic_sphere_test_model"}
+    assert len(report["untrained_model"]["weights_sha256"]) == 64
+    assert evaluation_status(config).is_current
+    changed = parse_config({**config.raw, "model": {"name": "analytic_sphere_test_model", "radius": 0.3}})
+    assert evaluation_status(changed).state == "stale"  # other settings, so another identity
+
+
+def test_a_trainable_model_without_a_checkpoint_is_not_evaluated(smoke_config: Config):
+    with pytest.raises(ConfigError, match="no checkpoint to evaluate"):
+        check_run_can_start(smoke_config, ["evaluate"])
+    with pytest.raises(FileNotFoundError, match="No checkpoint"):
+        run_evaluation(smoke_config)
