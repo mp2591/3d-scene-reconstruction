@@ -115,7 +115,11 @@ and +z points into the scene. Poses are camera-to-world matrices. This is how
 ShapeNet-SRN stores its poses, so they are used without conversion.
 
 **Pixels.** Coordinates are ordered (x, y). The centre of the top-left pixel
-is at (0.5, 0.5).
+is at (0.5, 0.5). The original SRN and pixelNeRF code reads the SRN
+intrinsics with pixel centres at integers instead, half a pixel apart; the
+SRN loader's `pixel_centers` setting chooses between the two (see
+[`data/srn.py`](../src/scene_recon/data/srn.py)). Which one matches the
+renders is still to be established on the real data.
 
 **Rays and depth.** Ray directions have unit length, so a depth is a distance
 along the ray, and `near` and `far` are distances from the camera.
@@ -151,6 +155,13 @@ implement `__len__`, `num_views` and `load_scene`, register the class with
 [`data/__init__.py`](../src/scene_recon/data/__init__.py). A dataset only
 loads views; the trainer and evaluator decide which ones are inputs and which
 are targets.
+
+Also override `fingerprint()` to identify the data's content: it is
+recorded with every checkpoint and evaluation, an evaluation made on other
+test data is redone, and a run is not resumed on other training data. The
+default only records the class and the number of scenes. The SRN loader
+hashes every file's name and size and every intrinsics file's content, once
+per split directory and process.
 
 ## Adding a loss or a metric
 

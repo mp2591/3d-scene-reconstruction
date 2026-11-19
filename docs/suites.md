@@ -35,7 +35,7 @@ runs:                                  # executed top to bottom
         encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
 ```
 
-The file has exactly four keys:
+The file has four required keys and one optional key:
 
 | Key          | Meaning                                                                         |
 |--------------|---------------------------------------------------------------------------------|
@@ -43,6 +43,7 @@ The file has exactly four keys:
 | `stages`     | Which of `train`, `evaluate` and `profile` to execute for each run.             |
 | `common`     | A config fragment shared by every run.                                          |
 | `runs`       | One config fragment per run. The key is the run's name.                         |
+| `seeds`      | Optional. Repeat every run once per seed, e.g. `[0, 1, 2]`; see [Several seeds](#several-seeds). |
 
 `common` and each run are ordinary config fragments, written exactly like the
 config files described in [configuration.md](configuration.md). They can use
@@ -125,14 +126,16 @@ remaining runs continue.
 ```
 runs/<suite_name>/
   suite.log                          everything the suite printed, with timestamps
-  summary.md                         the report: tables and figures
-  summary.csv                        the same numbers, one row per run
+  summary.md                         the report: tables, comparisons and figures
+  summary.csv                        the same numbers, one row per run and seed
+  paired_comparison.csv              per-scene differences to the reference run, with confidence intervals
   plots/
     metrics_vs_source_views.png      each metric against the number of input views
     quality_vs_speed.png             PSNR against rendering speed
     training_curves.png              training loss and validation PSNR, by step and by training time
     renders_<n>_source_views.png     the same test views rendered by every run, next to the truth
   <run_name>/                        one directory per run, as for a single run
+                                     (with seeds: <run_name>/seed_<seed>/ per seed)
 ```
 
 Each run directory has the same layout as a run started with the single-run
@@ -151,13 +154,42 @@ table is identical, and the report states when all runs were also trained on
 identical data, step for step (same seed, training data and batch settings;
 see [pipeline.md](pipeline.md#the-training-data-schedule)).
 
-`summary.csv` has one row per run. Quality columns are named
+The report then **compares every run with the reference**, the first run of
+the suite file, so list your baseline first. Every model is evaluated on the
+same test scenes, so the comparison is made scene by scene: for each scene,
+the run's score minus the reference's, averaged over the scenes, with a 95%
+confidence interval (Student's t over scenes). A run is called *better* or
+*worse* only when the interval excludes zero; otherwise the report says
+*no clear difference*. The same numbers are in `paired_comparison.csv`.
+
+`summary.csv` has one row per run and seed. Quality columns are named
 `<metric>_<n>v`: `psnr_1v` is the PSNR with one input view. Load it with
 pandas or a spreadsheet for analysis the report does not cover.
 
 The render comparison shows the first non-source view of the first
 `evaluation.num_preview_scenes` test scenes. These renders are saved by every
 evaluation, so the comparison is available even with `save_images: false`.
+
+## Several seeds
+
+Training is random: the same architecture trained with another seed ends
+somewhat differently. To see how large that effect is, list seeds:
+
+```yaml
+suite_name: proposal_comparison
+seeds: [0, 1, 2]
+```
+
+Every run is then executed once per seed, in `<run_name>/seed_<seed>/`, with
+`experiment.seed` set to that seed (a seed set in a run's own config is
+replaced). For each seed, all runs are still trained on identical data, so
+runs stay comparable seed by seed. The cost grows with the number of seeds.
+
+The report then shows each metric as mean ± standard deviation over the
+seeds, plots error bars, and averages each run's training curves over its
+seeds. In the paired comparison, each run's per-scene scores are averaged
+over its seeds first. A difference is convincing when its confidence
+interval excludes zero *and* it is larger than the spread between seeds.
 
 ## Trying a suite quickly
 

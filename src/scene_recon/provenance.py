@@ -34,9 +34,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from scene_recon.build import resolve_device
-from scene_recon.checkpoints import TrainingProgress, read_checkpoint_config
+from scene_recon.build import build_dataset, resolve_device
+from scene_recon.checkpoints import TrainingProgress, read_checkpoint_config, read_checkpoint_training_data
 from scene_recon.config import Config, flatten_settings, setting_in_sections
+from scene_recon.data.base import SceneDataset
 from scene_recon.environment import device_description
 from scene_recon.registry import ConfigError
 from scene_recon.run_files import RunFiles, read_json
@@ -103,6 +104,23 @@ def check_checkpoint_matches_config(checkpoint_path: Path, config: Config) -> No
         )
 
 
+def check_training_data_unchanged(checkpoint_path: Path, train_scenes: SceneDataset) -> None:
+    """Refuse to continue training on data other than the data the checkpoint was trained on.
+
+    The config can name the same directory while its content changed (e.g.
+    a re-extracted or resized copy of the dataset); the fingerprint notices.
+    """
+    trained_on = read_checkpoint_training_data(checkpoint_path)
+    if trained_on is None:  # a checkpoint from before fingerprints were recorded
+        return
+    current = _canonical(train_scenes.fingerprint())
+    if _canonical(trained_on) != current:
+        raise ConfigError(
+            f"{checkpoint_path} was trained on different data than the training split now contains "
+            f"(trained on {_show(trained_on)}, now {_show(current)}). Start a new run to train on the new data."
+        )
+
+
 def checkpoint_digest(path: Path) -> str:
     """SHA-256 of a checkpoint file's content, which identifies exactly which weights it holds."""
     status = path.stat()
@@ -134,12 +152,13 @@ def checkpoint_record(checkpoint_path: Path, progress: TrainingProgress) -> dict
 
 
 def evaluation_settings(config: Config) -> dict[str, Any]:
-    """The settings, besides the weights, that determine evaluation results."""
+    """The settings and test data, besides the weights, that determine evaluation results."""
     return _canonical(
         {
             "evaluation": config.raw["evaluation"],
             "renderer": config.raw["renderer"],
             "test_data": config.raw["data"]["test"],
+            "test_data_fingerprint": build_dataset(config, "test").fingerprint(),
         }
     )
 
@@ -189,7 +208,9 @@ def evaluation_status(config: Config) -> OutputStatus:
     if not files.checkpoint.is_file():
         return OutputStatus("stale", "the run has no checkpoint", content)
     if content["settings"] != evaluation_settings(config):
-        return OutputStatus("stale", "made with different evaluation, rendering or test-data settings", content)
+        return OutputStatus(
+            "stale", "made with different evaluation, rendering or test-data settings, or other test data", content
+        )
     if content["checkpoint"].get("sha256") != checkpoint_digest(files.checkpoint):
         return OutputStatus("stale", "made from a different checkpoint than the run's current one", content)
     return OutputStatus("current", "", content)

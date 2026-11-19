@@ -16,7 +16,7 @@ from scene_recon.suite import PreflightError, load_suite, run_suite
 from conftest import CONFIG_DIR
 
 
-def _write_suite(tmp_path: Path, runs: dict, stages: list[str] | None = None) -> Path:
+def _write_suite(tmp_path: Path, runs: dict, stages: list[str] | None = None, seeds: list[int] | None = None) -> Path:
     """Write a suite file whose runs build on the smoke test, shrunk to a few training steps."""
     content = {
         "suite_name": "test_suite",
@@ -39,6 +39,8 @@ def _write_suite(tmp_path: Path, runs: dict, stages: list[str] | None = None) ->
         },
         "runs": runs,
     }
+    if seeds is not None:
+        content["seeds"] = seeds
     path = tmp_path / "suite.yaml"
     path.write_text(yaml.safe_dump(content, sort_keys=False))  # keep the runs in the given order
     return path
@@ -306,7 +308,7 @@ def test_report_leaves_out_results_that_no_longer_match(tmp_path: Path):
     run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS)))
     changed = load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["evaluation.source_view_sets=[[0, 6]]"])
 
-    write_report(changed.name, changed.directory, changed.runs, {})
+    write_report(changed.name, changed.directory, changed.grouped_runs(), {})
 
     report = (changed.directory / "summary.md").read_text()
     assert "## Quality with" not in report
@@ -372,7 +374,7 @@ def test_report_survives_damaged_files(tmp_path: Path):
     run_suite(suite)
     RunFiles(suite.runs["wide"].run_dir).profile.write_text("{")
 
-    write_report(suite.name, suite.directory, suite.runs, {})
+    write_report(suite.name, suite.directory, suite.grouped_runs(), {})
 
     assert "- **wide**, profile: profile.json is damaged" in (suite.directory / "summary.md").read_text()
 
@@ -389,3 +391,55 @@ def test_runs_cannot_choose_their_own_output_directory(tmp_path: Path):
 
     with pytest.raises(ConfigError, match="different experiment.output_dir"):
         load_suite(_write_suite(tmp_path, runs))
+
+
+
+# ---------------------------------------------------------------- several seeds
+
+
+def test_seeds_repeat_every_run_once_per_seed(tmp_path: Path):
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS, seeds=[3, 7]))
+
+    assert list(suite.runs) == ["narrow/seed_3", "narrow/seed_7", "wide/seed_3", "wide/seed_7"]
+    assert suite.groups == {"narrow": ["narrow/seed_3", "narrow/seed_7"], "wide": ["wide/seed_3", "wide/seed_7"]}
+    config = suite.runs["wide/seed_7"]
+    assert config.experiment.seed == 7
+    assert config.run_dir == suite.directory / "wide" / "seed_7"
+
+
+@pytest.mark.parametrize("seeds", [[], [1, 1], [-1], [0.5], "0"])
+def test_invalid_seed_lists_are_rejected(tmp_path: Path, seeds):
+    with pytest.raises(ConfigError, match="'seeds' must be"):
+        load_suite(_write_suite(tmp_path, TWO_RUNS, seeds=seeds))
+
+
+def test_report_of_a_multi_seed_suite_shows_spread_and_paired_comparisons(tmp_path: Path):
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS, seeds=[0, 1]))
+
+    assert run_suite(suite) == {}
+
+    report = (suite.directory / "summary.md").read_text()
+    assert "Every run was trained 2 times, with seeds 0, 1." in report
+    assert "| narrow | 2 of 2 evaluated |" in report
+    quality = report.split("## Quality with 1 input view")[1].split("##")[0]
+    assert "±" in quality
+    comparison = report.split("## Paired comparison with narrow")[1]
+    assert "| wide |" in comparison and "[" in comparison
+    assert "For each seed, all runs were trained on identical data" in report
+
+    with open(suite.directory / "summary.csv") as file:
+        rows = list(csv.DictReader(file))
+    assert [(row["run"], row["seed"]) for row in rows] == [("narrow", "0"), ("narrow", "1"), ("wide", "0"), ("wide", "1")]
+    with open(suite.directory / "paired_comparison.csv") as file:
+        comparisons = list(csv.DictReader(file))
+    assert {row["run"] for row in comparisons} == {"wide"}
+    assert all(row["reference"] == "narrow" and int(row["num_scenes"]) == 2 for row in comparisons)
+
+
+def test_single_seed_report_also_compares_runs_scene_by_scene(tmp_path: Path):
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
+    run_suite(suite)
+
+    report = (suite.directory / "summary.md").read_text()
+
+    assert "## Paired comparison with narrow" in report and "±" not in report

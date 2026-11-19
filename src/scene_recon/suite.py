@@ -24,6 +24,12 @@ overrides from the command line. The run's key becomes its
 ``experiment.run_name``, and all runs write into
 ``<experiment.output_dir>/<suite_name>/``.
 
+An optional ``seeds: [0, 1, 2]`` repeats every run once per seed, each in its
+own directory ``<run>/seed_<seed>/`` with ``experiment.seed`` set to that
+seed. For a given seed, all runs are still trained on identical data. The
+report then shows each run's mean and spread over its seeds (see
+``scene_recon.comparison``).
+
 Running a suite:
 
 1. Every run's config is built and validated. The runs must use identical
@@ -45,6 +51,7 @@ suite moves on to the next run.
 
 from __future__ import annotations
 
+import copy
 import gc
 import logging
 import re
@@ -67,6 +74,7 @@ from scene_recon.stages import STAGES, check_run_can_start, run_evaluation, run_
 logger = logging.getLogger(__name__)
 
 _SUITE_KEYS = {"suite_name", "stages", "common", "runs"}
+_OPTIONAL_SUITE_KEYS = {"seeds"}
 # Letters, digits and _ . + -, but not "." or ".." alone, which are not directory names of their own.
 _VALID_NAME = re.compile(r"^(?!\.+$)[A-Za-z0-9_.+-]+$")
 
@@ -82,10 +90,18 @@ class Suite:
     """The stages to execute, in execution order."""
 
     runs: dict[str, Config]
-    """Every run's validated config, in execution order."""
+    """The config of everything that is executed, in execution order. Keyed by
+    run name, or by ``<run name>/seed_<seed>`` when the suite lists ``seeds``."""
 
     directory: Path
     """Where the runs and the suite report are written: ``<output_dir>/<suite_name>/``."""
+
+    groups: dict[str, list[str]]
+    """Run name in the suite file -> its keys in ``runs`` (one per seed)."""
+
+    def grouped_runs(self) -> dict[str, dict[str, Config]]:
+        """Run name -> {key in ``runs``: config}, the shape the report expects."""
+        return {name: {key: self.runs[key] for key in keys} for name, keys in self.groups.items()}
 
 
 def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
@@ -105,6 +121,7 @@ def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
     _check_suite_keys(content, path)
     suite_name = _checked_name(content["suite_name"], "suite_name")
     stages = _checked_stages(content["stages"])
+    seeds = _checked_seeds(content.get("seeds"))
     runs = content["runs"]
     if not isinstance(runs, Mapping) or not runs:
         raise ConfigError(f"'runs' in {path} must be a non-empty mapping from run name to config.")
@@ -126,14 +143,25 @@ def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
 
     # The output directory is shared, so it can only be decided from the runs that merged.
     suite_directory = Path(_shared_output_dir(raw_configs)) / suite_name if raw_configs else Path(suite_name)
-    configs = {}
+    configs: dict[str, Config] = {}
+    groups: dict[str, list[str]] = {}
     for run_name, raw in raw_configs.items():
-        # The run's key names the run, and every run writes into the suite's directory.
-        raw["experiment"] = {**raw.get("experiment", {}), "run_name": run_name, "output_dir": str(suite_directory)}
-        try:
-            configs[run_name] = parse_config(raw)
-        except ConfigError as error:
-            problems[run_name] = str(error)
+        groups[run_name] = []
+        for key, seed in _replicates(run_name, seeds):
+            replicate = copy.deepcopy(raw)
+            # The key names the run, and every run writes into the suite's directory.
+            replicate["experiment"] = {
+                **replicate.get("experiment", {}),
+                "run_name": key,
+                "output_dir": str(suite_directory),
+            }
+            if seed is not None:
+                replicate["experiment"]["seed"] = seed
+            try:
+                configs[key] = parse_config(replicate)
+                groups[run_name].append(key)
+            except ConfigError as error:
+                problems[run_name] = str(error)
 
     if problems:
         # Listed in suite order, whichever check found the problem.
@@ -143,7 +171,7 @@ def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
     # Runs are only comparable if they are measured in exactly the same way.
     check_identical_measurement(configs)
 
-    return Suite(name=suite_name, stages=stages, runs=configs, directory=suite_directory)
+    return Suite(name=suite_name, stages=stages, runs=configs, directory=suite_directory, groups=groups)
 
 
 def run_suite(suite: Suite) -> dict[str, str]:
@@ -170,7 +198,7 @@ def run_suite(suite: Suite) -> dict[str, str]:
             _release_memory()
 
         try:
-            write_report(suite.name, suite.directory, suite.runs, failures)
+            write_report(suite.name, suite.directory, suite.grouped_runs(), failures)
         except Exception:  # noqa: BLE001 - a broken report must not cost the remaining runs
             logger.exception("The suite report could not be written; continuing with the next run.")
 
@@ -249,10 +277,11 @@ def _shared_output_dir(raw_configs: dict[str, dict[str, Any]]) -> str:
 def _check_suite_keys(content: Any, path: Path) -> None:
     if not isinstance(content, Mapping):
         raise ConfigError(f"{path} must contain a YAML mapping at the top level.")
-    unknown = sorted(set(content) - _SUITE_KEYS)
+    valid = _SUITE_KEYS | _OPTIONAL_SUITE_KEYS
+    unknown = sorted(set(content) - valid)
     missing = sorted(_SUITE_KEYS - set(content))
     if unknown:
-        raise ConfigError(f"Unknown key(s) in suite file {path}: {unknown}. Valid keys: {sorted(_SUITE_KEYS)}.")
+        raise ConfigError(f"Unknown key(s) in suite file {path}: {unknown}. Valid keys: {sorted(valid)}.")
     if missing:
         raise ConfigError(f"Missing key(s) in suite file {path}: {missing}.")
 
@@ -278,6 +307,28 @@ def _check_run_names_are_distinct(names: list[Any]) -> None:
                 "would share a directory. Rename one of them."
             )
         seen[key] = name
+
+
+def _checked_seeds(seeds: Any) -> list[int] | None:
+    """``None`` (each run uses its own experiment.seed) or a non-empty list of distinct seeds."""
+    if seeds is None:
+        return None
+    valid = (
+        isinstance(seeds, list)
+        and seeds
+        and all(isinstance(seed, int) and not isinstance(seed, bool) and seed >= 0 for seed in seeds)
+        and len(set(seeds)) == len(seeds)
+    )
+    if not valid:
+        raise ConfigError(f"'seeds' must be a non-empty list of distinct non-negative whole numbers, got {seeds!r}.")
+    return seeds
+
+
+def _replicates(run_name: str, seeds: list[int] | None) -> list[tuple[str, int | None]]:
+    """The keys a run is executed under: its name, or one ``<name>/seed_<seed>`` per seed."""
+    if seeds is None:
+        return [(run_name, None)]
+    return [(f"{run_name}/seed_{seed}", seed) for seed in seeds]
 
 
 def _checked_stages(stages: Any) -> list[str]:

@@ -86,6 +86,8 @@ The report is at `runs/smoke_suite/summary.md`. It contains:
 
 - what differs between the runs
 - tables of training cost, speed and test metrics
+- a scene-by-scene comparison of every run with the first one, with 95%
+  confidence intervals (mean ± spread over seeds, if the suite lists several `seeds`)
 - plots of quality against the number of input views, quality against
   rendering speed, and training curves
 - the same test views rendered by every run, next to the ground truth
@@ -110,10 +112,14 @@ not from the setup. The pipeline makes sure of that:
 | **Everything else**      | May differ between runs on purpose (the model, an encoder's learning rate...). The suite report lists every differing setting, so it is visible what was varied and that everything else was held fixed. |
 | **Provenance**           | Every result is tied to what produced it. A checkpoint is only continued, evaluated or profiled with the exact settings it was trained with; changing, say, the learning rate of a trained run is refused instead of silently mixed in. Evaluations record the checkpoint by the hash of its content, profiles record the device and software, and the report shows a result only while it still matches. |
 
-One limit: training on a GPU is not repeatable bit for bit, because some
-GPU operations add numbers in a varying order. Two runs of the same model and
-seed therefore end slightly differently, so treat small differences between
-models with care.
+Two limits remain, and the suite helps with both. Training is random, and
+on a GPU not even repeatable bit for bit (some GPU operations add numbers in
+a varying order), so the same model can end slightly differently. A suite
+can repeat every run with several `seeds` and report the spread. And the
+test set is a sample of scenes, so the report compares every run with the
+first one scene by scene, with a 95% confidence interval, and calls a
+difference better or worse only when the interval excludes zero. See
+[`docs/suites.md`](docs/suites.md#several-seeds).
 
 The mechanics are described in [`docs/pipeline.md`](docs/pipeline.md#the-training-data-schedule).
 
@@ -406,6 +412,7 @@ src/scene_recon/
   suite.py               Loading a suite file and running its experiments in order.
   fairness.py            What must match across runs, and what differs.
   provenance.py          Which checkpoint and settings produced a result, and whether it is still valid.
+  comparison.py          Spread over seeds, and paired per-scene differences between runs.
   environment.py         The software, hardware and source revision recorded with every result.
   report.py  plots.py    The suite report: tables and figures.
 tests/                   Unit tests and end-to-end tests.
