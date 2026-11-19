@@ -15,10 +15,12 @@
 
 suite_name: proposal_comparison
 stages: [train, evaluate, profile]
+# seeds: [0, 1, 2]   # optional: repeat every run per seed and report the spread
 
 common:
   base: [../base.yaml, ../data/srn_cars.yaml]
 
+# The first run is the reference: every other run is compared with it scene by scene.
 runs:
   # (1) Baseline pixelNeRF: ResNet-34 encoder, MLP decoder with average pooling over views.
   pixelnerf_resnet34:

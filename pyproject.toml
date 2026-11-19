@@ -16,6 +16,7 @@ dependencies = [
     "scikit-image",
     "tensorboard",
     "matplotlib",
+    "scipy",
 ]
 
 [project.optional-dependencies]

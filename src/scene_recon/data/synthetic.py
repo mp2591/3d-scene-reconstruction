@@ -51,6 +51,16 @@ class SyntheticSpheresDataset(SceneDataset):
     def __len__(self) -> int:
         return self.num_scenes
 
+    def fingerprint(self) -> dict:
+        """The scenes are fully determined by the constructor's arguments."""
+        return {
+            "dataset": "synthetic_spheres",
+            "num_scenes": self.num_scenes,
+            "num_views": self.views_per_scene,
+            "image_size": self.image_size,
+            "seed": self.seed,
+        }
+
     def num_views(self, scene_index: int) -> int:
         return self.views_per_scene
 

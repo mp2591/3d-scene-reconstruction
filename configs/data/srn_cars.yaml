@@ -6,6 +6,13 @@
 # validation.source_views and evaluation.source_view_sets accordingly.
 #
 # near and far bound the distance from the camera at which a car can be.
+#
+# pixel_centers says how to read the principal point in the intrinsics files:
+#   half_integer  as stored (the pipeline's own convention, pixel centres at i + 0.5)
+#   integer       as the original SRN and pixelNeRF code reads them (centres at i);
+#                 shifts the principal point by half a pixel.
+# Which one matches the renders is not yet established; see the docstring of
+# src/scene_recon/data/srn.py for how to decide on your copy of the data.
 
 data:
   train:
@@ -13,13 +20,16 @@ data:
     split_dir: data/srn_cars/cars_train
     near: 0.8
     far: 1.8
+    pixel_centers: half_integer
   val:
     name: srn
     split_dir: data/srn_cars/cars_val
     near: 0.8
     far: 1.8
+    pixel_centers: half_integer
   test:
     name: srn
     split_dir: data/srn_cars/cars_test
     near: 0.8
     far: 1.8
+    pixel_centers: half_integer

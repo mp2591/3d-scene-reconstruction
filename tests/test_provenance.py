@@ -11,6 +11,7 @@ import torch
 
 from scene_recon import evaluation as evaluation_module
 from scene_recon.config import Config, parse_config
+from scene_recon.data.synthetic import SyntheticSpheresDataset
 from scene_recon.provenance import (
     evaluation_status,
     profile_status,
@@ -156,3 +157,42 @@ def test_a_profile_from_another_device_is_stale(smoke_config: Config):
 
     assert profiling_settings(on_gpu) != profiling_settings(smoke_config)
     assert profile_status(on_gpu).state == "stale"
+
+
+# ---------------------------------------------------------------- dataset identity (I4)
+
+
+def _pretend_the_data_changed(monkeypatch) -> None:
+    """Same config, different content: as if the dataset directory had been replaced."""
+    real_fingerprint = SyntheticSpheresDataset.fingerprint
+    monkeypatch.setattr(
+        SyntheticSpheresDataset, "fingerprint", lambda self: {**real_fingerprint(self), "files_sha256": "changed"}
+    )
+
+
+def test_an_evaluation_on_other_test_data_is_stale(smoke_config: Config, monkeypatch):
+    Trainer(smoke_config).train()
+    run_evaluation(smoke_config)
+
+    _pretend_the_data_changed(monkeypatch)
+
+    status = evaluation_status(smoke_config)
+    assert status.state == "stale" and "other test data" in status.reason
+
+
+def test_resuming_on_other_training_data_is_refused(smoke_config: Config, monkeypatch):
+    Trainer(smoke_config).train()
+    _pretend_the_data_changed(monkeypatch)
+
+    with pytest.raises(ConfigError, match="trained on different data"):
+        Trainer(_changed(smoke_config, "training", num_steps=smoke_config.training.num_steps + 2), resume=True)
+
+
+def test_results_record_the_data_they_came_from(smoke_config: Config):
+    Trainer(smoke_config).train()
+    report = run_evaluation(smoke_config)
+    state = torch.load(RunFiles(smoke_config.run_dir).checkpoint, weights_only=True)
+
+    expected = {"dataset": "synthetic_spheres", "num_scenes": 32, "num_views": 12, "image_size": 16, "seed": 0}
+    assert state["training_data"] == expected
+    assert report["settings"]["test_data_fingerprint"]["seed"] == 2

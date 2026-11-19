@@ -3,12 +3,17 @@
 Written into the suite directory and rewritten after every run, so partial
 results can be inspected while later runs are still training::
 
-    summary.md                                status, cost and quality tables, with the figures
-    summary.csv                               the same numbers, one row per run, for your own analysis
+    summary.md                                status, cost and quality tables, comparisons, figures
+    summary.csv                               one row per run and seed, for your own analysis
+    paired_comparison.csv                     per-scene differences to the reference run, with intervals
     plots/metrics_vs_source_views.png         each metric against the number of input views
     plots/quality_vs_speed.png                quality against rendering speed
     plots/training_curves.png                 training loss and validation quality over training
     plots/renders_<n>_source_views.png        the same views rendered by every run, next to the truth
+
+A "run" is an entry of the suite file. When the suite lists several
+``seeds``, each run was executed once per seed, and the report shows the
+mean and standard deviation over seeds (see ``scene_recon.comparison``).
 
 The report only reads the files each run wrote (see ``scene_recon.run_files``),
 so it can be regenerated at any time without touching the models. It shows
@@ -25,12 +30,15 @@ import io
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import reduce
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 
 import scene_recon.metrics  # noqa: F401  (registers the metrics, whose display settings are read below)
 from scene_recon.checkpoints import read_progress
+from scene_recon.comparison import PairedDifference, Summary, average_over_seeds, paired_difference, summarize
 from scene_recon.config import Config
 from scene_recon.evaluation import load_preview_images
 from scene_recon.fairness import MISSING, differing_settings, format_value, trained_on_identical_data
@@ -54,17 +62,24 @@ _HEADLINE_METRIC = "psnr"
 
 @dataclass
 class RunResult:
-    """Everything the report shows about one run, read from the run's output files."""
+    """What one executed run (one seed of a suite entry) produced, read from its output files."""
 
-    name: str
+    key: str
+    """The run's key in the suite, e.g. ``"wide"`` or ``"wide/seed_1"``."""
+
+    seed: int
     status: str
     files: RunFiles
     training_step: int | None = None
     training_hours: float | None = None
     parameters: int | None = None
     frames_per_second: float | None = None
+
     metrics: dict[int, dict[str, float]] = field(default_factory=dict)
     """Number of source views -> metric name -> mean over the test scenes."""
+
+    per_scene: dict[int, dict[str, dict[str, float]]] = field(default_factory=dict)
+    """Number of source views -> scene id -> metric name -> value."""
 
     preview_scene_ids: dict[int, list[str]] = field(default_factory=dict)
     """Number of source views -> scenes with a saved preview render."""
@@ -73,29 +88,106 @@ class RunResult:
     """Saved results that are not shown because they are out of date or damaged, with the reason."""
 
 
-def write_report(suite_name: str, directory: Path, runs: dict[str, Config], failures: dict[str, str]) -> None:
+@dataclass
+class GroupResult:
+    """One entry of the suite file, over all its seeds."""
+
+    name: str
+    replicates: list[RunResult]
+
+    @property
+    def evaluated(self) -> list[RunResult]:
+        return [replicate for replicate in self.replicates if replicate.metrics]
+
+    def summary(self, count: int, metric: str) -> Summary | None:
+        """Mean and spread over seeds of one metric for one number of input views."""
+        return summarize(
+            [run.metrics[count][metric] for run in self.evaluated if metric in run.metrics.get(count, {})]
+        )
+
+    def scene_scores(self, count: int, metric: str) -> dict[str, float]:
+        """Per-scene values of one metric, averaged over seeds."""
+        return average_over_seeds(
+            [
+                {scene: values[metric] for scene, values in run.per_scene[count].items() if metric in values}
+                for run in self.evaluated
+                if count in run.per_scene
+            ]
+        )
+
+    @property
+    def status(self) -> str:
+        if len(self.replicates) == 1:
+            return self.replicates[0].status
+        counts: dict[str, int] = {}
+        for replicate in self.replicates:
+            state = replicate.status.split(" (")[0]
+            counts[state] = counts.get(state, 0) + 1
+        return ", ".join(f"{count} of {len(self.replicates)} {state}" for state, count in counts.items())
+
+    @property
+    def training_step(self) -> int | None:
+        steps = [run.training_step for run in self.replicates if run.training_step is not None]
+        return min(steps) if steps else None
+
+    @property
+    def training_hours(self) -> float | None:
+        return _mean_or_none([run.training_hours for run in self.replicates])
+
+    @property
+    def parameters(self) -> int | None:
+        return next((run.parameters for run in self.replicates if run.parameters is not None), None)
+
+    @property
+    def frames_per_second(self) -> float | None:
+        return _mean_or_none([run.frames_per_second for run in self.replicates])
+
+
+def write_report(
+    suite_name: str,
+    directory: Path,
+    groups: Mapping[str, Mapping[str, Config]],
+    failures: Mapping[str, str],
+) -> None:
     """Write the tables and figures of a suite.
 
     Args:
         suite_name: Shown as the report's title.
         directory: The suite directory.
-        runs: Every run of the suite, in suite order.
-        failures: Runs that failed, mapped to their error message.
+        groups: Every run of the suite file, in suite order, mapped to its
+            executed runs (one per seed): ``{run name: {key: config}}``.
+        failures: Executed runs that failed, by key, mapped to their error message.
     """
-    results = [_collect(name, config, failed=name in failures) for name, config in runs.items()]
+    results = [
+        GroupResult(name, [_collect(key, config, failed=key in failures) for key, config in runs.items()])
+        for name, runs in groups.items()
+    ]
+    first_configs = {name: next(iter(runs.values())) for name, runs in groups.items()}
+    seeds = [config.experiment.seed for config in next(iter(groups.values())).values()]
+    comparisons = _paired_comparisons(results)
+
     plots_dir = directory / "plots"
     plots_dir.mkdir(parents=True, exist_ok=True)
-
     _write_csv(results, directory / "summary.csv")
-    figures = _write_figures(results, plots_dir)
-    _write_markdown(suite_name, results, figures, failures, differing_settings(runs), directory / "summary.md")
+    _write_comparison_csv(comparisons, directory / "paired_comparison.csv")
+    figures = _write_figures(results, plots_dir, multiple_seeds=len(seeds) > 1)
+    _write_markdown(
+        suite_name,
+        results,
+        seeds,
+        comparisons,
+        figures,
+        failures,
+        differing_settings(first_configs),
+        directory / "summary.md",
+    )
     logger.info("Suite report updated: %s", directory / "summary.md")
 
 
-def _collect(name: str, config: Config, failed: bool) -> RunResult:
+def _collect(key: str, config: Config, failed: bool) -> RunResult:
     """Read what a run has produced, keeping only results that still describe the run."""
     files = RunFiles(config.run_dir)
-    result = RunResult(name=name, status="not started", files=files)
+    result = RunResult(key=key, seed=config.experiment.seed, status="not started", files=files)
 
     progress = read_progress(files.checkpoint)
     finished_training = progress is not None and progress.step >= config.training.num_steps
@@ -111,6 +203,7 @@ def _collect(name: str, config: Config, failed: bool) -> RunResult:
         for protocol in evaluation.content["protocols"]:
             count = len(protocol["source_views"])
             result.metrics[count] = protocol["mean"]
+            result.per_scene[count] = protocol.get("per_scene", {})
             result.preview_scene_ids[count] = protocol.get("preview_scene_ids", [])
         result.status = "evaluated" if finished_training else f"evaluated at step {progress.step:,}"
     elif evaluation.state != "missing":
@@ -128,100 +221,180 @@ def _collect(name: str, config: Config, failed: bool) -> RunResult:
     return result
 
 
+# ---------------------------------------------------------------- comparisons
+
+
+@dataclass(frozen=True)
+class _Comparison:
+    run: str
+    reference: str
+    count: int
+    metric: str
+    difference: PairedDifference
+
+
+def _paired_comparisons(results: list[GroupResult]) -> list[_Comparison]:
+    """Every evaluated run against the reference: the first evaluated run of the suite."""
+    evaluated = [group for group in results if group.evaluated]
+    if len(evaluated) < 2:
+        return []
+    reference, others = evaluated[0], evaluated[1:]
+    comparisons = []
+    for count in _view_counts(results):
+        for metric in _metric_names(results):
+            reference_scores = reference.scene_scores(count, metric)
+            for group in others:
+                difference = paired_difference(group.scene_scores(count, metric), reference_scores)
+                if difference is not None:
+                    comparisons.append(_Comparison(group.name, reference.name, count, metric, difference))
+    return comparisons
+
+
 # ---------------------------------------------------------------- tables
 
 
-def _metric_names(results: list[RunResult]) -> list[str]:
+def _metric_names(results: list[GroupResult]) -> list[str]:
     """Every metric reported by any run, in the order the runs list them."""
     names: list[str] = []
-    for result in results:
-        for per_metric in result.metrics.values():
-            names.extend(name for name in per_metric if name not in names)
+    for group in results:
+        for run in group.evaluated:
+            for per_metric in run.metrics.values():
+                names.extend(name for name in per_metric if name not in names)
     return names
 
 
-def _view_counts(results: list[RunResult]) -> list[int]:
-    return sorted({count for result in results for count in result.metrics})
+def _view_counts(results: list[GroupResult]) -> list[int]:
+    return sorted({count for group in results for run in group.evaluated for count in run.metrics})
 
 
-def _write_csv(results: list[RunResult], path: Path) -> None:
-    """One row per run. Quality columns are named ``<metric>_<n>v``, e.g. ``psnr_1v``."""
+def _write_csv(results: list[GroupResult], path: Path) -> None:
+    """One row per run and seed. Quality columns are named ``<metric>_<n>v``, e.g. ``psnr_1v``."""
     metric_names, view_counts = _metric_names(results), _view_counts(results)
     quality_columns = [f"{metric}_{count}v" for count in view_counts for metric in metric_names]
-    columns = ["run", "status", "training_steps", "training_hours", "parameters", "frames_per_second"]
+    columns = ["run", "seed", "status", "training_steps", "training_hours", "parameters", "frames_per_second"]
 
     file = io.StringIO()
     writer = csv.DictWriter(file, fieldnames=columns + quality_columns)
     writer.writeheader()
-    for result in results:
-        row = {
-            "run": result.name,
-            "status": result.status,
-            "training_steps": result.training_step,
-            "training_hours": result.training_hours,
-            "parameters": result.parameters,
-            "frames_per_second": result.frames_per_second,
-        }
-        for count, per_metric in result.metrics.items():
-            for metric, value in per_metric.items():
-                row[f"{metric}_{count}v"] = value
-        writer.writerow(row)
+    for group in results:
+        for run in group.replicates:
+            row = {
+                "run": group.name,
+                "seed": run.seed,
+                "status": run.status,
+                "training_steps": run.training_step,
+                "training_hours": run.training_hours,
+                "parameters": run.parameters,
+                "frames_per_second": run.frames_per_second,
+            }
+            for count, per_metric in run.metrics.items():
+                for metric, value in per_metric.items():
+                    row[f"{metric}_{count}v"] = value
+            writer.writerow(row)
+    write_atomically(path, lambda temporary_path: temporary_path.write_text(file.getvalue()))
+
+
+def _write_comparison_csv(comparisons: list[_Comparison], path: Path) -> None:
+    columns = [
+        "run",
+        "reference",
+        "num_source_views",
+        "metric",
+        "mean_difference",
+        "ci95_low",
+        "ci95_high",
+        "num_scenes",
+        "verdict",
+    ]
+    file = io.StringIO()
+    writer = csv.DictWriter(file, fieldnames=columns)
+    writer.writeheader()
+    for comparison in comparisons:
+        difference = comparison.difference
+        writer.writerow(
+            {
+                "run": comparison.run,
+                "reference": comparison.reference,
+                "num_source_views": comparison.count,
+                "metric": comparison.metric,
+                "mean_difference": difference.mean,
+                "ci95_low": difference.low,
+                "ci95_high": difference.high,
+                "num_scenes": difference.num_scenes,
+                "verdict": difference.verdict(_metric_presentation(comparison.metric)[1]),
+            }
+        )
     write_atomically(path, lambda temporary_path: temporary_path.write_text(file.getvalue()))
 
 
 def _write_markdown(
     suite_name: str,
-    results: list[RunResult],
+    results: list[GroupResult],
+    seeds: list[int],
+    comparisons: list[_Comparison],
     figures: list[tuple[str, Path]],
-    failures: dict[str, str],
+    failures: Mapping[str, str],
     differences: dict[str, dict],
     path: Path,
 ) -> None:
+    multiple_seeds = len(seeds) > 1
     lines = [
         f"# Suite report: {suite_name}",
         "",
         f"Updated {datetime.now():%Y-%m-%d %H:%M}. Bold marks the best value of each quality metric.",
+    ]
+    if multiple_seeds:
+        lines += [
+            "",
+            f"Every run was trained {len(seeds)} times, with seeds {', '.join(map(str, seeds))}. Quality is shown "
+            "as mean ± standard deviation over the seeds; times and speeds are means. A difference between "
+            "runs smaller than their spread over seeds may be noise.",
+        ]
+    lines += [
         "",
         "## Status and cost",
         "",
         "| Run | Status | Training steps | Training time (h:mm) | Parameters | Rendering FPS |",
         "|---|---|--:|--:|--:|--:|",
     ]
-    for result in results:
+    for group in results:
         lines.append(
-            f"| {result.name} | {result.status} | {_format(result.training_step, '{:,}')} "
-            f"| {_format_duration(result.training_hours)} "
-            f"| {_format_count(result.parameters)} "
-            f"| {_format(result.frames_per_second, '{:.2f}')} |"
+            f"| {group.name} | {group.status} | {_format(group.training_step, '{:,}')} "
+            f"| {_format_duration(group.training_hours)} "
+            f"| {_format_count(group.parameters)} "
+            f"| {_format(group.frames_per_second, '{:.2f}')} |"
         )
 
-    left_out = [(result.name, reason) for result in results for reason in result.left_out]
+    left_out = [(run.key, reason) for group in results for run in group.replicates for reason in run.left_out]
     if left_out:
         lines += [
             "",
             "Some saved results no longer match their run's current checkpoint or settings, or are damaged. "
             "They are left out of every table and figure; running the suite again redoes them:",
             "",
-            *[f"- **{name}**, {reason}" for name, reason in left_out],
+            *[f"- **{key}**, {reason}" for key, reason in left_out],
         ]
 
-    lines += ["", *_differences_section(results, differences)]
+    lines += ["", *_differences_section(results, differences, multiple_seeds)]
 
     metric_names = _metric_names(results)
     for count in _view_counts(results):
-        lines += ["", f"## Quality with {count} input view{'s' if count > 1 else ''}", ""]
+        lines += ["", f"## Quality with {_views(count)}", ""]
         lines.append("| Run | " + " | ".join(_metric_header(metric) for metric in metric_names) + " |")
         lines.append("|---|" + "--:|" * len(metric_names))
         best = {metric: _best_value(results, count, metric) for metric in metric_names}
-        for result in results:
-            if count not in result.metrics:
+        for group in results:
+            if not any(count in run.metrics for run in group.evaluated):
                 continue
             cells = []
             for metric in metric_names:
-                value = result.metrics[count].get(metric)
-                text = _format(value, "{:.3f}" if metric != "psnr" else "{:.2f}")
-                cells.append(f"**{text}**" if value is not None and value == best[metric] else text)
-            lines.append(f"| {result.name} | " + " | ".join(cells) + " |")
+                summary = group.summary(count, metric)
+                text = _format_summary(summary, metric, len(seeds))
+                is_best = summary is not None and summary.mean == best[metric]
+                cells.append(f"**{text}**" if is_best else text)
+            lines.append(f"| {group.name} | " + " | ".join(cells) + " |")
+
+    lines += _comparison_section(comparisons, metric_names, multiple_seeds)
 
     if figures:
         lines += ["", "## Figures", ""]
@@ -230,12 +403,12 @@ def _write_markdown(
 
     if failures:
         lines += ["", "## Failed runs", "", "Full error messages are in the suite log.", ""]
-        lines += [f"- **{name}**: `{message}`" for name, message in failures.items()]
+        lines += [f"- **{key}**: `{message}`" for key, message in failures.items()]
 
     write_atomically(path, lambda temporary_path: temporary_path.write_text("\n".join(lines) + "\n"))
 
 
-def _differences_section(results: list[RunResult], differences: dict[str, dict]) -> list[str]:
+def _differences_section(results: list[GroupResult], differences: dict[str, dict], multiple_seeds: bool) -> list[str]:
     """What was varied between the runs, so the reader knows everything else was held fixed."""
     lines = ["## What differs between runs", ""]
     if not differences:
@@ -247,16 +420,75 @@ def _differences_section(results: list[RunResult], differences: dict[str, dict])
         "the suite does not start otherwise."
     )
     if trained_on_identical_data(differences):
-        lines.append("All runs were trained on identical data, step for step.")
+        lines.append(
+            "For each seed, all runs were trained on identical data, step for step."
+            if multiple_seeds
+            else "All runs were trained on identical data, step for step."
+        )
     lines += [
         "",
-        "| Setting | " + " | ".join(result.name for result in results) + " |",
+        "| Setting | " + " | ".join(group.name for group in results) + " |",
         "|---|" + "---|" * len(results),
     ]
     for setting, values in differences.items():
-        cells = [_table_cell(values.get(result.name, MISSING)) for result in results]
+        cells = [_table_cell(values.get(group.name, MISSING)) for group in results]
         lines.append(f"| `{setting}` | " + " | ".join(cells) + " |")
     return lines
+
+
+def _comparison_section(comparisons: list[_Comparison], metric_names: list[str], multiple_seeds: bool) -> list[str]:
+    if not comparisons:
+        return []
+    reference = comparisons[0].reference
+    lines = [
+        "",
+        f"## Paired comparison with {reference}",
+        "",
+        f"Every model is evaluated on the same test scenes, so runs are compared scene by scene: for each "
+        f"scene, a run's score minus {reference}'s, averaged over the scenes, with its 95% confidence interval. "
+        "A run is called better or worse only when the interval excludes zero.",
+    ]
+    if multiple_seeds:
+        lines.append("Each run's per-scene scores are first averaged over its seeds.")
+
+    for count in sorted({comparison.count for comparison in comparisons}):
+        runs = list(dict.fromkeys(c.run for c in comparisons if c.count == count))
+        lines += [
+            "",
+            f"### {_views(count).capitalize()}",
+            "",
+            "| Run | " + " | ".join(_metric_header(metric) for metric in metric_names) + " |",
+            "|---|" + "---|" * len(metric_names),
+        ]
+        for run in runs:
+            cells = []
+            for metric in metric_names:
+                match = [c for c in comparisons if c.run == run and c.count == count and c.metric == metric]
+                cells.append(_format_difference(match[0]) if match else "–")
+            lines.append(f"| {run} | " + " | ".join(cells) + " |")
+    return lines
+
+
+def _format_difference(comparison: _Comparison) -> str:
+    difference = comparison.difference
+    pattern = "{:+.2f}" if comparison.metric == "psnr" else "{:+.3f}"
+    interval = f"[{pattern.format(difference.low)}, {pattern.format(difference.high)}]"
+    verdict = difference.verdict(_metric_presentation(comparison.metric)[1])
+    return f"{pattern.format(difference.mean)} {interval} {verdict}"
+
+
+def _format_summary(summary: Summary | None, metric: str, num_seeds: int) -> str:
+    if summary is None:
+        return "–"
+    pattern = "{:.2f}" if metric == "psnr" else "{:.3f}"
+    if num_seeds == 1:
+        return pattern.format(summary.mean)
+    text = f"{pattern.format(summary.mean)} ± {pattern.format(summary.std)}"
+    return text if summary.count == num_seeds else f"{text} (n={summary.count})"
+
+
+def _views(count: int) -> str:
+    return f"{count} input view{'s' if count > 1 else ''}"
 
 
 def _table_cell(value) -> str:
@@ -281,12 +513,18 @@ def _metric_presentation(metric: str) -> tuple[str, bool | None]:
     return getattr(metric_class, "display_name", metric), getattr(metric_class, "higher_is_better", None)
 
 
-def _best_value(results: list[RunResult], count: int, metric: str) -> float | None:
+def _best_value(results: list[GroupResult], count: int, metric: str) -> float | None:
+    """The best mean among the runs, or ``None`` if there is nothing to compare."""
     _, higher_is_better = _metric_presentation(metric)
-    values = [result.metrics[count][metric] for result in results if metric in result.metrics.get(count, {})]
-    if higher_is_better is None or len(values) < 2:
+    means = [summary.mean for group in results if (summary := group.summary(count, metric)) is not None]
+    if higher_is_better is None or len(means) < 2:
         return None
-    return max(values) if higher_is_better else min(values)
+    return max(means) if higher_is_better else min(means)
+
+
+def _mean_or_none(values: list[float | None]) -> float | None:
+    present = [value for value in values if value is not None]
+    return float(np.mean(present)) if present else None
 
 
 def _format(value, pattern: str) -> str:
@@ -311,53 +549,66 @@ def _format_count(count: int | None) -> str:
 # ---------------------------------------------------------------- figures
 
 
-def _write_figures(results: list[RunResult], plots_dir: Path) -> list[tuple[str, Path]]:
+def _write_figures(results: list[GroupResult], plots_dir: Path, multiple_seeds: bool) -> list[tuple[str, Path]]:
     """Draw every figure there is data for. Returns (title, path) of each figure written."""
-    styles = run_styles([result.name for result in results])
+    styles = run_styles([group.name for group in results])
     metric_names = _metric_names(results)
     headline = _HEADLINE_METRIC if _HEADLINE_METRIC in metric_names else (metric_names or [None])[0]
+    evaluated = [group for group in results if group.evaluated]
     figures = []
 
-    evaluated = [result for result in results if result.metrics]
     if evaluated:
+        means: dict[str, dict[int, dict[str, float]]] = {}
+        spreads: dict[str, dict[int, dict[str, float]]] = {}
+        for group in evaluated:
+            for count in _view_counts([group]):
+                for metric in metric_names:
+                    summary = group.summary(count, metric)
+                    if summary is not None:
+                        means.setdefault(group.name, {}).setdefault(count, {})[metric] = summary.mean
+                        spreads.setdefault(group.name, {}).setdefault(count, {})[metric] = summary.std
         path = plots_dir / "metrics_vs_source_views.png"
         plot_metrics_vs_source_views(
-            {result.name: result.metrics for result in evaluated},
+            means,
             {metric: _axis_label(metric) for metric in metric_names},
             styles,
             path,
+            spread=spreads if multiple_seeds else None,
         )
-        figures.append(("Quality against the number of input views", path))
+        title = "Quality against the number of input views"
+        figures.append((f"{title} (error bars: standard deviation over seeds)" if multiple_seeds else title, path))
 
-    profiled = [result for result in evaluated if result.frames_per_second is not None]
+    profiled = [group for group in evaluated if group.frames_per_second is not None]
     if profiled and headline is not None:
         path = plots_dir / "quality_vs_speed.png"
-        plot_quality_vs_speed(
-            {
-                result.name: (
-                    result.frames_per_second,
-                    {count: values[headline] for count, values in result.metrics.items() if headline in values},
-                )
-                for result in profiled
-            },
-            _axis_label(headline),
-            styles,
-            path,
-        )
+        points = {}
+        for group in profiled:
+            per_count = {}
+            for count in _view_counts([group]):
+                summary = group.summary(count, headline)
+                if summary is not None:
+                    per_count[count] = summary.mean
+            points[group.name] = (group.frames_per_second, per_count)
+        plot_quality_vs_speed(points, _axis_label(headline), styles, path)
         figures.append(("Quality against rendering speed", path))
 
-    curves = {result.name: _read_training_curves(result.files, headline) for result in results}
-    curves = {name: run_curves for name, run_curves in curves.items() if run_curves}
+    curves = {}
+    for group in results:
+        per_seed = [_read_training_curves(run.files, headline) for run in group.replicates]
+        group_curves = _mean_curves([run_curves for run_curves in per_seed if run_curves])
+        if group_curves:
+            curves[group.name] = group_curves
     if curves:
         path = plots_dir / "training_curves.png"
         validation_label = f"Validation {_metric_presentation(headline)[0]}" if headline else "Validation"
         plot_training_curves(curves, validation_label, styles, path)
-        figures.append(("Training curves", path))
+        figures.append(("Training curves (mean over seeds)" if multiple_seeds else "Training curves", path))
 
     for count in _view_counts(results):
         path = plots_dir / f"renders_{count}_source_views.png"
         if _plot_render_comparison(evaluated, count, path):
-            figures.append((f"Renders with {count} input view{'s' if count > 1 else ''}", path))
+            title = f"Renders with {_views(count)}"
+            figures.append((f"{title} (first seed of each run)" if multiple_seeds else title, path))
 
     return figures
 
@@ -398,26 +649,46 @@ def _read_training_curves(files: RunFiles, validation_metric: str | None) -> dic
     return curves
 
 
-def _plot_render_comparison(results: list[RunResult], count: int, path: Path) -> bool:
-    """Show the preview renders of every run for one protocol. Returns whether a figure was written."""
-    with_previews = [result for result in results if result.preview_scene_ids.get(count)]
-    if not with_previews:
+def _mean_curves(per_seed: list[dict[str, tuple[np.ndarray, np.ndarray]]]) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    """Average each curve over seeds, at the steps every seed has logged."""
+    averaged = {}
+    for name in {name for curves in per_seed for name in curves}:
+        available = [curves[name] for curves in per_seed if name in curves]
+        steps = reduce(np.intersect1d, [curve_steps for curve_steps, _ in available])
+        if len(steps) == 0:
+            continue
+        values = [curve_values[np.searchsorted(curve_steps, steps)] for curve_steps, curve_values in available]
+        averaged[name] = (steps, np.mean(values, axis=0))
+    return averaged
+
+
+def _plot_render_comparison(results: list[GroupResult], count: int, path: Path) -> bool:
+    """Show the preview renders of every run (its first evaluated seed) for one protocol.
+
+    Returns whether a figure was written.
+    """
+    shown = []
+    for group in results:
+        run = next((run for run in group.evaluated if run.preview_scene_ids.get(count)), None)
+        if run is not None:
+            shown.append((group.name, run))
+    if not shown:
         return False
 
     # Scenes that every run has a preview of, in the order of the first run.
     scene_ids = [
         scene_id
-        for scene_id in with_previews[0].preview_scene_ids[count]
-        if all(scene_id in result.preview_scene_ids[count] for result in with_previews)
+        for scene_id in shown[0][1].preview_scene_ids[count]
+        if all(scene_id in run.preview_scene_ids[count] for _, run in shown)
     ]
     if not scene_ids:
         return False
 
     column_titles = [f"Input {index + 1}" for index in range(count)] + ["Ground truth"]
-    column_titles += [result.name for result in with_previews]
+    column_titles += [name for name, _ in shown]
     rows = []
     for scene_id in scene_ids:
-        previews = [load_preview_images(result.files.previews(count) / scene_id) for result in with_previews]
+        previews = [load_preview_images(run.files.previews(count) / scene_id) for _, run in shown]
         rows.append(previews[0]["sources"] + [previews[0]["truth"]] + [preview["prediction"] for preview in previews])
 
     plot_image_grid(column_titles, rows, scene_ids, path)

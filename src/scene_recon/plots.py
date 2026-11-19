@@ -92,6 +92,7 @@ def plot_metrics_vs_source_views(
     metric_labels: dict[str, str],
     styles: dict[str, RunStyle],
     path: Path,
+    spread: dict[str, dict[int, dict[str, float]]] | None = None,
 ) -> None:
     """One panel per metric: its value against the number of input views, one line per run.
 
@@ -100,6 +101,8 @@ def plot_metrics_vs_source_views(
         metric_labels: Metric name -> panel title, in panel order.
         styles: From ``run_styles``.
         path: Where to save the PNG.
+        spread: Same structure as ``metrics``; if given, drawn as error bars
+            (e.g. the standard deviation over seeds).
     """
     view_counts = sorted({count for per_run in metrics.values() for count in per_run})
     with matplotlib.rc_context(_STYLE):
@@ -109,9 +112,19 @@ def plot_metrics_vs_source_views(
             for run_name, per_count in metrics.items():
                 counts = [count for count in view_counts if metric in per_count.get(count, {})]
                 values = [per_count[count][metric] for count in counts]
+                errors = None
+                if spread is not None:
+                    errors = [spread.get(run_name, {}).get(count, {}).get(metric, 0.0) for count in counts]
                 style = styles[run_name]
-                ax.plot(
-                    counts, values, color=style.color, marker=style.marker, linestyle=style.linestyle, label=run_name
+                ax.errorbar(
+                    counts,
+                    values,
+                    yerr=errors,
+                    color=style.color,
+                    marker=style.marker,
+                    linestyle=style.linestyle,
+                    capsize=4,
+                    label=run_name,
                 )
             ax.set_title(label)
             ax.set_xticks(view_counts)

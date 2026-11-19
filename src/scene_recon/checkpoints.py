@@ -40,12 +40,14 @@ def save_checkpoint(
     scheduler: LRScheduler,
     progress: TrainingProgress,
     raw_config: dict[str, Any],
+    training_data: dict[str, Any],
 ) -> None:
     """Write everything needed to resume training or to evaluate the model.
 
-    The checkpoint also stores the complete config it was trained with, which
-    is what ``scene_recon.provenance`` checks before the checkpoint is used
-    again, and the software environment.
+    The checkpoint also stores the complete config it was trained with and
+    the fingerprint of its training data (``SceneDataset.fingerprint``), which
+    ``scene_recon.provenance`` checks before the checkpoint is used again, and
+    the software environment.
 
     Next to the checkpoint, a small JSON file records the training progress,
     so that tools can see how far a run has come without loading the weights.
@@ -57,6 +59,7 @@ def save_checkpoint(
         "step": progress.step,
         "training_seconds": progress.training_seconds,
         "config": raw_config,
+        "training_data": training_data,
         "random_state": _global_random_state(),
         "environment": environment(),
     }
@@ -112,6 +115,11 @@ def read_progress(checkpoint_path: Path) -> TrainingProgress | None:
 def read_checkpoint_config(path: Path) -> dict[str, Any]:
     """The config a checkpoint was trained with, read without loading the weights into memory."""
     return torch.load(path, map_location="cpu", weights_only=True, mmap=True)["config"]
+
+
+def read_checkpoint_training_data(path: Path) -> dict[str, Any] | None:
+    """The fingerprint of the data a checkpoint was trained on, or ``None`` for older checkpoints."""
+    return torch.load(path, map_location="cpu", weights_only=True, mmap=True).get("training_data")
 
 
 def _global_random_state() -> dict[str, Any]:
