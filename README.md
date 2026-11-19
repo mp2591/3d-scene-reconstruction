@@ -338,7 +338,8 @@ freeze parameters you don't use). It takes seconds. A model used only for
 inference (evaluation and profiling) can be checked without the training
 checks: `--stages evaluate profile`. A model without trainable parameters
 (fully frozen, or analytic) cannot be trained and needs no checkpoint: it is
-evaluated as built. A suite runs the same check for the
+evaluated as built, seeded with `experiment.seed`, so randomly initialised
+frozen layers are the same every time. A suite runs the same check for the
 stages it runs, plus everything else each run will need, before it starts.
 
 Then add the model as a run to a suite file:

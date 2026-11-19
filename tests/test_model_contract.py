@@ -1,10 +1,12 @@
+import random
 from typing import Any
 
+import numpy as np
 import pytest
 import torch
 from torch import Tensor, nn
 
-from scene_recon.build import build_model
+from scene_recon.build import build_model, build_seeded_model
 from scene_recon.config import Config, RendererSettings, parse_config
 from scene_recon.data.synthetic import SyntheticSpheresDataset
 from scene_recon.models.base import ParameterGroup, ReconstructionModel
@@ -12,9 +14,10 @@ from scene_recon.models.contract import ModelContractError, check_model_contract
 from scene_recon.models.normalization import InputNormalization
 from scene_recon.registry import MODELS, ConfigError
 from scene_recon.rendering import VolumeRenderer
-from scene_recon.provenance import evaluation_status
+from scene_recon.provenance import evaluation_status, model_weights_digest
 from scene_recon.stages import check_run_can_start, run_evaluation
 from scene_recon.structures import FieldOutput, SceneViews
+from scene_recon.training import Trainer
 
 from test_rendering import _OracleSphereModel
 
@@ -245,7 +248,7 @@ class _AnalyticSphere(_OracleSphereModel):
 
 
 class _BufferOnlyModel(ReconstructionModel):
-    """Keeps its fixed values in a buffer, not in parameters."""
+    """Keeps its fixed values in a buffer, not in parameters. They are random, drawn when it is built."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -261,6 +264,8 @@ class _BufferOnlyModel(ReconstructionModel):
 
 if "analytic_sphere_test_model" not in MODELS.names():
     MODELS.register("analytic_sphere_test_model")(_AnalyticSphere)
+if "random_buffer_test_model" not in MODELS.names():
+    MODELS.register("random_buffer_test_model")(_BufferOnlyModel)
 
 
 def test_a_parameterless_model_passes_the_inference_check():
@@ -304,3 +309,37 @@ def test_a_trainable_model_without_a_checkpoint_is_not_evaluated(smoke_config: C
         check_run_can_start(smoke_config, ["evaluate"])
     with pytest.raises(FileNotFoundError, match="No checkpoint"):
         run_evaluation(smoke_config)
+
+
+def test_a_model_with_random_fixed_values_is_evaluated_reproducibly(smoke_config: Config):
+    """The caveat of the validation comment on #3: random buffers, drawn whenever the model is built."""
+    config = parse_config({**smoke_config.raw, "model": {"name": "random_buffer_test_model"}})
+
+    first = run_evaluation(config)
+
+    assert evaluation_status(config).is_current  # rebuilt for the check with the same random values
+    assert run_evaluation(config)["protocols"] == first["protocols"]  # the same model, so the same scores
+    other_seed = parse_config({**config.raw, "experiment": {**config.raw["experiment"], "seed": 99}})
+    status = evaluation_status(other_seed)
+    assert status.state == "stale" and "other settings or weights" in status.reason
+
+
+def test_a_seeded_model_starts_from_the_weights_training_starts_from(smoke_config: Config):
+    assert model_weights_digest(build_seeded_model(smoke_config)) == model_weights_digest(Trainer(smoke_config).model)
+
+
+def test_building_a_seeded_model_leaves_the_global_random_state_alone(smoke_config: Config):
+    def draw() -> tuple[float, float, float]:
+        return torch.rand(1).item(), random.random(), float(np.random.rand())
+
+    def seed() -> None:
+        torch.manual_seed(5)
+        random.seed(5)
+        np.random.seed(5)
+
+    seed()
+    expected = draw()
+    seed()
+    build_seeded_model(smoke_config)
+
+    assert draw() == expected

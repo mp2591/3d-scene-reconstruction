@@ -43,6 +43,28 @@ def build_model(config: Config) -> ReconstructionModel:
     return model
 
 
+def build_seeded_model(config: Config) -> ReconstructionModel:
+    """Build the model with the weights a training run of ``config`` would start from.
+
+    The model is built right after seeding with ``experiment.seed``, as the
+    trainer does, so building it twice gives the same weights, even for a
+    model that fills frozen layers or buffers with random values. This
+    matters for a model evaluated as built (it has no trainable parameters,
+    so no checkpoint): these weights are the ones that are measured, and
+    they are rebuilt later to check that the evaluation still describes the
+    model. The global random state is restored afterwards, so building a
+    model this way does not change what is drawn after it.
+    """
+    python_state, numpy_state = random.getstate(), np.random.get_state()
+    try:
+        with torch.random.fork_rng(devices=range(torch.cuda.device_count())):
+            seed_everything(config.experiment.seed)
+            return build_model(config)
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+
+
 def build_dataset(config: Config, split: str) -> SceneDataset:
     """Build the dataset of one split: ``"train"``, ``"val"`` or ``"test"``."""
     return DATASETS.build(config.data[split])

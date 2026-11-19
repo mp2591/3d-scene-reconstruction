@@ -151,7 +151,10 @@ the result.
    does not use, such as a pretrained backbone's classification head. A
    model without trainable parameters (fully frozen, or analytic with no
    parameters at all) can be evaluated and profiled, as built and without a
-   checkpoint; check it with `--stages evaluate profile`.
+   checkpoint; check it with `--stages evaluate profile`. It is built
+   seeded with `experiment.seed`, as for training, so random values drawn
+   in `__init__` (a frozen, randomly initialised layer) are the same each
+   time; another seed gives another model.
 
 6. **Train**, on its own or as one run of a suite ([suites.md](suites.md)).
 

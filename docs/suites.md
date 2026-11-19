@@ -76,10 +76,12 @@ leave at least one view to render in every scene it uses; profiling only
 needs that for the one view it renders (the first test scene, with the first
 evaluation source-view set). Evaluation without training needs a checkpoint,
 unless the model has no trainable parameters: such a model cannot be
-trained, so it is evaluated as built. A run that already has a checkpoint
-must request exactly the training settings it was trained with and, when the
-suite trains, the training data must still be the data the checkpoint
-recorded, even for a run that has finished and would be skipped. All
+trained, so it is evaluated as built, with the weights a training run
+would start from (seeded with `experiment.seed`, so a model with random
+frozen weights is the same model every time). A run that already has a
+checkpoint must request exactly the training settings it was trained with
+and, when the suite trains, the training data must still be the data the
+checkpoint recorded, even for a run that has finished and would be skipped. All
 problems of all runs are reported together, and nothing is trained until
 they are fixed. A typo in the last run costs seconds, not the days spent
 training the runs before it.

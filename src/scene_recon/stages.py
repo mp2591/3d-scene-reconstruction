@@ -26,7 +26,14 @@ from typing import Any, Sequence
 
 import torch
 
-from scene_recon.build import build_dataset, build_loss, build_metrics, build_model, resolve_device
+from scene_recon.build import (
+    build_dataset,
+    build_loss,
+    build_metrics,
+    build_model,
+    build_seeded_model,
+    resolve_device,
+)
 from scene_recon.checkpoints import TrainingProgress, load_checkpoint
 from scene_recon.config import Config
 from scene_recon.data import TrainingSchedule
@@ -86,7 +93,7 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
     files = RunFiles(config.run_dir)
     weights_record: dict[str, Any]
     if checkpoint_path is None and not files.checkpoint.exists() and not _has_trainable_parameters(config):
-        model = build_model(config).to(resolve_device(config.experiment.device))
+        model = build_seeded_model(config).to(resolve_device(config.experiment.device))
         weights_record = {"checkpoint": None, "untrained_model": untrained_model_record(config, model)}
     else:
         checkpoint_path = checkpoint_path or files.checkpoint

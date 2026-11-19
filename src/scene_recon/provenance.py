@@ -21,7 +21,10 @@ the suite alike:
    trained and has no checkpoint; it is evaluated as built, and its
    evaluation records the model's config and a hash of its weights instead
    (``untrained_model_record``). Both are needed: an analytic model may have
-   no weights at all, so only its config tells two versions apart.
+   no weights at all, so only its config tells two versions apart. The model
+   is built seeded with ``experiment.seed`` (``build_seeded_model``), so that
+   rebuilding it for this check gives the same weights, even if it fills
+   frozen layers or buffers with random values.
 
 3. **Does a saved profile still describe the run?** ``profile_status``.
    Only if it was made with the current model, rendering and profiling
@@ -40,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from scene_recon.build import build_dataset, build_model, resolve_device
+from scene_recon.build import build_dataset, build_seeded_model, resolve_device
 from scene_recon.checkpoints import TrainingProgress, read_checkpoint_config, read_checkpoint_training_data
 from scene_recon.config import Config, flatten_settings, setting_in_sections
 from scene_recon.data.base import SceneDataset
@@ -252,7 +255,7 @@ def evaluation_status(config: Config) -> OutputStatus:
         # Made from a model without trainable parameters, as built (see run_evaluation).
         if files.checkpoint.is_file():
             return OutputStatus("stale", "made from the model as built, but the run now has a checkpoint", content)
-        if content.get("untrained_model") != untrained_model_record(config, build_model(config)):
+        if content.get("untrained_model") != untrained_model_record(config, build_seeded_model(config)):
             return OutputStatus("stale", "made from a model built with other settings or weights", content)
         return OutputStatus("current", "", content)
     if not files.checkpoint.is_file():
