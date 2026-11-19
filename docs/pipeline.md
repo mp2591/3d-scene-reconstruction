@@ -159,9 +159,12 @@ are targets.
 Also override `fingerprint()` to identify the data's content: it is
 recorded with every checkpoint and evaluation, an evaluation made on other
 test data is redone, and a run is not resumed on other training data. The
-default only records the class and the number of scenes. The SRN loader
-hashes every file's name and size and every intrinsics file's content, once
-per split directory and process.
+default only records the class and the number of scenes. Hash the
+*content* of everything `load_scene` reads, as the SRN loader does (images,
+poses and intrinsics), so that data replaced in place, even by files of the
+same size, is recognised. The SRN loader keeps the hash for the rest of the
+process only while every file's size, modification time, change time and
+inode are unchanged, and hashes again otherwise.
 
 ## Adding a loss or a metric
 

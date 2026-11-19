@@ -59,6 +59,51 @@ class RunFiles:
         return self.run_dir / "renders" / f"{num_source_views}_source_views"
 
 
+@dataclass(frozen=True)
+class SuiteFiles:
+    """The paths of a suite's own outputs, which sit next to its run directories::
+
+        <output_dir>/<suite_name>/
+            suite.log, summary.md, summary.csv, paired_comparison.csv, plots/
+            <run_name>/ ...                                  (one directory per run)
+
+    Because runs share this directory, their names must not be one of these;
+    see ``reserved_names``.
+    """
+
+    directory: Path
+
+    @property
+    def log(self) -> Path:
+        return self.directory / "suite.log"
+
+    @property
+    def summary_markdown(self) -> Path:
+        return self.directory / "summary.md"
+
+    @property
+    def summary_csv(self) -> Path:
+        return self.directory / "summary.csv"
+
+    @property
+    def paired_comparison_csv(self) -> Path:
+        return self.directory / "paired_comparison.csv"
+
+    @property
+    def plots(self) -> Path:
+        return self.directory / "plots"
+
+    @staticmethod
+    def reserved_names() -> set[str]:
+        """Lower-case names a run may not have: the suite's outputs and their temporary files."""
+        files = SuiteFiles(Path("."))
+        file_names = [
+            path.name for path in (files.log, files.summary_markdown, files.summary_csv, files.paired_comparison_csv)
+        ]
+        names = set(file_names)
+        return {name.lower() for name in names} | {f"{name}.tmp".lower() for name in names} | {files.plots.name}
+
+
 def write_atomically(path: Path, write: Callable[[Path], Any]) -> None:
     """Write a file through a temporary file that is then moved into place.
 

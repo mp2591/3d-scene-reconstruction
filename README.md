@@ -110,7 +110,7 @@ not from the setup. The pipeline makes sure of that:
 | **Training data**        | Every model with the same seed sees exactly the same training data, step by step: the same scenes, loaded views, input views, supervised pixels and coarse sample positions along rays. (Fine-pass positions depend on each model's own coarse prediction, as hierarchical sampling intends.) It does not matter how the model initialises its weights or uses randomness, whether the run was interrupted and resumed, how many data-loading workers are used, or whether it runs on a CPU or a GPU. |
 | **Measurement**          | Evaluation is deterministic: every model renders the same views of the same test scenes from the same input views and is scored by the same code. A suite refuses to start if its runs differ in any measurement setting (evaluation, validation, profiling, validation or test data). |
 | **Everything else**      | May differ between runs on purpose (the model, an encoder's learning rate...). The suite report lists every differing setting, so it is visible what was varied and that everything else was held fixed. |
-| **Provenance**           | Every result is tied to what produced it. A checkpoint is only continued, evaluated or profiled with the exact settings it was trained with; changing, say, the learning rate of a trained run is refused instead of silently mixed in. Evaluations record the checkpoint by the hash of its content, profiles record the device and software, and the report shows a result only while it still matches. |
+| **Provenance**           | Every result is tied to what produced it. A checkpoint is only continued, evaluated or profiled with the exact settings it was trained with; changing, say, the learning rate of a trained run is refused instead of silently mixed in. Checkpoints record a hash of the training data's content, and a run is not reused or resumed once that data has changed. Evaluations record the checkpoint and the test data by the hash of their content, profiles record the device, software and workload, and the report shows a result only while it still matches. |
 
 Two limits remain, and the suite helps with both. Training is random, and
 on a GPU not even repeatable bit for bit (some GPU operations add numbers in
@@ -329,14 +329,15 @@ scene-recon check-model --config configs/my_experiment.yaml
 ```
 
 This builds the model and runs it on random scenes at the dataset's image
-size, with 1 and 3 input views, querying real samples along real camera rays
-with your configured numbers of samples per ray, in training and in
-evaluation mode. It reports the first broken rule in plain words: wrong
-shapes, colours outside [0, 1], negative density, NaNs, parameters missing
-from the parameter groups, or parameters that receive no gradient or a
-non-finite one (remove or freeze parameters you don't use). It takes seconds.
-A suite runs the same check, plus everything else each run will need, before
-it starts.
+size, querying real samples along real camera rays with your configured
+numbers of samples per ray and input views. It reports the first broken rule
+in plain words: wrong shapes, colours outside [0, 1], negative density or
+NaNs, and, if the model will be trained, parameters missing from the
+parameter groups or receiving no gradient or a non-finite one (remove or
+freeze parameters you don't use). It takes seconds. A model used only for
+inference (evaluation and profiling) can be checked without the training
+checks: `--stages evaluate profile`. A suite runs the same check for the
+stages it runs, plus everything else each run will need, before it starts.
 
 Then add the model as a run to a suite file:
 

@@ -27,13 +27,12 @@ import torch
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 
-from scene_recon.config import OptimizationSettings
+from scene_recon.config import GROUP_OVERRIDE_SETTINGS, OptimizationSettings
 from scene_recon.models.base import ReconstructionModel
 from scene_recon.models.contract import check_parameter_groups
 from scene_recon.registry import ConfigError
 
 _OPTIMIZER_CLASSES = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW}
-_OVERRIDABLE_SETTINGS = {"learning_rate", "warmup_steps"}
 
 
 def build_optimizer_and_scheduler(
@@ -102,11 +101,9 @@ def _settings_for_group(group_name: str, settings: OptimizationSettings) -> dict
 
     matching_overrides = [key for key in settings.group_overrides if _override_applies(key, group_name)]
     if matching_overrides:
+        # The values were checked and converted when the config was parsed.
         most_specific = max(matching_overrides, key=len)
         resolved.update(settings.group_overrides[most_specific])
-
-    resolved["learning_rate"] = float(resolved["learning_rate"])
-    resolved["warmup_steps"] = int(resolved["warmup_steps"])
     return resolved
 
 
@@ -115,16 +112,19 @@ def _override_applies(override_key: str, group_name: str) -> bool:
 
 
 def _check_overrides(overrides: dict[str, dict[str, Any]], group_names: list[str]) -> None:
-    """Reject overrides that would silently do nothing."""
+    """Reject overrides that would silently do nothing or that name unknown settings.
+
+    The override values themselves are checked when the config is parsed.
+    """
     for key, values in overrides.items():
         if not any(_override_applies(key, name) for name in group_names):
             raise ConfigError(
                 f"optimization.group_overrides has an entry for '{key}', but the model has no such "
                 f"parameter group. Its groups are: {group_names}."
             )
-        unknown = set(values) - _OVERRIDABLE_SETTINGS
+        unknown = set(values) - set(GROUP_OVERRIDE_SETTINGS)
         if unknown:
             raise ConfigError(
                 f"optimization.group_overrides.{key} has unknown key(s) {sorted(unknown)}. "
-                f"A group can override: {sorted(_OVERRIDABLE_SETTINGS)}."
+                f"A group can override: {sorted(GROUP_OVERRIDE_SETTINGS)}."
             )

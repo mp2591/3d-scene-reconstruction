@@ -181,6 +181,32 @@ def choose_target_views(
     return [candidates[position] for position in positions]
 
 
+def check_protocol_feasible(
+    scenes: SceneDataset, source_view_indices: Sequence[int], num_scenes: int | None, where: str
+) -> None:
+    """Check, before any training, that a protocol can run on every scene it will use.
+
+    Each of those scenes must have the source views, and at least one other
+    view to render and score. Scenes are checked one by one, because a
+    dataset's scenes need not all have the same number of views.
+
+    Args:
+        scenes: The dataset the protocol runs on.
+        source_view_indices: The views given to the model.
+        num_scenes: How many scenes, from the first, the protocol uses. ``None`` means all.
+        where: The setting being checked, for error messages.
+    """
+    count = len(scenes) if num_scenes is None else min(num_scenes, len(scenes))
+    for scene_index in range(count):
+        num_views = scenes.num_views(scene_index)
+        check_source_views(source_view_indices, num_views, where=f"{where} (scene {scene_index})")
+        if num_views <= len(set(source_view_indices)):
+            raise ConfigError(
+                f"{where} {list(source_view_indices)} uses every view of scene {scene_index} ({num_views} views) "
+                "as a source view, so no view is left to render and score."
+            )
+
+
 def check_source_views(source_view_indices: Sequence[int], num_views: int, where: str) -> None:
     """Raise a readable error if source view indices do not exist in a scene with ``num_views`` views."""
     out_of_range = [index for index in source_view_indices if not 0 <= index < num_views]

@@ -39,7 +39,7 @@ from scene_recon.build import (
 from scene_recon.checkpoints import TrainingProgress, load_checkpoint, save_checkpoint
 from scene_recon.config import Config, save_config
 from scene_recon.data import SceneDataset, TrainingSchedule, training_batches
-from scene_recon.evaluation import Evaluator, check_source_views
+from scene_recon.evaluation import Evaluator, check_protocol_feasible
 from scene_recon.metrics import mse_to_psnr
 from scene_recon.optim import build_optimizer_and_scheduler
 from scene_recon.provenance import check_checkpoint_matches_config, check_training_data_unchanged
@@ -153,8 +153,20 @@ class Trainer:
         )
         loss_terms = self.loss_function(renders, target_rgb)
 
+        # Stop before a non-finite value can reach the weights (and from there a checkpoint).
+        if not torch.isfinite(loss_terms["total"]):
+            raise RuntimeError(
+                f"The training loss is {loss_terms['total'].item()} at step {step}. Stopping before the weights "
+                "change; check the learning rates and the model's outputs."
+            )
         self.optimizer.zero_grad(set_to_none=True)
         loss_terms["total"].backward()
+        gradient_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=float("inf"))
+        if not torch.isfinite(gradient_norm):
+            raise RuntimeError(
+                f"The gradients are not finite at step {step}. Stopping before the weights change; "
+                "check the learning rates and the model's outputs."
+            )
         self.optimizer.step()
         self.scheduler.step()
 
@@ -194,6 +206,12 @@ class Trainer:
         logger.info("step %d | validation | %s", step, summary)
 
     def _save_checkpoint(self) -> None:
+        non_finite = [name for name, parameter in self.model.named_parameters() if not torch.isfinite(parameter).all()]
+        if non_finite:
+            raise RuntimeError(
+                f"{len(non_finite)} parameter tensor(s) contain NaN or infinite values at step {self.progress.step} "
+                f"(e.g. {', '.join(non_finite[:3])}); no checkpoint was written."
+            )
         save_checkpoint(
             self.checkpoint_path,
             self.model,
@@ -222,6 +240,9 @@ def check_training_settings(config: Config, validation_scenes: SceneDataset) -> 
 
     # Validation runs thousands of steps into training; a mistake here
     # should not cost those steps.
-    check_source_views(
-        config.validation.source_views, validation_scenes.num_views(0), where="validation.source_views"
+    check_protocol_feasible(
+        validation_scenes,
+        config.validation.source_views,
+        config.validation.num_scenes,
+        where="validation.source_views",
     )

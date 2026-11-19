@@ -93,6 +93,13 @@ and all problems are reported at once:
   view. Each entry of `evaluation.source_view_sets` must have a different
   number of views: results are labelled and plotted by the number of input
   views, so two sets of the same size could not be told apart.
+* **Metrics.** `validation.metrics` and `evaluation.metrics` list metric
+  names, or mappings with a `name` and constructor options, such as
+  `{name: lpips, network: alex}`. No metric may be listed twice. Whether the
+  options fit the metric is checked when it is built, before any training.
+* **Per-group overrides.** Each entry of `optimization.group_overrides` may
+  set `learning_rate` (a finite positive number) and `warmup_steps` (a whole
+  number, zero or more), checked like the settings they override.
 
 ## Reproducing a run
 

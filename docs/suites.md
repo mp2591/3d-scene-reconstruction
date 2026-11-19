@@ -69,9 +69,14 @@ is validated, and everything the requested stages will need is built: the
 datasets (with their view indices checked), the loss, the metrics (including
 optional packages such as LPIPS), the optimiser and its parameter groups, and
 the model, which is checked against the pipeline's contract (see
-[writing_a_model.md](writing_a_model.md)). A run that already has a
-checkpoint must request exactly the training settings it was trained with.
-All problems of all runs are reported together, and nothing is trained until
+[writing_a_model.md](writing_a_model.md)), only with the checks its stages
+need (a model used only for evaluation and profiling may be fully frozen).
+Every evaluation, validation and profiling protocol must leave at least one
+view to render in every scene it uses. A run that already has a checkpoint
+must request exactly the training settings it was trained with and, when the
+suite trains, the training data must still be the data the checkpoint
+recorded, even for a run that has finished and would be skipped. All
+problems of all runs are reported together, and nothing is trained until
 they are fixed. A typo in the last run costs seconds, not the days spent
 training the runs before it.
 
@@ -118,8 +123,13 @@ the suite again; finished runs are skipped.
 read while later runs are still training. It shows a run's results only while
 they still match the run's current checkpoint and settings; results that no
 longer match are left out of every table and figure and listed with the
-reason. If the report itself cannot be written, the error is logged and the
-remaining runs continue.
+reason. If the report cannot be written after a run, the error is logged
+and the remaining runs continue; if the final report still cannot be
+written, the command fails.
+
+Run names must not be the names of the suite's own outputs (`suite.log`,
+`summary.md`, `summary.csv`, `paired_comparison.csv`, `plots`, in any
+upper/lower case), because those sit next to the run directories.
 
 ## Outputs
 
@@ -160,7 +170,14 @@ same test scenes, so the comparison is made scene by scene: for each scene,
 the run's score minus the reference's, averaged over the scenes, with a 95%
 confidence interval (Student's t over scenes). A run is called *better* or
 *worse* only when the interval excludes zero; otherwise the report says
-*no clear difference*. The same numbers are in `paired_comparison.csv`.
+*no clear difference*. The same numbers are in `paired_comparison.csv`. If
+the reference has no results yet, the report says so rather than comparing
+against another run.
+
+Whether the runs were trained on identical data is read from what their
+checkpoints recorded, not only from the config; if the checkpoints record
+different training data, the report says so prominently and shows each
+run's data.
 
 `summary.csv` has one row per run and seed. Quality columns are named
 `<metric>_<n>v`: `psnr_1v` is the PSNR with one input view. Load it with
@@ -187,8 +204,10 @@ runs stay comparable seed by seed. The cost grows with the number of seeds.
 
 The report then shows each metric as mean ± standard deviation over the
 seeds, plots error bars, and averages each run's training curves over its
-seeds. In the paired comparison, each run's per-scene scores are averaged
-over its seeds first. A difference is convincing when its confidence
+seeds. The paired comparison uses only the seeds that both runs have results
+for, so a seed that has finished for one run but not yet for the other
+cannot shift the result; the compared seeds are listed, and a comparison
+that does not yet cover every seed is marked *partial*. A difference is convincing when its confidence
 interval excludes zero *and* it is larger than the spread between seeds.
 
 ## Trying a suite quickly

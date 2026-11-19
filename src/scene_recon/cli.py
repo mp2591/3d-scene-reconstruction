@@ -26,8 +26,9 @@ from typing import Sequence
 from scene_recon.config import load_config
 from scene_recon.models.contract import ModelContractError
 from scene_recon.registry import ConfigError
-from scene_recon.stages import check_model, run_evaluation, run_profiling, run_training
-from scene_recon.suite import PreflightError, load_suite, run_suite
+from scene_recon.stages import STAGES, check_model, run_evaluation, run_profiling, run_training
+from scene_recon.run_files import SuiteFiles
+from scene_recon.suite import PreflightError, SuiteReportError, load_suite, run_suite
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "check-model", parents=[shared], help="Verify the configured model against the pipeline's contract."
     )
     check.add_argument(
+        "--stages",
+        nargs="+",
+        choices=STAGES,
+        default=list(STAGES),
+        help="Stages the model will be used in. Training checks only apply to 'train'. Default: all.",
+    )
+    check.add_argument(
         "--image-size",
         type=int,
         nargs=2,
@@ -119,29 +127,35 @@ def _profile(args: argparse.Namespace) -> None:
 
 def _check_model(args: argparse.Namespace) -> None:
     image_size = tuple(args.image_size) if args.image_size else None
-    check_model(load_config(args.config, args.set), image_size)
+    check_model(load_config(args.config, args.set), image_size, stages=args.stages)
 
 
 def _run_suite(args: argparse.Namespace) -> None:
     suite = load_suite(args.config, args.set)
+    files = SuiteFiles(suite.directory)
 
     # Keep a complete log next to the results; a suite can run for days.
     suite.directory.mkdir(parents=True, exist_ok=True)
-    log_file = logging.FileHandler(suite.directory / "suite.log")
+    log_file = logging.FileHandler(files.log)
     log_file.setFormatter(logging.Formatter(_LOG_FORMAT, datefmt="%Y-%m-%d %H:%M:%S"))
     logging.getLogger().addHandler(log_file)
 
+    report_error = None
     try:
         logger.info("Suite '%s': %d runs, stages %s", suite.name, len(suite.runs), suite.stages)
         failures = run_suite(suite)
+    except SuiteReportError as error:
+        failures, report_error = error.failures, str(error)
     finally:
         logging.getLogger().removeHandler(log_file)
         log_file.close()
 
-    if failures:
-        summary = "\n".join(f"  {name}: {message}" for name, message in failures.items())
-        raise SystemExit(f"{len(failures)} run(s) failed (details in {suite.directory / 'suite.log'}):\n{summary}")
-    logger.info("Suite finished. Report: %s", suite.directory / "summary.md")
+    problems = [f"  {name}: {message}" for name, message in failures.items()]
+    if report_error is not None:
+        problems.append(f"  {report_error}")
+    if problems:
+        raise SystemExit(f"The suite did not finish cleanly (details in {files.log}):\n" + "\n".join(problems))
+    logger.info("Suite finished. Report: %s", files.summary_markdown)
 
 
 if __name__ == "__main__":

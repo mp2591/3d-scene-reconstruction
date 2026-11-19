@@ -8,10 +8,12 @@ from scene_recon.report import (
     GroupResult,
     RunResult,
     _best_value,
+    _comparison_section,
     _format_count,
     _format_duration,
     _format_summary,
     _mean_curves,
+    _paired_comparisons,
 )
 from scene_recon.run_files import RunFiles
 
@@ -58,7 +60,8 @@ def test_scene_scores_are_averaged_over_seeds():
     group.replicates[0].per_scene = {1: {"car_1": {"psnr": 20.0}, "car_2": {"psnr": 24.0}}}
     group.replicates[1].per_scene = {1: {"car_1": {"psnr": 22.0}}}  # car_2 missing for this seed
 
-    assert group.scene_scores(1, "psnr") == {"car_1": 21.0}
+    assert group.scene_scores(1, "psnr", seeds={0, 1}) == {"car_1": 21.0}
+    assert group.scene_scores(1, "psnr", seeds={0}) == {"car_1": 20.0, "car_2": 24.0}
 
 
 def test_quality_cells_show_spread_only_with_several_seeds():
@@ -83,3 +86,65 @@ def test_durations_and_parameter_counts_are_formatted_for_reading():
     assert _format_duration(None) == "–"
     assert _format_count(4_884) == "4,884"
     assert _format_count(21_300_000) == "21.30 M"
+
+
+
+# ---------------------------------------------------------------- paired comparisons (R3)
+
+
+def _seeded_group(name: str, scores_per_seed: dict[int, float | None], seeds: list[int]) -> GroupResult:
+    """A run over ``seeds``: ten scenes with score ``base + offset`` for each finished seed (None = not finished)."""
+    replicates = []
+    for seed in seeds:
+        base = scores_per_seed.get(seed)
+        run = RunResult(key=f"{name}/seed_{seed}", seed=seed, status="trained", files=RunFiles(Path(name)))
+        if base is not None:
+            per_scene = {f"scene_{index}": {"psnr": base + 0.37 * index} for index in range(10)}
+            run.per_scene = {1: per_scene}
+            run.metrics = {1: {"psnr": base + 0.37 * 4.5}}
+            run.status = "evaluated"
+        replicates.append(run)
+    return GroupResult(name, replicates)
+
+
+def test_an_identical_model_with_an_unfinished_seed_gets_no_verdict():
+    """The review's example: identical scores on the shared seed, the candidate's second seed not done."""
+    reference = _seeded_group("reference", {0: 20.0, 1: 40.0}, seeds=[0, 1])
+    candidate = _seeded_group("candidate", {0: 20.0, 1: None}, seeds=[0, 1])
+
+    (comparison,) = _paired_comparisons([reference, candidate])
+
+    assert comparison.difference.mean == pytest.approx(0.0)
+    assert comparison.difference.verdict(higher_is_better=True) == "no clear difference"
+    assert comparison.seeds == [0] and comparison.partial
+
+
+def test_a_seed_finished_on_one_side_only_does_not_change_the_comparison():
+    reference = _seeded_group("reference", {0: 20.0, 1: None}, seeds=[0, 1])
+    candidate_before = _seeded_group("candidate", {0: 21.0, 1: None}, seeds=[0, 1])
+    candidate_after = _seeded_group("candidate", {0: 21.0, 1: 35.0}, seeds=[0, 1])
+
+    (before,) = _paired_comparisons([reference, candidate_before])
+    (after,) = _paired_comparisons([reference, candidate_after])
+
+    assert after.difference == before.difference and after.seeds == [0]
+
+
+def test_complete_seed_sets_are_not_marked_partial():
+    reference = _seeded_group("reference", {0: 20.0, 1: 22.0}, seeds=[0, 1])
+    candidate = _seeded_group("candidate", {0: 21.0, 1: 23.0}, seeds=[0, 1])
+
+    (comparison,) = _paired_comparisons([reference, candidate])
+
+    assert comparison.seeds == [0, 1] and not comparison.partial
+    assert comparison.difference.mean == pytest.approx(1.0)
+
+
+def test_the_first_run_stays_the_reference_even_without_results():
+    reference = _seeded_group("baseline", {0: None}, seeds=[0])
+    others = [_seeded_group("second", {0: 21.0}, seeds=[0]), _seeded_group("third", {0: 22.0}, seeds=[0])]
+    results = [reference, *others]
+
+    assert _paired_comparisons(results) == []
+    section = "\n".join(_comparison_section(results, [], ["psnr"], multiple_seeds=False))
+    assert "Paired comparison with baseline" in section and "Not available yet" in section
