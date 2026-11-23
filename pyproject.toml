@@ -17,6 +17,7 @@ dependencies = [
     "tensorboard",
     "matplotlib",
     "scipy",
+    "timm",
 ]
 
 [project.optional-dependencies]
