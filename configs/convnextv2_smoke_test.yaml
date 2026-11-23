@@ -1,0 +1,39 @@
+base:
+  - base.yaml
+  - data/synthetic_spheres.yaml
+  - models/convnextv2_mlp.yaml
+
+experiment:
+  run_name: convnextv2_smoke_test_v3
+
+# Smaller and faster for a laptop test (these override File 1):
+model:
+  encoder:
+    pretrained: false
+  decoder:
+    hidden_width: 64
+
+renderer:
+  num_coarse_samples: 24
+  num_fine_samples: 12
+
+optimization:
+  learning_rate: 1.0e-4
+  decay_steps: 300
+
+training:
+  num_steps: 300
+  rays_per_scene: 128
+  num_workers: 0
+  log_every: 25
+  validate_every: 100
+  checkpoint_every: 100
+
+validation:
+  num_scenes: 2
+  num_target_views: 2
+  source_views: [0]
+
+evaluation:
+  source_view_sets: [[0], [0, 6]]
+  metrics: [psnr, ssim]
