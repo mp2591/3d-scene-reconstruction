@@ -122,7 +122,7 @@ def write_atomically(path: Path, write: Callable[[Path], Any]) -> None:
 
 def write_json(content: dict[str, Any], path: Path) -> None:
     """Write a results file atomically."""
-    write_atomically(path, lambda temporary_path: temporary_path.write_text(json.dumps(content, indent=2)))
+    write_atomically(path, lambda temporary_path: temporary_path.write_text(json.dumps(content, indent=2), encoding="utf-8"))
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
@@ -132,7 +132,7 @@ def read_json(path: Path) -> dict[str, Any] | None:
     directly) is treated like a missing one, so the work is simply redone.
     """
     try:
-        content = json.loads(path.read_text())
+        content = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return content if isinstance(content, dict) else None

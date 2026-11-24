@@ -124,7 +124,7 @@ def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
     path = Path(path)
     if not path.is_file():
         raise ConfigError(f"Suite file not found: {path}")
-    with open(path) as file:
+    with open(path, encoding="utf-8") as file:
         content = yaml.safe_load(file) or {}
 
     _check_suite_keys(content, path)

@@ -393,7 +393,8 @@ def _write_csv(results: list[GroupResult], path: Path) -> None:
                 for metric, value in per_metric.items():
                     row[f"{metric}_{count}v"] = value
             writer.writerow(row)
-    write_atomically(path, lambda temporary_path: temporary_path.write_text(file.getvalue()))
+    # The csv module already ends rows with "\r\n"; newline="" stops Windows adding another "\r".
+    write_atomically(path, lambda temporary_path: temporary_path.write_text(file.getvalue(), encoding="utf-8", newline=""))
 
 
 def _write_comparison_csv(comparisons: list[_Comparison], path: Path) -> None:
@@ -430,7 +431,8 @@ def _write_comparison_csv(comparisons: list[_Comparison], path: Path) -> None:
                 "verdict": difference.verdict(_metric_presentation(comparison.metric)[1]),
             }
         )
-    write_atomically(path, lambda temporary_path: temporary_path.write_text(file.getvalue()))
+    # The csv module already ends rows with "\r\n"; newline="" stops Windows adding another "\r".
+    write_atomically(path, lambda temporary_path: temporary_path.write_text(file.getvalue(), encoding="utf-8", newline=""))
 
 
 def _write_markdown(
@@ -526,7 +528,7 @@ def _write_markdown(
         lines += ["", "## Failed runs", "", "Full error messages are in the suite log.", ""]
         lines += [f"- **{key}**: `{message}`" for key, message in failures.items()]
 
-    write_atomically(path, lambda temporary_path: temporary_path.write_text("\n".join(lines) + "\n"))
+    write_atomically(path, lambda temporary_path: temporary_path.write_text("\n".join(lines) + "\n", encoding="utf-8"))
 
 
 def _differences_section(results: list[GroupResult], differences: dict[str, dict], multiple_seeds: bool) -> list[str]:

@@ -65,7 +65,7 @@ def save_checkpoint(
     }
     write_atomically(path, lambda temporary_path: torch.save(state, temporary_path))
     write_atomically(
-        progress_file(path), lambda temporary_path: temporary_path.write_text(json.dumps(asdict(progress)))
+        progress_file(path), lambda temporary_path: temporary_path.write_text(json.dumps(asdict(progress)), encoding="utf-8")
     )
 
 
@@ -104,7 +104,7 @@ def read_progress(checkpoint_path: Path) -> TrainingProgress | None:
 
     sidecar = progress_file(checkpoint_path)
     if sidecar.is_file():
-        return TrainingProgress(**json.loads(sidecar.read_text()))
+        return TrainingProgress(**json.loads(sidecar.read_text(encoding="utf-8")))
 
     # A checkpoint without the JSON file was not written by save_checkpoint;
     # fall back to reading the (much larger) checkpoint itself.

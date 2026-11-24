@@ -238,7 +238,7 @@ def parse_config(raw: Mapping[str, Any]) -> Config:
 
 def save_config(config: Config, path: str | Path) -> None:
     """Write the merged config back to disk as a single self-contained YAML file."""
-    with open(path, "w") as file:
+    with open(path, "w", encoding="utf-8") as file:
         yaml.safe_dump(config.raw, file, sort_keys=False)
 
 
@@ -246,7 +246,7 @@ def load_yaml_with_bases(path: Path) -> dict[str, Any]:
     """Load a YAML file and merge it on top of the file(s) named by its ``base`` key, if any."""
     if not path.is_file():
         raise ConfigError(f"Config file not found: {path}")
-    with open(path) as file:
+    with open(path, encoding="utf-8") as file:
         content = yaml.safe_load(file) or {}
     if not isinstance(content, dict):
         raise ConfigError(f"{path} must contain a YAML mapping at the top level.")

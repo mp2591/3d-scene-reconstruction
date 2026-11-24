@@ -211,7 +211,7 @@ def _read_intrinsics(path: Path, image_height: int, image_width: int, principal_
     images), the intrinsics are scaled to match. The principal point is first
     converted to the pipeline's pixel convention, in which scaling is exact.
     """
-    with open(path) as file:
+    with open(path, encoding="utf-8") as file:
         lines = [line for line in file.read().splitlines() if line.strip()]
     focal, center_x, center_y, _ = (float(value) for value in lines[0].split())
     calibrated_height, calibrated_width = (int(float(value)) for value in lines[-1].split())

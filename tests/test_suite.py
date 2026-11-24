@@ -197,12 +197,17 @@ def test_suite_runs_every_stage_of_every_run_and_writes_the_report(tmp_path: Pat
         assert files.checkpoint.is_file() and files.evaluation.is_file() and files.profile.is_file()
         assert len(list(files.previews(1).iterdir())) == 2
 
-    with open(suite.directory / "summary.csv") as file:
+    with open(suite.directory / "summary.csv", encoding="utf-8", newline="") as file:
         rows = list(csv.DictReader(file))
     assert [row["run"] for row in rows] == ["narrow", "wide"]
     assert all(row["status"] == "evaluated" and row["psnr_1v"] and row["ssim_2v"] for row in rows)
+    # Every row ends in the csv module's "\r\n" exactly once, also on Windows.
+    for name in ("summary.csv", "paired_comparison.csv"):
+        assert b"\r\r\n" not in (suite.directory / name).read_bytes()
 
-    report = (suite.directory / "summary.md").read_text()
+    # The report is UTF-8 on every platform; its tables use characters such as "↑".
+    report = (suite.directory / "summary.md").read_bytes().decode("utf-8")
+    assert "↑" in report
     assert "## Quality with 1 input view" in report and "## Quality with 2 input views" in report
     plots = {path.name for path in (suite.directory / "plots").iterdir()}
     assert plots == {
