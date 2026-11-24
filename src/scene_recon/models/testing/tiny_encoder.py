@@ -20,6 +20,9 @@ class TinyConvEncoder(nn.Module):
     Feature lookups pass this value to ``sample_features_at_pixels``.
     """
 
+    adapter = None
+    """No layers are added on top of pretrained weights: the whole encoder is trained from scratch."""
+
     def __init__(self, num_features: int = 16, input_normalization: str = "none") -> None:
         """
         Args:

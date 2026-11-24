@@ -106,10 +106,17 @@ class ReconstructionModel(nn.Module, ABC):
         return [ParameterGroup(name="model", parameters=list(self.parameters()))]
 
 
-ENCODER_ATTRIBUTES = ("num_features", "feature_offset")
-"""What a pixel-aligned model reads from its image encoder: the channels of
-its feature map, and where its feature grid sits in the image (see
-``sample_features_at_pixels``)."""
+ENCODER_ATTRIBUTES = ("num_features", "feature_offset", "adapter")
+"""What a pixel-aligned model reads from its image encoder:
+
+* ``num_features``: the channels of its feature map;
+* ``feature_offset``: where its feature grid sits in the image (see
+  ``sample_features_at_pixels``);
+* ``adapter``: the module holding the layers the encoder adds on top of
+  pretrained weights, which start from random values (such as a 1x1
+  convolution that fuses several stages), or ``None`` if it adds none.
+  ``encoder_parameter_groups`` trains them in a group of their own.
+"""
 
 
 def build_encoder(section: Mapping[str, Any], model_name: str) -> nn.Module:
@@ -130,3 +137,23 @@ def build_encoder(section: Mapping[str, Any], model_name: str) -> nn.Module:
                 "needs (see docs/writing_a_model.md)."
             )
     return encoder
+
+
+def encoder_parameter_groups(encoder: nn.Module) -> list[ParameterGroup]:
+    """The parameter groups of an encoder made by ``build_encoder``.
+
+    * ``encoder``: every parameter outside the adapter, normally pretrained;
+    * ``adapter``: the encoder's ``adapter``, if it has one.
+
+    The adapter starts from random values, so it is not part of ``encoder``:
+    a config that gives the pretrained ``encoder`` group a lower learning
+    rate and a warmup leaves the adapter at the base learning rate, like the
+    rest of the new layers.
+    """
+    if encoder.adapter is None:
+        return [ParameterGroup(name="encoder", parameters=list(encoder.parameters()))]
+    adapter_ids = {id(parameter) for parameter in encoder.adapter.parameters()}
+    return [
+        ParameterGroup(name="encoder", parameters=[p for p in encoder.parameters() if id(p) not in adapter_ids]),
+        ParameterGroup(name="adapter", parameters=list(encoder.adapter.parameters())),
+    ]

@@ -6,7 +6,7 @@ from typing import Any, Mapping
 
 from torch import Tensor
 
-from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder
+from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder, encoder_parameter_groups
 from scene_recon.models.hiera.bridge import HieraNeRFBridge, HieraSceneEncoding
 from scene_recon.registry import DECODERS, MODELS
 from scene_recon.structures import FieldOutput, SceneViews
@@ -24,9 +24,11 @@ class HieraNeRF(ReconstructionModel):
 
     Parameter groups, for separate learning rates:
 
-    * ``encoder``: the pretrained Hiera backbone (or the whole encoder, if it has no ``adapter``);
+    * ``encoder``: the pretrained Hiera backbone (or the whole encoder, if its ``adapter`` is ``None``);
     * ``adapter``: the encoder's 1x1 convolution that fuses its stages, trained from scratch;
     * ``bridge`` and ``decoder``: trained from scratch.
+
+    The first two come from ``encoder_parameter_groups``, as in ``pixel_aligned_nerf``.
     """
 
     def __init__(
@@ -39,7 +41,7 @@ class HieraNeRF(ReconstructionModel):
         """
         Args:
             encoder: Config section for the encoder, built from ``ENCODERS`` (normally ``hiera``).
-                It must have ``num_features`` and ``feature_offset``; see ``build_encoder``.
+                It must have ``num_features``, ``feature_offset`` and ``adapter``; see ``build_encoder``.
             decoder: Config section for the decoder, built from ``DECODERS``
                 (normally ``hiera_ray_attention``). Its ``width`` is set from here.
             width: Channels of the tokens shared by the bridge and the decoder.
@@ -73,19 +75,8 @@ class HieraNeRF(ReconstructionModel):
         return FieldOutput(rgb=rgb, density=density)
 
     def parameter_groups(self) -> list[ParameterGroup]:
-        adapter = getattr(self.encoder, "adapter", None)
-        if adapter is None:
-            groups = [ParameterGroup("encoder", list(self.encoder.parameters()))]
-        else:
-            adapter_ids = {id(parameter) for parameter in adapter.parameters()}
-            groups = [
-                ParameterGroup(
-                    "encoder", [p for p in self.encoder.parameters() if id(p) not in adapter_ids]
-                ),
-                ParameterGroup("adapter", list(adapter.parameters())),
-            ]
-        groups += [
+        return [
+            *encoder_parameter_groups(self.encoder),
             ParameterGroup("bridge", list(self.bridge.parameters())),
             ParameterGroup("decoder", list(self.decoder.parameters())),
         ]
-        return groups

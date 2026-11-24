@@ -395,20 +395,33 @@ class _EncoderWithoutOffset(nn.Module):
         return images.new_zeros(len(images), 4, images.shape[-2] // 4, images.shape[-1] // 4)
 
 
-@pytest.mark.parametrize(
-    "model",
-    [
-        {"name": "pixel_aligned_nerf", "decoder": {"name": "pixelnerf_mlp", "hidden_width": 8}},
-        {"name": "tiny_pixel_aligned_nerf", "decoder": {"name": "tiny_pooled_mlp", "hidden_width": 8}},
-        {"name": "hiera_nerf", "width": 8, "decoder": {"name": "hiera_ray_attention", "num_heads": 2}},
-    ],
-    ids=lambda model: model["name"],
-)
+_MODELS_WITH_AN_ENCODER = [
+    {"name": "pixel_aligned_nerf", "decoder": {"name": "pixelnerf_mlp", "hidden_width": 8}},
+    {"name": "tiny_pixel_aligned_nerf", "decoder": {"name": "tiny_pooled_mlp", "hidden_width": 8}},
+    {"name": "hiera_nerf", "width": 8, "decoder": {"name": "hiera_ray_attention", "num_heads": 2}},
+]
+
+
+@pytest.mark.parametrize("model", _MODELS_WITH_AN_ENCODER, ids=lambda model: model["name"])
 def test_every_model_names_an_encoder_missing_feature_offset(model: dict, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setitem(ENCODERS._classes, "without_offset", _EncoderWithoutOffset)
 
     with pytest.raises(ConfigError, match="'without_offset' has no attribute 'feature_offset'"):
         MODELS.build({**model, "encoder": {"name": "without_offset"}})
+
+
+class _EncoderWithoutAdapter(_EncoderWithoutOffset):
+    """An encoder plug-in that does not say which of its layers start from random values."""
+
+    feature_offset = 0.0
+
+
+@pytest.mark.parametrize("model", _MODELS_WITH_AN_ENCODER, ids=lambda model: model["name"])
+def test_every_model_names_an_encoder_missing_adapter(model: dict, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(ENCODERS._classes, "without_adapter", _EncoderWithoutAdapter)
+
+    with pytest.raises(ConfigError, match="'without_adapter' has no attribute 'adapter'"):
+        MODELS.build({**model, "encoder": {"name": "without_adapter"}})
 
 
 # ------------------------------------------------------------------ decoder
@@ -453,6 +466,42 @@ def test_hiera_nerf_parameter_groups_separate_the_pretrained_encoder(hiera_confi
 
     assert list(groups) == ["encoder", "adapter", "bridge", "decoder"]
     assert {id(p) for p in groups["encoder"]} == {id(p) for p in model.encoder.backbone.parameters()}
+
+
+_SMALL_HIERA = {"name": "hiera", "weights": None, "num_features": 8, "embed_dim": 8, "num_heads": 1}
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        {
+            "name": "pixel_aligned_nerf",
+            "encoder": {"name": "convnextv2", "model_name": "convnextv2_atto", "pretrained": False, "num_features": 8},
+            "decoder": {"name": "pixelnerf_mlp", "hidden_width": 8},
+        },
+        {"name": "pixel_aligned_nerf", "encoder": _SMALL_HIERA, "decoder": {"name": "pixelnerf_mlp", "hidden_width": 8}},
+        {"name": "hiera_nerf", "width": 8, "encoder": _SMALL_HIERA, "decoder": {"name": "hiera_ray_attention", "num_heads": 2}},
+    ],
+    ids=["convnextv2_mlp", "hiera_mlp", "hiera_nerf"],
+)
+def test_the_new_fusion_layer_learns_at_the_base_rate_in_every_model(model: dict):
+    """Review B(a): a lower rate for the pretrained encoder must not slow down its randomly started 1x1 layer."""
+    from scene_recon.config import OptimizationSettings
+    from scene_recon.optim import build_optimizer_and_scheduler
+
+    built = MODELS.build(model)
+    settings = OptimizationSettings(
+        optimizer="adam", betas=[0.9, 0.999], weight_decay=0.0, learning_rate=1.0e-4, warmup_steps=0,
+        decay_rate=0.1, decay_steps=1000, group_overrides={"encoder": {"learning_rate": 1.0e-5, "warmup_steps": 2000}},
+    )
+    optimizer, _ = build_optimizer_and_scheduler(built, settings)
+    groups = {group["name"]: group for group in optimizer.param_groups}
+
+    assert {id(p) for p in groups["adapter"]["params"]} == {id(p) for p in built.encoder.adapter.parameters()}
+    assert groups["adapter"]["initial_lr"] == 1.0e-4 and groups["adapter"]["lr"] == 1.0e-4  # no warmup
+    assert groups["encoder"]["initial_lr"] == 1.0e-5
+    adapter_ids = {id(p) for p in built.encoder.adapter.parameters()}
+    assert not adapter_ids & {id(p) for p in groups["encoder"]["params"]}
 
 
 def test_points_no_photo_sees_still_get_a_finite_prediction(hiera_config: Config):

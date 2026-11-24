@@ -23,7 +23,7 @@ from scene_recon.geometry import (
     sample_features_at_pixels,
     world_to_camera,
 )
-from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder
+from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder, encoder_parameter_groups
 from scene_recon.registry import DECODERS, MODELS
 from scene_recon.structures import Cameras, FieldOutput, SceneViews
 
@@ -57,7 +57,7 @@ class TinyPixelAlignedNeRF(ReconstructionModel):
         Args:
             encoder: Config section for the encoder, built from ``ENCODERS``.
                 ``build_encoder`` checks that it has the attributes this
-                model reads (``num_features`` and ``feature_offset``).
+                model reads (``num_features``, ``feature_offset`` and ``adapter``).
             decoder: Config section for the decoder, built from ``DECODERS``.
                 The decoder is told the encoder's feature size automatically.
         """
@@ -105,6 +105,6 @@ class TinyPixelAlignedNeRF(ReconstructionModel):
 
     def parameter_groups(self) -> list[ParameterGroup]:
         return [
-            ParameterGroup(name="encoder", parameters=list(self.encoder.parameters())),
+            *encoder_parameter_groups(self.encoder),
             ParameterGroup(name="decoder", parameters=list(self.decoder.parameters())),
         ]

@@ -237,7 +237,21 @@ class PixelAlignedNeRF(ReconstructionModel):
 
 `build_encoder` (in `scene_recon.models.base`) builds the encoder from
 `ENCODERS` and stops with a config error that names the encoder if it lacks
-an attribute the model reads (`num_features`, `feature_offset`).
+an attribute the model reads (`num_features`, `feature_offset`, `adapter`).
+
+`adapter` is the module that holds the layers an encoder adds on top of its
+pretrained weights, which start from random values, such as the 1x1
+convolution that fuses ConvNeXt V2's or Hiera's stages. Set it to `None` if
+the encoder adds none. `encoder_parameter_groups(self.encoder)` then gives
+the model two parameter groups, `encoder` and `adapter`. A config that slows
+down the pretrained part leaves the adapter at the base learning rate, like
+every other new layer:
+
+```yaml
+optimization:
+  group_overrides:
+    encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}   # pretrained weights only
+```
 
 Two rules keep every setting visible in the config. Each constructor
 argument with a default is written out in the model's file in
@@ -277,9 +291,9 @@ example of this pattern on `main` (ConvNeXt V2 encoder, pixelNeRF-style
 decoder), and
 [`models/testing/tiny_model.py`](../src/scene_recon/models/testing/tiny_model.py)
 a complete, small one. Any encoder that returns one feature map per image and
-has the attributes `num_features` (its channels) and `feature_offset` (where
+has the attributes `num_features` (its channels), `feature_offset` (where
 its feature grid sits; [next section](#where-an-encoders-feature-grid-sits))
-works with that model, including the Hiera encoder of
+and `adapter` works with that model, including the Hiera encoder of
 [`models/hiera/`](../src/scene_recon/models/hiera/).
 
 One thing to plan for if you use it: the top-level model's code is shared by

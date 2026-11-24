@@ -311,8 +311,11 @@ must produce what every decoder expects**. Agree on a convention, for example
 maps", or adapt inside the top-level model.
 
 The models built this way (`pixel_aligned_nerf`, `hiera_nerf`,
-`tiny_pixel_aligned_nerf`) need two attributes of their encoder, which
-`build_encoder` checks: `num_features`, and `feature_offset`, the number of
+`tiny_pixel_aligned_nerf`) need three attributes of their encoder, which
+`build_encoder` checks: `num_features`; `adapter`, the module holding the
+layers the encoder adds on top of pretrained weights (`None` if there are
+none), which `encoder_parameter_groups` trains in its own `adapter` group at
+the base learning rate; and `feature_offset`, the number of
 pixels by which the encoder's feature grid sits up and to the left of an even
 tiling of the image (0 for a 4x4 convolution with stride 4, 1.5 for a 7x7 one
 with stride 4 and padding 3 such as Hiera's, also 1.5 for a ResNet's 1/4

@@ -16,7 +16,8 @@ class ConvNeXtV2Encoder(nn.Module):
     """Turns each image into one feature map, using a pretrained ConvNeXt V2.
 
     ConvNeXt V2 sees the image at four zoom levels. Their outputs are resized to
-    the same size, stacked, and squeezed to ``num_features`` channels.
+    the same size, stacked, and squeezed to ``num_features`` channels by a 1x1
+    convolution, the ``adapter``, which is trained from scratch.
     """
 
     feature_offset = 0.0
@@ -47,7 +48,7 @@ class ConvNeXtV2Encoder(nn.Module):
             model_name, pretrained=pretrained, features_only=True, out_indices=(0, 1, 2, 3)
         )
         total_channels = sum(self.backbone.feature_info.channels())
-        self.project = nn.Conv2d(total_channels, num_features, kernel_size=1)
+        self.adapter = nn.Conv2d(total_channels, num_features, kernel_size=1)
         # The stages line up with each other and with feature_offset only when
         # each one tiles the image evenly, so image sides must be multiples of
         # the coarsest stage's stride (32 for every ConvNeXt V2).
@@ -73,4 +74,4 @@ class ConvNeXtV2Encoder(nn.Module):
             F.interpolate(stage, size=size, mode="bilinear", align_corners=False)
             for stage in stages[1:]
         ]
-        return self.project(torch.cat(resized, dim=1))  # (N, num_features, H/4, W/4)
+        return self.adapter(torch.cat(resized, dim=1))  # (N, num_features, H/4, W/4)

@@ -13,7 +13,7 @@ from scene_recon.geometry import (
     sample_features_at_pixels,
     world_to_camera,
 )
-from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder
+from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder, encoder_parameter_groups
 from scene_recon.registry import DECODERS, MODELS
 from scene_recon.structures import Cameras, FieldOutput, SceneViews
 
@@ -33,9 +33,14 @@ class PixelAlignedNeRF(ReconstructionModel):
     encoder's feature map is read at that pixel. The decoder turns the per view
     features into colour and density. The same decoder serves both rendering passes.
 
-    The encoder must have two attributes: ``num_features``, the channels of
-    its feature map, and ``feature_offset``, where its feature grid sits in the
-    image (see ``sample_features_at_pixels``).
+    The encoder must have the attributes that ``build_encoder`` checks:
+    ``num_features``, the channels of its feature map; ``feature_offset``,
+    where its feature grid sits in the image (see ``sample_features_at_pixels``);
+    and ``adapter``, its layers that start from random values, or ``None``.
+
+    Parameter groups, for separate learning rates: ``encoder`` (normally
+    pretrained), ``adapter`` (if the encoder has one) and ``decoder``; see
+    ``encoder_parameter_groups``.
 
     Args:
         encoder: Config section for the encoder, built from ``ENCODERS``.
@@ -76,6 +81,6 @@ class PixelAlignedNeRF(ReconstructionModel):
 
     def parameter_groups(self) -> list[ParameterGroup]:
         return [
-            ParameterGroup(name="encoder", parameters=list(self.encoder.parameters())),
+            *encoder_parameter_groups(self.encoder),
             ParameterGroup(name="decoder", parameters=list(self.decoder.parameters())),
         ]
