@@ -10,6 +10,8 @@ import pytest
 import torch
 
 from scene_recon import evaluation as evaluation_module
+from scene_recon import provenance as provenance_module
+from scene_recon.checkpoints import COMPATIBILITY_VERSION
 from scene_recon.config import Config, parse_config
 from scene_recon.data.synthetic import SyntheticSpheresDataset
 from scene_recon.provenance import (
@@ -242,3 +244,56 @@ def test_a_checkpoint_with_an_older_fingerprint_format_is_explained_not_called_d
 
     run_evaluation(srn_config)  # evaluation does not need the training data
     assert evaluation_status(srn_config).is_current
+
+
+# ---------------------------------------------------------------- code compatibility (review F19)
+
+
+def _rewrite_checkpoint_version(checkpoint: Path, version: int | None) -> None:
+    """Make a checkpoint look as if it was written by another version of the code (None: before versions existed)."""
+    state = torch.load(checkpoint, weights_only=True)
+    if version is None:
+        del state["compatibility_version"]
+    else:
+        state["compatibility_version"] = version
+    torch.save(state, checkpoint)
+
+
+@pytest.mark.parametrize("version", [None, COMPATIBILITY_VERSION - 1], ids=["no_version", "older_version"])
+def test_a_checkpoint_from_older_code_is_refused_everywhere(srn_config: Config, version):
+    from scene_recon.stages import check_run_can_start
+
+    Trainer(srn_config).train()
+    checkpoint = RunFiles(srn_config.run_dir).checkpoint
+    _rewrite_checkpoint_version(checkpoint, version)
+
+    with pytest.raises(ConfigError, match="older version of the code") as error:
+        check_run_can_start(srn_config, ["train", "evaluate", "profile"])
+    assert "Train it again" in str(error.value)
+    with pytest.raises(ConfigError, match="older version of the code"):
+        Trainer(_changed(srn_config, "training", num_steps=srn_config.training.num_steps + 1), resume=True)
+    with pytest.raises(ConfigError, match="older version of the code"):
+        run_evaluation(srn_config)
+    with pytest.raises(ConfigError, match="older version of the code"):
+        run_profiling(srn_config)
+
+
+def test_a_checkpoint_from_newer_code_is_refused(smoke_config: Config):
+    Trainer(smoke_config).train()
+    _rewrite_checkpoint_version(RunFiles(smoke_config.run_dir).checkpoint, COMPATIBILITY_VERSION + 1)
+
+    with pytest.raises(ConfigError, match="newer version of the code"):
+        run_evaluation(smoke_config)
+
+
+def test_results_from_older_code_are_out_of_date(smoke_config: Config, monkeypatch):
+    Trainer(smoke_config).train()
+    run_evaluation(smoke_config)
+    run_profiling(smoke_config)
+    assert evaluation_status(smoke_config).is_current and profile_status(smoke_config).is_current
+
+    # The code moves on to the next version; the results on disk were made with the previous one.
+    monkeypatch.setattr(provenance_module, "COMPATIBILITY_VERSION", COMPATIBILITY_VERSION + 1)
+
+    for status in (evaluation_status(smoke_config), profile_status(smoke_config)):
+        assert status.state == "stale" and "older version of the code" in status.reason

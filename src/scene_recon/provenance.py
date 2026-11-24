@@ -12,10 +12,14 @@ the suite alike:
    that resumes, evaluates or profiles it. Only the settings in
    ``CONTINUATION_SETTINGS`` may change, such as a larger step budget or
    another device. To train with different settings, start a new run.
+   The checkpoint must also have been written by code with the current
+   ``COMPATIBILITY_VERSION`` (see ``scene_recon.checkpoints``): the same
+   config can mean different weights after a code change.
 
 2. **Does a saved evaluation still describe the run?** ``evaluation_status``.
    Only if it was made from the very same checkpoint file, identified by the
-   SHA-256 hash of its content, and with the current measurement settings.
+   SHA-256 hash of its content, with the current measurement settings and
+   the current ``COMPATIBILITY_VERSION``.
 
    A model without trainable parameters (frozen, or analytic) cannot be
    trained and has no checkpoint; it is evaluated as built, and its
@@ -28,7 +32,8 @@ the suite alike:
 
 3. **Does a saved profile still describe the run?** ``profile_status``.
    Only if it was made with the current model, rendering and profiling
-   settings, on the same kind of device with the same software.
+   settings and ``COMPATIBILITY_VERSION``, on the same kind of device with
+   the same software.
 
 The suite uses 2 and 3 to decide what to redo, and the report uses them to
 leave out-of-date results out of its tables and plots.
@@ -44,7 +49,13 @@ from pathlib import Path
 from typing import Any
 
 from scene_recon.build import build_dataset, build_seeded_model, resolve_device
-from scene_recon.checkpoints import TrainingProgress, read_checkpoint_config, read_checkpoint_training_data
+from scene_recon.checkpoints import (
+    COMPATIBILITY_VERSION,
+    TrainingProgress,
+    read_checkpoint_compatibility_version,
+    read_checkpoint_config,
+    read_checkpoint_training_data,
+)
 from scene_recon.config import Config, flatten_settings, setting_in_sections
 from scene_recon.data.base import SceneDataset
 from scene_recon.environment import device_description
@@ -92,8 +103,10 @@ def check_checkpoint_matches_config(checkpoint_path: Path, config: Config) -> No
     """Refuse to continue, evaluate or profile a checkpoint with settings it was not trained with.
 
     Raises:
-        ConfigError: Listing every setting that differs, with the trained and the requested value.
+        ConfigError: If the checkpoint was written with another ``COMPATIBILITY_VERSION``,
+            or listing every setting that differs, with the trained and the requested value.
     """
+    check_checkpoint_is_compatible(checkpoint_path)
     trained = training_identity(read_checkpoint_config(checkpoint_path))
     requested = training_identity(config.raw)
 
@@ -111,6 +124,28 @@ def check_checkpoint_matches_config(checkpoint_path: Path, config: Config) -> No
             "To train with these settings, start a new run (another experiment.run_name, or another run "
             "in the suite). Settings that may change for an existing run: " + ", ".join(CONTINUATION_SETTINGS) + "."
         )
+
+
+def check_checkpoint_is_compatible(checkpoint_path: Path) -> None:
+    """Refuse a checkpoint whose trained weights the current code would use differently.
+
+    Raises:
+        ConfigError: If the checkpoint's ``COMPATIBILITY_VERSION`` is not the code's.
+    """
+    version = read_checkpoint_compatibility_version(checkpoint_path)
+    if version == COMPATIBILITY_VERSION:
+        return
+    if version < COMPATIBILITY_VERSION:
+        raise ConfigError(
+            f"{checkpoint_path} was written by an older version of the code (compatibility version {version}, "
+            f"the code is at {COMPATIBILITY_VERSION}). Since then the code uses trained weights differently, so "
+            "this checkpoint would give wrong results; COMPATIBILITY_VERSION in scene_recon/checkpoints.py "
+            f"says what changed. Train it again: delete {checkpoint_path.parent} or change experiment.run_name."
+        )
+    raise ConfigError(
+        f"{checkpoint_path} was written by a newer version of the code (compatibility version {version}, "
+        f"the code is at {COMPATIBILITY_VERSION}). Update the code to use it."
+    )
 
 
 def check_training_data_unchanged(checkpoint_path: Path, train_scenes: SceneDataset) -> None:
@@ -189,6 +224,7 @@ def evaluation_settings(config: Config) -> dict[str, Any]:
     """The settings and test data, besides the weights, that determine evaluation results."""
     return _canonical(
         {
+            "compatibility_version": COMPATIBILITY_VERSION,
             "evaluation": config.raw["evaluation"],
             "renderer": config.raw["renderer"],
             "test_data": config.raw["data"]["test"],
@@ -207,6 +243,7 @@ def profiling_settings(config: Config) -> dict[str, Any]:
     test_scenes = build_dataset(config, "test")
     return _canonical(
         {
+            "compatibility_version": COMPATIBILITY_VERSION,
             "profiling": config.raw["profiling"],
             "renderer": config.raw["renderer"],
             "model": config.raw["model"],
@@ -249,7 +286,8 @@ def evaluation_status(config: Config) -> OutputStatus:
         return problem
     if content["settings"] != evaluation_settings(config):
         return OutputStatus(
-            "stale", "made with different evaluation, rendering or test-data settings, or other test data", content
+            "stale", "made with different evaluation, rendering or test-data settings, other test data, "
+            "or an older version of the code", content
         )
     if content["checkpoint"] is None:
         # Made from a model without trainable parameters, as built (see run_evaluation).
@@ -272,7 +310,10 @@ def profile_status(config: Config) -> OutputStatus:
     if problem is not None:
         return problem
     if content["settings"] != profiling_settings(config):
-        return OutputStatus("stale", "made with different settings, test data, device or software", content)
+        return OutputStatus(
+            "stale", "made with different settings, test data, device or software, or an older version of the code",
+            content,
+        )
     return OutputStatus("current", "", content)
 
 
