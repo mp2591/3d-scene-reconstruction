@@ -31,8 +31,14 @@ the same parameter names. Entries the encoder does not have (stage 4, the
 classification head, the MAE decoder) are ignored; a missing or wrongly
 shaped entry stops the run with an explanation.
 
-Set the path in `model.encoder.weights`. Relative paths are relative to the
-directory the command is run from.
+`configs/models/hiera_nerf.yaml` and the suite template's `hiera_mlp` run
+load them from `weights/hiera_tiny_224_mae_in1k.pth`, relative to the
+directory the command is run from (normally the repository root; `weights/`
+is ignored by git). Change `model.encoder.weights` to load them from
+elsewhere. If the file is missing, a run stops before training anything, so
+a model can't silently start from random weights. `weights: null` starts
+from random weights; it is meant for tests, as in
+`configs/hiera_nerf_smoke_test.yaml`.
 
 ## Encoder: Hiera-T (`hiera`)
 

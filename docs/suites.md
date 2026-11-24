@@ -25,11 +25,11 @@ runs:                                  # executed top to bottom
   pixelnerf_resnet34:
     base: ../models/pixelnerf_resnet34.yaml
 
-  hiera_mlp:
+  convnextv2_mlp:
     model:
       name: pixel_aligned_nerf
-      encoder: {name: hiera}
-      decoder: {name: resnet_mlp}
+      encoder: {name: convnextv2}
+      decoder: {name: pixelnerf_mlp}
     optimization:
       group_overrides:
         encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}

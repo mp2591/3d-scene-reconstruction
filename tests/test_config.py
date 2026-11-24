@@ -7,7 +7,7 @@ import yaml
 from scene_recon.config import load_yaml_with_bases, load_config
 from scene_recon.build import build_metrics
 from scene_recon.metrics import PSNR
-from scene_recon.registry import METRICS, ConfigError
+from scene_recon.registry import DATASETS, DECODERS, ENCODERS, LOSSES, METRICS, MODELS, ConfigError
 
 from conftest import CONFIG_DIR
 
@@ -17,6 +17,41 @@ RUNNABLE_CONFIGS = ["smoke_test.yaml", "srn_cars_tiny_model.yaml"]
 @pytest.mark.parametrize("file_name", RUNNABLE_CONFIGS)
 def test_shipped_configs_are_valid(file_name: str):
     load_config(CONFIG_DIR / file_name)
+
+
+# The registry each component section's ``name`` is looked up in.
+_REGISTRY_OF_SECTION = {
+    "model": MODELS,
+    "encoder": ENCODERS,
+    "decoder": DECODERS,
+    "loss": LOSSES,
+    "train": DATASETS,
+    "val": DATASETS,
+    "test": DATASETS,
+}
+
+
+def _named_components(node, section=None):
+    """Every (section, name) of a component section anywhere in a parsed YAML file."""
+    if isinstance(node, dict):
+        if section in _REGISTRY_OF_SECTION and "name" in node:
+            yield section, node["name"]
+        for key, child in node.items():
+            yield from _named_components(child, key)
+    elif isinstance(node, list):
+        for child in node:
+            yield from _named_components(child, section)
+
+
+@pytest.mark.parametrize(
+    "path", sorted(CONFIG_DIR.rglob("*.yaml")), ids=lambda path: str(path.relative_to(CONFIG_DIR))
+)
+def test_every_component_a_shipped_config_names_is_registered(path: Path):
+    """A renamed or misspelt component fails here, not in the preflight of a long suite."""
+    named = list(_named_components(yaml.safe_load(path.read_text()) or {}))
+    unknown = [f"{section}: {name}" for section, name in named if name not in _REGISTRY_OF_SECTION[section].names()]
+
+    assert not unknown, f"{path.relative_to(CONFIG_DIR)} names components that are not registered: {unknown}"
 
 
 def test_child_config_overrides_its_bases():

@@ -14,7 +14,10 @@ model:
   position_frequencies: 6       # sine/cosine encoding of point positions
   encoder:
     name: hiera
-    weights: null               # REQUIRED for real runs: path to Hiera-T MAE weights (docs/hiera_nerf.md)
+    # Hiera-T MAE weights (docs/hiera_nerf.md says how to get them). A run
+    # stops before training if the file is missing. null starts from random
+    # weights, which is for tests only (see hiera_nerf_smoke_test.yaml).
+    weights: weights/hiera_tiny_224_mae_in1k.pth
     num_features: 256
     input_normalization: imagenet
     drop_path_rate: 0.0

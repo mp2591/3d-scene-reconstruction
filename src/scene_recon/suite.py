@@ -12,8 +12,8 @@ architectures being compared in the proposal::
     runs:                         # executed in this order
       pixelnerf_resnet34:
         base: ../models/pixelnerf_resnet34.yaml
-      hiera_maskunit:
-        base: ../models/hiera_maskunit.yaml
+      hiera_nerf:
+        base: ../models/hiera_nerf.yaml
         optimization:
           group_overrides: {encoder: {learning_rate: 1.0e-5}}
 

@@ -10,3 +10,6 @@ __pycache__/
 # Datasets are large and live outside version control. The leading slash
 # matters: src/scene_recon/data/ is source code and must stay tracked.
 /data/
+
+# Pretrained weights downloaded for the encoders (see docs/hiera_nerf.md).
+/weights/

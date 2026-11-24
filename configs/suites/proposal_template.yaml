@@ -30,29 +30,30 @@ runs:
   transnerf_unet:
     base: ../models/transnerf_unet.yaml
 
-  # (3) Encoder ablations: the modern backbones with a standard decoder.
-  #     A model can also be written out in full instead of naming a file:
+  # (3) Encoder ablations: the modern backbones with the same pixelNeRF-style
+  #     decoder (pixelnerf_mlp), so that only the encoder differs.
   convnextv2_mlp:
-    model:
-      name: pixel_aligned_nerf          # your top-level module
-      encoder: {name: convnextv2}
-      decoder: {name: resnet_mlp}
+    base: ../models/convnextv2_mlp.yaml   # ConvNeXt V2-T, pretrained weights via timm
     optimization:
       group_overrides:
         encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}   # pretrained encoder
 
   hiera_mlp:
+    base: ../models/convnextv2_mlp.yaml   # the same top-level model and decoder...
     model:
-      name: pixel_aligned_nerf
-      encoder: {name: hiera}
-      decoder: {name: resnet_mlp}
+      encoder:                            # ...with Hiera-T as the encoder. Naming another
+        name: hiera                       # encoder replaces the whole encoder section.
+        weights: weights/hiera_tiny_224_mae_in1k.pth   # how to get them: docs/hiera_nerf.md
+        num_features: 256
+        input_normalization: imagenet
     optimization:
       group_overrides:
         encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
 
-  # (4) End-to-end modernised model: Hiera-T encoder with the HieraNeRF bridge and
-  #     the Hiera-style attention decoder (docs/hiera_nerf.md). Set
-  #     model.encoder.weights in configs/models/hiera_nerf.yaml first.
+  # (4) End-to-end modernised model (issue #5): Hiera-T encoder with the HieraNeRF
+  #     bridge and the Hiera-style attention decoder (docs/hiera_nerf.md). Like
+  #     hiera_mlp, it needs the Hiera-T weights at weights/hiera_tiny_224_mae_in1k.pth;
+  #     without them the suite stops before training anything.
   hiera_nerf:
     base: ../models/hiera_nerf.yaml
     optimization:

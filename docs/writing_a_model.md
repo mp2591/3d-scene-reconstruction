@@ -221,11 +221,11 @@ writing one top-level class per combination, a top-level model can build its
 parts by name from the `ENCODERS` and `DECODERS` registries:
 
 ```python
-@ENCODERS.register("resnet34")
-class ResNet34Encoder(nn.Module): ...
+@ENCODERS.register("convnextv2")
+class ConvNeXtV2Encoder(nn.Module): ...
 
-@DECODERS.register("resnet_mlp")
-class ResNetMLPDecoder(nn.Module): ...
+@DECODERS.register("pixelnerf_mlp")
+class PixelNeRFDecoder(nn.Module): ...
 
 @MODELS.register("pixel_aligned_nerf")
 class PixelAlignedNeRF(ReconstructionModel):
@@ -240,12 +240,17 @@ Swapping the backbone is then a config change:
 ```yaml
 model:
   name: pixel_aligned_nerf
-  encoder: {name: hiera}          # was: resnet34
-  decoder: {name: resnet_mlp}
+  encoder: {name: hiera, weights: weights/hiera_tiny_224_mae_in1k.pth}   # was: convnextv2
+  decoder: {name: pixelnerf_mlp}
 ```
 
+[`models/pixelnerf/`](../src/scene_recon/models/pixelnerf/) is the real
+example of this pattern on `main` (ConvNeXt V2 encoder, pixelNeRF-style
+decoder), and
 [`models/testing/tiny_model.py`](../src/scene_recon/models/testing/tiny_model.py)
-is a complete, small example of this pattern.
+a complete, small one. Any encoder with a `num_features` attribute that
+returns one feature map per image works with that model, including the Hiera
+encoder of [`models/hiera/`](../src/scene_recon/models/hiera/).
 
 One thing to plan for if you use it: the top-level model's code is shared by
 every combination, so every encoder must produce what every decoder expects.

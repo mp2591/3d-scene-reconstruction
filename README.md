@@ -313,16 +313,21 @@ One file per model in `configs/models/`. `name` selects the registered class;
 every other key is passed to its constructor.
 
 ```yaml
-# configs/models/hiera_maskunit.yaml
+# configs/models/convnextv2_mlp.yaml
 model:
   name: pixel_aligned_nerf
   encoder:
-    name: hiera
+    name: convnextv2
+    model_name: convnextv2_tiny.fcmae_ft_in22k_in1k
+    pretrained: true
+    num_features: 256
     input_normalization: imagenet
-    weights: /data/weights/hiera_base_mae.pth
   decoder:
-    name: mask_unit_attention
-    num_heads: 8
+    name: pixelnerf_mlp
+    hidden_width: 512
+    num_frequencies: 6
+    num_blocks: 5
+    pool_after_block: 3
 ```
 
 ### 8. Check it, then add it to a suite
@@ -349,8 +354,8 @@ Then add the model as a run to a suite file:
 
 ```yaml
 runs:
-  hiera_maskunit:
-    base: ../models/hiera_maskunit.yaml
+  convnextv2_mlp:
+    base: ../models/convnextv2_mlp.yaml
 ```
 
 ## Commands
