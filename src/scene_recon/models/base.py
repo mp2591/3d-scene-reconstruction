@@ -16,10 +16,11 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Mapping
 
 from torch import Tensor, nn
 
+from scene_recon.registry import ENCODERS, ConfigError
 from scene_recon.structures import FieldOutput, SceneViews
 
 # Names of the two rendering passes. The coarse pass samples points evenly
@@ -103,3 +104,29 @@ class ReconstructionModel(nn.Module, ABC):
         exactly one group.
         """
         return [ParameterGroup(name="model", parameters=list(self.parameters()))]
+
+
+ENCODER_ATTRIBUTES = ("num_features", "feature_offset")
+"""What a pixel-aligned model reads from its image encoder: the channels of
+its feature map, and where its feature grid sits in the image (see
+``sample_features_at_pixels``)."""
+
+
+def build_encoder(section: Mapping[str, Any], model_name: str) -> nn.Module:
+    """Build an image encoder from its config section and check it has ``ENCODER_ATTRIBUTES``.
+
+    Args:
+        section: The encoder's config section, built from ``ENCODERS``.
+        model_name: The registered name of the model building it, for the error message.
+
+    Raises:
+        ConfigError: If the encoder lacks one of the attributes.
+    """
+    encoder = ENCODERS.build(section)
+    for attribute in ENCODER_ATTRIBUTES:
+        if not hasattr(encoder, attribute):
+            raise ConfigError(
+                f"The encoder '{section['name']}' has no attribute '{attribute}', which {model_name} "
+                "needs (see docs/writing_a_model.md)."
+            )
+    return encoder

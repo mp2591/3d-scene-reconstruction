@@ -136,17 +136,29 @@ def project_to_pixels(points_camera: Tensor, intrinsics: Tensor) -> Tensor:
     return points_camera[..., :2] / depth * focal + principal_point
 
 
-def sample_features_at_pixels(feature_maps: Tensor, pixels: Tensor, image_size: tuple[int, int]) -> Tensor:
+def sample_features_at_pixels(
+    feature_maps: Tensor, pixels: Tensor, image_size: tuple[int, int], feature_offset: float = 0.0
+) -> Tensor:
     """Bilinearly look up a feature vector for each pixel coordinate.
 
     The feature maps may have any resolution: pixel coordinates are given in
     the coordinate system of the original images and rescaled internally.
     Coordinates outside the image take the feature of the nearest border.
 
+    A feature map is taken to tile the image evenly: with a stride of s
+    pixels, cell j is centred at (j + 0.5) * s, like the pixels of the image
+    itself or the output of a 4x4 convolution with stride 4. Many
+    convolutions centre their cells elsewhere: a 7x7 convolution with stride
+    4 and padding 3 centres cell j on pixel 4j, at 4j + 0.5, which is 1.5
+    pixels up and to the left of 4j + 2. Such an encoder states that shift
+    as its ``feature_offset``, and the model passes it here.
+
     Args:
         feature_maps: Shape (B, V, C, feature_height, feature_width).
         pixels: Pixel coordinates (x, y) of shape (B, V, P, 2), in image pixels.
         image_size: (height, width) of the images the pixels refer to.
+        feature_offset: Pixels by which the feature grid sits up and to the
+            left of an even tiling of the image. 0 for the images themselves.
 
     Returns:
         Shape (B, V, P, C).
@@ -156,9 +168,10 @@ def sample_features_at_pixels(feature_maps: Tensor, pixels: Tensor, image_size: 
     height, width = image_size
 
     # grid_sample expects coordinates in [-1, 1], where -1 and +1 are the
-    # outer edges of the image (align_corners=False).
+    # outer edges of the image (align_corners=False). Adding the offset moves
+    # each point onto the grid of an evenly tiled map, which is what that assumes.
     image_extent = torch.tensor([width, height], dtype=pixels.dtype, device=pixels.device)
-    normalized = pixels / image_extent * 2.0 - 1.0
+    normalized = (pixels + feature_offset) / image_extent * 2.0 - 1.0
 
     sampled = F.grid_sample(
         feature_maps.flatten(0, 1),

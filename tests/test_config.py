@@ -1,3 +1,4 @@
+import inspect
 import re
 from pathlib import Path
 
@@ -52,6 +53,61 @@ def test_every_component_a_shipped_config_names_is_registered(path: Path):
     unknown = [f"{section}: {name}" for section, name in named if name not in _REGISTRY_OF_SECTION[section].names()]
 
     assert not unknown, f"{path.relative_to(CONFIG_DIR)} names components that are not registered: {unknown}"
+
+
+def _component_sections(node, section=None):
+    """Every (section, mapping) of a component section anywhere in a parsed YAML mapping."""
+    if isinstance(node, dict):
+        if section in _REGISTRY_OF_SECTION and "name" in node:
+            yield section, node
+        for key, child in node.items():
+            yield from _component_sections(child, key)
+
+
+@pytest.mark.parametrize("path", sorted((CONFIG_DIR / "models").glob("*.yaml")), ids=lambda path: path.name)
+def test_model_files_write_out_every_setting_of_their_components(path: Path):
+    """Every constructor argument that has a default is written out in the model file.
+
+    The suite report compares the settings written in the configs. A setting
+    left to its default in one run and written out in another would be listed
+    as a difference although both runs use the same value, and a default
+    changed in the code would change a model without any config showing it.
+
+    An argument the enclosing model supplies (such as a decoder's
+    ``num_features``) has no default and is not written in the config, so
+    this test does not ask for it (see docs/writing_a_model.md).
+    """
+    model = load_yaml_with_bases(path)["model"]
+    missing = []
+    for section, component in _component_sections({"model": model}):
+        constructor = inspect.signature(_REGISTRY_OF_SECTION[section].get(component["name"]))
+        missing += [
+            f"{section} '{component['name']}': {parameter.name}"
+            for parameter in constructor.parameters.values()
+            if parameter.default is not inspect.Parameter.empty and parameter.name not in component
+        ]
+
+    assert not missing, (
+        f"configs/models/{path.name} leaves these settings to code defaults: {missing}. Write them out in "
+        "the model file or, if the enclosing model supplies the argument, remove its default."
+    )
+
+
+def test_both_hiera_models_use_the_same_encoder_settings():
+    """hiera_mlp and hiera_nerf are compared as one encoder with two different decoders."""
+    hiera_mlp = load_yaml_with_bases(CONFIG_DIR / "models" / "hiera_mlp.yaml")["model"]["encoder"]
+    hiera_nerf = load_yaml_with_bases(CONFIG_DIR / "models" / "hiera_nerf.yaml")["model"]["encoder"]
+
+    assert hiera_mlp == hiera_nerf
+
+
+def test_the_guides_backbone_swap_example_writes_out_the_whole_encoder_section():
+    """docs/writing_a_model.md shows hiera_mlp.yaml's encoder section, so copying it adds no false differences."""
+    guide = (CONFIG_DIR.parent / "docs" / "writing_a_model.md").read_text(encoding="utf-8")
+    example = guide.split("```yaml\nbase: convnextv2_mlp.yaml")[1].split("```")[0]
+    encoder = yaml.safe_load(example)["model"]["encoder"]
+
+    assert encoder == load_yaml_with_bases(CONFIG_DIR / "models" / "hiera_mlp.yaml")["model"]["encoder"]
 
 
 def test_child_config_overrides_its_bases():

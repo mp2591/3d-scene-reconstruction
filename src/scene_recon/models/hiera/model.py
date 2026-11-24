@@ -6,9 +6,9 @@ from typing import Any, Mapping
 
 from torch import Tensor
 
-from scene_recon.models.base import ParameterGroup, ReconstructionModel
+from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder
 from scene_recon.models.hiera.bridge import HieraNeRFBridge, HieraSceneEncoding
-from scene_recon.registry import DECODERS, ENCODERS, MODELS
+from scene_recon.registry import DECODERS, MODELS
 from scene_recon.structures import FieldOutput, SceneViews
 
 
@@ -39,14 +39,17 @@ class HieraNeRF(ReconstructionModel):
         """
         Args:
             encoder: Config section for the encoder, built from ``ENCODERS`` (normally ``hiera``).
+                It must have ``num_features`` and ``feature_offset``; see ``build_encoder``.
             decoder: Config section for the decoder, built from ``DECODERS``
                 (normally ``hiera_ray_attention``). Its ``width`` is set from here.
             width: Channels of the tokens shared by the bridge and the decoder.
             position_frequencies: Sine/cosine frequencies encoding point positions in the bridge.
         """
         super().__init__()
-        self.encoder = ENCODERS.build(encoder)
-        self.bridge = HieraNeRFBridge(self.encoder.num_features, width, position_frequencies)
+        self.encoder = build_encoder(encoder, "hiera_nerf")
+        self.bridge = HieraNeRFBridge(
+            self.encoder.num_features, width, position_frequencies, feature_offset=self.encoder.feature_offset
+        )
         self.decoder = DECODERS.build(decoder, width=width, geometry_size=self.bridge.geometry_size)
 
     def encode_scene(self, source_views: SceneViews) -> HieraSceneEncoding:

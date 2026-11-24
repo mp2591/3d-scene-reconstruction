@@ -522,7 +522,9 @@ def _write_markdown(
     if figures:
         lines += ["", "## Figures", ""]
         for title, figure_path in figures:
-            lines += [f"### {title}", "", f"![{title}]({figure_path.relative_to(path.parent)})", ""]
+            # Markdown links use forward slashes, also on Windows.
+            link = figure_path.relative_to(path.parent).as_posix()
+            lines += [f"### {title}", "", f"![{title}]({link})", ""]
 
     if failures:
         lines += ["", "## Failed runs", "", "Full error messages are in the suite log.", ""]

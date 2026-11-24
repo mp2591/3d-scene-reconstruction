@@ -203,14 +203,16 @@ The rules:
 | Rule | Why |
 |---|---|
 | `rgb` has shape (B, R, S, 3) with values in [0, 1]; `density` has shape (B, R, S) and is ≥ 0. Use e.g. `sigmoid` and `relu`/`softplus`. | The renderer integrates them as colour and density. |
-| Work with **any** number of source views V (1 to 3 in the proposal); pool or attend over views instead of concatenating a fixed number. | V changes from step to step, and evaluation runs with 1, 2 and 3 views. |
+| Work with **any** number of source views V (1 to 3 in the proposal); pool or attend over views instead of concatenating a fixed number. | V changes from step to step (training uses 1 to 3), and evaluation runs once per protocol in `evaluation.source_view_sets`: 1 and 2 views for now, 3 once that protocol is chosen. |
 | Create new tensors on the input's device: `torch.zeros(..., device=points.device)`. Never call `.cuda()`. | The same code runs on a CPU (tests) and on any GPU. |
 | `level` tells the coarse pass from the fine pass. Use one network for both (ignore `level`) or one each, as pixelNeRF does. | Hierarchical sampling queries the model twice. |
 | Every trainable parameter must affect the output. Delete unused layers (e.g. a backbone's classification head) or freeze them with `requires_grad = False`. | Unused parameters waste optimiser memory and usually signal a wiring mistake; `check-model` reports them. |
 
 `geometry.py` provides the camera maths a pixel-aligned model needs:
 `world_to_camera`, `rotate_directions_to_camera`, `project_to_pixels` and
-`sample_features_at_pixels`. The tiny model shows them in sequence.
+`sample_features_at_pixels`. The tiny model shows them in sequence. Feature
+lookups need to know where the encoder's feature grid sits in the image
+([`feature_offset`](docs/writing_a_model.md#where-an-encoders-feature-grid-sits)).
 
 ### 3. Normalise the input inside the encoder
 
@@ -306,6 +308,13 @@ The top-level code is then shared by every combination, so **every encoder
 must produce what every decoder expects**. Agree on a convention, for example
 "every encoder has a `num_features` attribute and returns a list of feature
 maps", or adapt inside the top-level model.
+
+`pixel_aligned_nerf` needs two attributes of its encoder: `num_features`, and
+`feature_offset`, the number of pixels by which the encoder's feature grid sits
+up and to the left of an even tiling of the image (0 for a 4x4 convolution
+with stride 4, 1.5 for a 7x7 one with stride 4 and padding 3 such as Hiera's,
+also 1.5 for a ResNet's 1/4 grid). It is easy to get wrong without any error,
+so [measure it](docs/writing_a_model.md#where-an-encoders-feature-grid-sits).
 
 ### 7. Describe the model in a config file
 

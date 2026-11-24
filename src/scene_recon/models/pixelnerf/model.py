@@ -13,8 +13,8 @@ from scene_recon.geometry import (
     sample_features_at_pixels,
     world_to_camera,
 )
-from scene_recon.models.base import ParameterGroup, ReconstructionModel
-from scene_recon.registry import DECODERS, ENCODERS, MODELS
+from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder
+from scene_recon.registry import DECODERS, MODELS
 from scene_recon.structures import Cameras, FieldOutput, SceneViews
 
 
@@ -33,6 +33,10 @@ class PixelAlignedNeRF(ReconstructionModel):
     encoder's feature map is read at that pixel. The decoder turns the per view
     features into colour and density. The same decoder serves both rendering passes.
 
+    The encoder must have two attributes: ``num_features``, the channels of
+    its feature map, and ``feature_offset``, where its feature grid sits in the
+    image (see ``sample_features_at_pixels``).
+
     Args:
         encoder: Config section for the encoder, built from ``ENCODERS``.
         decoder: Config section for the decoder, built from ``DECODERS``. It is
@@ -41,7 +45,7 @@ class PixelAlignedNeRF(ReconstructionModel):
 
     def __init__(self, encoder: Mapping[str, Any], decoder: Mapping[str, Any]) -> None:
         super().__init__()
-        self.encoder = ENCODERS.build(encoder)
+        self.encoder = build_encoder(encoder, "pixel_aligned_nerf")
         self.decoder = DECODERS.build(decoder, num_features=self.encoder.num_features)
 
     def encode_scene(self, source_views: SceneViews) -> _SceneEncoding:
@@ -60,7 +64,9 @@ class PixelAlignedNeRF(ReconstructionModel):
         points_camera = world_to_camera(flat_points, source_poses)
         directions_camera = rotate_directions_to_camera(flat_directions, source_poses)
         pixels = project_to_pixels(points_camera, scene_encoding.cameras.intrinsics)
-        features = sample_features_at_pixels(scene_encoding.feature_maps, pixels, scene_encoding.image_size)
+        features = sample_features_at_pixels(
+            scene_encoding.feature_maps, pixels, scene_encoding.image_size, feature_offset=self.encoder.feature_offset
+        )
 
         rgb, density = self.decoder(features, points_camera, directions_camera)
         return FieldOutput(

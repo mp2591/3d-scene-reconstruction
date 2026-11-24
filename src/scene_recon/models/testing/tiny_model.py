@@ -23,8 +23,8 @@ from scene_recon.geometry import (
     sample_features_at_pixels,
     world_to_camera,
 )
-from scene_recon.models.base import ParameterGroup, ReconstructionModel
-from scene_recon.registry import DECODERS, ENCODERS, MODELS
+from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder
+from scene_recon.registry import DECODERS, MODELS
 from scene_recon.structures import Cameras, FieldOutput, SceneViews
 
 
@@ -56,11 +56,13 @@ class TinyPixelAlignedNeRF(ReconstructionModel):
         """
         Args:
             encoder: Config section for the encoder, built from ``ENCODERS``.
+                ``build_encoder`` checks that it has the attributes this
+                model reads (``num_features`` and ``feature_offset``).
             decoder: Config section for the decoder, built from ``DECODERS``.
                 The decoder is told the encoder's feature size automatically.
         """
         super().__init__()
-        self.encoder = ENCODERS.build(encoder)
+        self.encoder = build_encoder(encoder, "tiny_pixel_aligned_nerf")
         self.decoder = DECODERS.build(decoder, num_features=self.encoder.num_features)
 
     def encode_scene(self, source_views: SceneViews) -> _SceneEncoding:
@@ -91,7 +93,9 @@ class TinyPixelAlignedNeRF(ReconstructionModel):
         points_camera = world_to_camera(flat_points, source_poses)
         directions_camera = rotate_directions_to_camera(flat_directions, source_poses)
         pixels = project_to_pixels(points_camera, scene_encoding.cameras.intrinsics)
-        features = sample_features_at_pixels(scene_encoding.feature_maps, pixels, scene_encoding.image_size)
+        features = sample_features_at_pixels(
+            scene_encoding.feature_maps, pixels, scene_encoding.image_size, feature_offset=self.encoder.feature_offset
+        )
 
         rgb, density = self.decoder(features, points_camera, directions_camera)
         return FieldOutput(

@@ -99,7 +99,10 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         nargs=2,
         metavar=("HEIGHT", "WIDTH"),
-        help="Size of the random test images. Defaults to the size of the test split's images.",
+        help=(
+            "Size of the random test images, for every check. Default: each split the stages read is "
+            "checked at the size of its own images (train and val for 'train', test for 'evaluate' and 'profile')."
+        ),
     )
     check.set_defaults(run=_check_model)
 

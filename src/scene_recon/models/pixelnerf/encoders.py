@@ -19,6 +19,9 @@ class ConvNeXtV2Encoder(nn.Module):
     the same size, stacked, and squeezed to ``num_features`` channels.
     """
 
+    feature_offset = 0.0
+    """The stem (4x4 convolution, stride 4) tiles the image evenly; see ``sample_features_at_pixels``."""
+
     def __init__(
         self,
         model_name: str = "convnextv2_tiny.fcmae_ft_in22k_in1k",
@@ -45,15 +48,25 @@ class ConvNeXtV2Encoder(nn.Module):
         )
         total_channels = sum(self.backbone.feature_info.channels())
         self.project = nn.Conv2d(total_channels, num_features, kernel_size=1)
+        # The stages line up with each other and with feature_offset only when
+        # each one tiles the image evenly, so image sides must be multiples of
+        # the coarsest stage's stride (32 for every ConvNeXt V2).
+        self.image_size_multiple = max(self.backbone.feature_info.reduction())
 
     def forward(self, images: Tensor) -> Tensor:
         """
         Args:
-            images: Shape (N, 3, H, W), values in [0, 1].
+            images: Shape (N, 3, H, W), values in [0, 1]; H and W multiples of 32.
 
         Returns:
             Feature maps of shape (N, num_features, H / 4, W / 4).
         """
+        height, width = images.shape[-2:]
+        if height % self.image_size_multiple or width % self.image_size_multiple:
+            raise ValueError(
+                f"The ConvNeXt V2 encoder needs image sides that are multiples of {self.image_size_multiple} "
+                f"pixels (the stride of its coarsest stage), got {height}x{width}."
+            )
         stages = self.backbone(self.normalize(images))
         size = stages[0].shape[-2:]  # the largest feature map
         resized = [stages[0]] + [

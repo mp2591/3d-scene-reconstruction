@@ -231,26 +231,56 @@ class PixelNeRFDecoder(nn.Module): ...
 class PixelAlignedNeRF(ReconstructionModel):
     def __init__(self, encoder: dict, decoder: dict) -> None:
         super().__init__()
-        self.encoder = ENCODERS.build(encoder)
+        self.encoder = build_encoder(encoder, "pixel_aligned_nerf")
         self.decoder = DECODERS.build(decoder, num_features=self.encoder.num_features)
 ```
 
-Swapping the backbone is then a config change:
+`build_encoder` (in `scene_recon.models.base`) builds the encoder from
+`ENCODERS` and stops with a config error that names the encoder if it lacks
+an attribute the model reads (`num_features`, `feature_offset`).
+
+Two rules keep every setting visible in the config. Each constructor
+argument with a default is written out in the model's file in
+`configs/models/` (a test checks this), and an argument the top-level model
+supplies, such as the decoder's `num_features` above, has **no** default and
+is never written in the config (the registry rejects it there, because the
+supplied value would win).
+
+Swapping the backbone is then a new model file that changes only the
+encoder section. [`configs/models/hiera_mlp.yaml`](../configs/models/hiera_mlp.yaml)
+does this for `convnextv2_mlp.yaml`:
 
 ```yaml
+base: convnextv2_mlp.yaml   # the same model and decoder
+
 model:
-  name: pixel_aligned_nerf
-  encoder: {name: hiera, weights: weights/hiera_tiny_224_mae_in1k.pth}   # was: convnextv2
-  decoder: {name: pixelnerf_mlp}
+  encoder:                  # naming another encoder replaces the whole section
+    name: hiera
+    weights: weights/hiera_tiny_224_mae_in1k.pth
+    num_features: 256
+    input_normalization: imagenet
+    embed_dim: 96
+    num_heads: 1
+    stage_depths: [1, 2, 7]
+    mlp_ratio: 4.0
+    pretrain_image_size: 224
+    drop_path_rate: 0.0
 ```
+
+Write the new encoder's section out in full, as here. The suite
+report lists every setting that differs between runs, so a section that
+leaves settings to their defaults shows them as differences from a run that
+writes them out, although both use the same values.
 
 [`models/pixelnerf/`](../src/scene_recon/models/pixelnerf/) is the real
 example of this pattern on `main` (ConvNeXt V2 encoder, pixelNeRF-style
 decoder), and
 [`models/testing/tiny_model.py`](../src/scene_recon/models/testing/tiny_model.py)
-a complete, small one. Any encoder with a `num_features` attribute that
-returns one feature map per image works with that model, including the Hiera
-encoder of [`models/hiera/`](../src/scene_recon/models/hiera/).
+a complete, small one. Any encoder that returns one feature map per image and
+has the attributes `num_features` (its channels) and `feature_offset` (where
+its feature grid sits; [next section](#where-an-encoders-feature-grid-sits))
+works with that model, including the Hiera encoder of
+[`models/hiera/`](../src/scene_recon/models/hiera/).
 
 One thing to plan for if you use it: the top-level model's code is shared by
 every combination, so every encoder must produce what every decoder expects.
@@ -261,6 +291,42 @@ catches a mismatch in seconds.
 
 Encoder and decoder files must live under `src/scene_recon/models/`, like the
 top-level model, so that their registration runs.
+
+### Where an encoder's feature grid sits
+
+A pixel-aligned model reads the encoder's feature at the pixel each 3D point
+projects to, so it must know which part of the image each feature cell
+describes. `sample_features_at_pixels` assumes that the cells tile the image
+evenly: with a stride of s pixels, cell j is centred at (j + 0.5) × s. That
+holds for a 4x4 convolution with stride 4, but not for most padded
+convolutions. A 7x7 convolution with stride 4 and padding 3 centres cell j on
+pixel 4j, at 4j + 0.5, which is 1.5 pixels up and to the left of 4j + 2.
+Every encoder states this shift as `feature_offset`, and the model passes it
+on:
+
+```python
+features = sample_features_at_pixels(feature_maps, pixels, image_size, feature_offset=self.encoder.feature_offset)
+```
+
+| Encoder | First layers | `feature_offset` |
+|---|---|---|
+| `convnextv2` | 4x4 convolution, stride 4 | 0.0 |
+| `hiera` | 7x7 convolution, stride 4, padding 3 | 1.5 |
+| `tiny_conv` | 3x3 convolution, stride 2, padding 1 | 0.5 |
+| ResNet, 1/4 grid | 7x7 convolution, stride 2, padding 3, then 3x3 max-pool, stride 2, padding 1 | 1.5 |
+| ResNet, 1/2 grid (after the first convolution) | 7x7 convolution, stride 2, padding 3 | 0.5 |
+
+Layers after the first keep the offset as long as they pool or stride evenly
+and are resized back with `align_corners=False`. That needs image sides that
+every stride divides; otherwise a stride rounds the grid's size and its cells
+no longer tile the image. So each encoder rejects other sizes: multiples of
+32 for `convnextv2` and `hiera`, of 2 for `tiny_conv` (ShapeNet-SRN's 128x128
+suits all three). A wrong `feature_offset` raises no
+error; the features are simply read a little off, consistently, so measure
+it. `tests/test_hiera_nerf.py` shows how: an image whose values are the pixel
+coordinates, a first layer that copies its centre pixel, and a lookup that
+must return the coordinates it was given. Colours read from the source photos
+themselves use no offset.
 
 ## Geometry helpers
 
@@ -273,6 +339,6 @@ tested functions for this, so all models share one set of conventions:
 | `world_to_camera`             | Express world points in each source camera's frame.                      |
 | `rotate_directions_to_camera` | The same for directions (no translation).                                |
 | `project_to_pixels`           | Project camera-space points to pixel coordinates.                        |
-| `sample_features_at_pixels`   | Bilinearly read feature maps of any resolution at those pixel positions. |
+| `sample_features_at_pixels`   | Bilinearly read feature maps of any resolution at those pixel positions, given where the encoder's grid sits (`feature_offset`). |
 
 The testing model's `query_field` uses all four in sequence.

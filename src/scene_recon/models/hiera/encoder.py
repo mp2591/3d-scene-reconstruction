@@ -173,6 +173,8 @@ class HieraBackbone(nn.Module):
         super().__init__()
         if len(stage_depths) != 3:
             raise ConfigError(f"stage_depths must list the depths of Hiera's first three stages, got {stage_depths}.")
+        if not 0.0 <= drop_path_rate < 1.0:  # also rejects NaN
+            raise ConfigError(f"drop_path_rate must be at least 0 and below 1, got {drop_path_rate}.")
         mask_unit_attention = (True, True, False)
         flat_q_stride = _Q_STRIDE**2
 
@@ -184,7 +186,8 @@ class HieraBackbone(nn.Module):
         self.pretrain_grid = pretrain_image_size // _PATCH_STRIDE
         self.pos_embed = nn.Parameter(torch.zeros(1, self.pretrain_grid**2, embed_dim))
 
-        drop_path_rates = torch.linspace(0, drop_path_rate, depth).tolist()
+        # In double precision, so a rate just below 1 does not round up to 1 (which would divide by zero).
+        drop_path_rates = torch.linspace(0, drop_path_rate, depth, dtype=torch.float64).tolist()
         flat_mask_unit_size = _MASK_UNIT_TOKENS**2
         dim, heads, stage = embed_dim, num_heads, 0
         self.blocks = nn.ModuleList()
@@ -263,9 +266,19 @@ class HieraEncoder(nn.Module):
     Hiera weights, ``adapter`` the 1x1 convolution that is trained from scratch.
     """
 
+    feature_offset = 1.5
+    """Pixels by which the feature grid sits up and to the left of an even tiling of the image.
+
+    The patch embedding (7x7 convolution, stride 4, padding 3) centres token j
+    on pixel 4j, at image coordinate 4j + 0.5, where an even tiling would put
+    it at 4j + 2. The later stages pool 2x2 blocks of tokens and are resized
+    back onto this grid, so the fused map keeps it. Feature lookups pass this
+    value to ``sample_features_at_pixels``.
+    """
+
     def __init__(
         self,
-        weights: str | None = None,
+        weights: str | None,
         num_features: int = 256,
         input_normalization: str = "imagenet",
         embed_dim: int = 96,
@@ -278,7 +291,9 @@ class HieraEncoder(nn.Module):
         """
         Args:
             weights: Path to a Hiera checkpoint (see ``docs/hiera_nerf.md``), or
-                ``None`` to start from random weights (tests only).
+                ``None`` to start from random weights (tests only). Required, so
+                that leaving it out of a config cannot start from random weights
+                by accident.
             num_features: Channels of the output feature map.
             input_normalization: How images are normalised first. The official
                 Hiera weights expect ``"imagenet"``.
@@ -418,6 +433,13 @@ def load_hiera_weights(backbone: HieraBackbone, path: str | Path) -> None:
     classification head, the masked-autoencoder decoder) are ignored. Every
     key the backbone does have must be present with the right shape.
 
+    Weights with a longer third stage (Hiera-S has 11 blocks there, Hiera-T
+    7) have the same first ten blocks and would load as a truncated network,
+    so the file must also show where its third stage ends: either it stops
+    after the backbone's last block, or the next block's attention has the
+    width of the fourth stage. Anything else is refused; see
+    ``_check_third_stage_ends_with_the_backbone``.
+
     Raises:
         ConfigError: If the file is missing or does not fit the backbone.
     """
@@ -437,7 +459,12 @@ def load_hiera_weights(backbone: HieraBackbone, path: str | Path) -> None:
         if isinstance(state, dict) and isinstance(state.get(key), dict):
             state = state[key]
             break
-    state = {key.removeprefix("module."): value for key, value in state.items()}
+    if not isinstance(state, dict):
+        raise ConfigError(
+            f"The Hiera weights in {path} are not a state dict (the file holds a {type(state).__name__}). "
+            "Save one with torch.save(model.state_dict(), path)."
+        )
+    state = {str(key).removeprefix("module."): value for key, value in state.items()}
 
     expected = backbone.state_dict()
     missing = [key for key in expected if key not in state]
@@ -445,6 +472,11 @@ def load_hiera_weights(backbone: HieraBackbone, path: str | Path) -> None:
         raise ConfigError(
             f"The Hiera weights in {path} lack {len(missing)} entries the encoder needs "
             f"(e.g. {', '.join(missing[:3])}). Are they Hiera-T weights?"
+        )
+    not_tensors = [f"{key} ({type(state[key]).__name__})" for key in expected if not isinstance(state[key], Tensor)]
+    if not_tensors:
+        raise ConfigError(
+            f"The Hiera weights in {path} have entries that are not a tensor: {', '.join(not_tensors[:3])}."
         )
     mismatched = [
         f"{key}: {tuple(state[key].shape)} instead of {tuple(value.shape)}"
@@ -456,5 +488,64 @@ def load_hiera_weights(backbone: HieraBackbone, path: str | Path) -> None:
             f"The Hiera weights in {path} do not fit the encoder's shape ({'; '.join(mismatched[:3])}). "
             "Check embed_dim, num_heads, stage_depths and pretrain_image_size."
         )
+    _check_third_stage_ends_with_the_backbone(state, backbone, path)
     backbone.load_state_dict({key: state[key] for key in expected})
 
+
+def _check_third_stage_ends_with_the_backbone(state: dict, backbone: HieraBackbone, path: Path) -> None:
+    """Raise unless the file shows that its third stage ends where the backbone's does.
+
+    Accepted: a file with no blocks after the backbone's last one, or one
+    whose next block has the attention of the fourth stage's first block.
+    With C channels in the third stage, that attention maps C channels to
+    3 x 2C (queries, keys and values of twice the width); a third-stage
+    block maps C to 3 x C. The weight decides, or the bias if the file has
+    no weight entry. A file that shows neither, or shows something else
+    (another shape, or an entry that is not a tensor), is refused rather
+    than guessed at.
+
+    A file that stops after the backbone's last block holds no such
+    evidence, so it is accepted as it is: trimming the weights of another
+    variant (such as Hiera-S) to the backbone's length would hide the
+    difference. docs/hiera_nerf.md asks for complete files for this reason.
+    """
+    num_blocks = len(backbone.blocks)
+    block_numbers = {_block_number(key) for key in state} - {None}
+    if not any(number >= num_blocks for number in block_numbers):
+        return  # the file stops where the backbone does
+
+    width = backbone.stage_channels[-1]
+    weight_key, bias_key = f"blocks.{num_blocks}.attn.qkv.weight", f"blocks.{num_blocks}.attn.qkv.bias"
+    if weight_key in state:
+        evidence, stage_4_shape, stage_3_shape = state[weight_key], (3 * 2 * width, width), (3 * width, width)
+    elif bias_key in state:
+        evidence, stage_4_shape, stage_3_shape = state[bias_key], (3 * 2 * width,), (3 * width,)
+    else:
+        evidence = stage_4_shape = stage_3_shape = None
+    shape = tuple(evidence.shape) if isinstance(evidence, Tensor) else None
+    starts_stage_4 = shape is not None and shape == stage_4_shape
+    continues_stage_3 = shape is not None and shape == stage_3_shape
+
+    if continues_stage_3:
+        raise ConfigError(
+            f"The Hiera weights in {path} have a longer third stage than the encoder: their block {num_blocks} "
+            "continues the third stage instead of starting the fourth. Do they match the encoder's stage_depths? "
+            "(Hiera-S, for example, has 11 blocks in its third stage; Hiera-T has 7.)"
+        )
+    if not starts_stage_4:
+        raise ConfigError(
+            f"The Hiera weights in {path} have entries for blocks after the encoder's last one, but block "
+            f"{num_blocks}'s attention does not show whether it starts the fourth stage, as the encoder expects, "
+            "or continues the third. Save the complete state dict of the Hiera model that matches the encoder's "
+            "settings with torch.save(model.state_dict(), path); for the default Hiera-T settings, the official "
+            "file in docs/hiera_nerf.md works. Do not cut the file down to fewer blocks: that would also let "
+            "the weights of a larger Hiera through."
+        )
+
+
+def _block_number(key: str) -> int | None:
+    """The block a state-dict key belongs to ("blocks.10.attn.qkv.weight" -> 10), or None."""
+    parts = key.split(".")
+    if len(parts) > 2 and parts[0] == "blocks" and parts[1].isdigit():
+        return int(parts[1])
+    return None

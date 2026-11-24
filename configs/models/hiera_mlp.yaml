@@ -1,0 +1,22 @@
+# The pixelNeRF-style model of convnextv2_mlp.yaml with Hiera-T as its
+# encoder, so that only the encoder differs between the two (the encoder
+# ablation of the proposal). The encoder section is the one of
+# hiera_nerf.yaml; keep the two identical.
+
+base: convnextv2_mlp.yaml
+
+model:
+  encoder:                  # naming another encoder replaces the whole encoder section
+    name: hiera
+    # Hiera-T MAE weights (docs/hiera_nerf.md says how to get them). A run
+    # stops before training if the file is missing.
+    weights: weights/hiera_tiny_224_mae_in1k.pth
+    num_features: 256
+    input_normalization: imagenet
+    # The shape of Hiera-T, which the weights must match.
+    embed_dim: 96
+    num_heads: 1
+    stage_depths: [1, 2, 7]
+    mlp_ratio: 4.0
+    pretrain_image_size: 224
+    drop_path_rate: 0.0

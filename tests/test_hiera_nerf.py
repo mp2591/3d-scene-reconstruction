@@ -5,12 +5,16 @@ from pathlib import Path
 import pytest
 import torch
 import torch.nn.functional as F
+from torch import Tensor, nn
 
 from scene_recon.build import build_model
 from scene_recon.config import Config, load_config
+from scene_recon.geometry import sample_features_at_pixels
 from scene_recon.models.contract import check_model_contract
 from scene_recon.models.hiera.attention import HieraRayTransformer
+from scene_recon.models.hiera.bridge import HieraSceneEncoding
 from scene_recon.models.hiera.encoder import (
+    DropPath,
     HieraBackbone,
     HieraEncoder,
     _max_pool_tokens,
@@ -18,7 +22,10 @@ from scene_recon.models.hiera.encoder import (
     token_order,
     unroll,
 )
-from scene_recon.registry import ConfigError
+from scene_recon.models.pixelnerf.encoders import ConvNeXtV2Encoder
+from scene_recon.models.pixelnerf.model import PixelAlignedNeRF, _SceneEncoding
+from scene_recon.models.testing.tiny_encoder import TinyConvEncoder
+from scene_recon.registry import ENCODERS, MODELS, ConfigError
 from scene_recon.structures import Cameras, SceneViews
 from scene_recon.training import Trainer
 
@@ -97,20 +104,43 @@ def test_backbone_stage_outputs_have_a_quarter_an_eighth_and_a_sixteenth_of_the_
 
 
 def test_encoder_fuses_the_stages_into_one_map_at_a_quarter_of_the_size():
-    encoder = HieraEncoder(num_features=16)
+    encoder = HieraEncoder(weights=None, num_features=16)
     assert encoder.adapter.in_channels == 96 + 192 + 384
     assert encoder(torch.rand(2, 3, 64, 96)).shape == (2, 16, 16, 24)
 
 
 def test_encoder_rejects_images_that_are_not_whole_mask_units():
     with pytest.raises(ValueError, match="multiples of 32"):
-        HieraEncoder(num_features=16)(torch.rand(1, 3, 48, 64))
+        HieraEncoder(weights=None, num_features=16)(torch.rand(1, 3, 48, 64))
+
+
+def test_the_weights_must_be_named_in_the_config():
+    # Leaving them out must not silently start from random weights; null does that on purpose.
+    with pytest.raises(ConfigError, match="weights"):
+        ENCODERS.build({"name": "hiera", "num_features": 16})
+
+
+@pytest.mark.parametrize("rate", [-0.1, 1.0, float("nan")])
+def test_stochastic_depth_rate_must_be_at_least_0_and_below_1(rate: float):
+    with pytest.raises(ConfigError, match="drop_path_rate"):
+        HieraEncoder(weights=None, drop_path_rate=rate)
+
+
+def test_a_stochastic_depth_rate_just_below_1_stays_below_1_in_every_block():
+    # In float32 the last block's rate of 0.99999999 would round to 1, and dropping with
+    # probability 1 divides by zero.
+    encoder = HieraEncoder(weights=None, num_features=16, drop_path_rate=0.99999999)
+    rates = [block.drop_path.probability for block in encoder.backbone.blocks if isinstance(block.drop_path, DropPath)]
+
+    assert rates and max(rates) < 1.0
 
 
 def test_official_checkpoint_loads_and_unused_entries_are_ignored(tmp_path: Path):
     source = HieraBackbone()
     state = dict(source.state_dict())
-    state["blocks.10.attn.qkv.weight"] = torch.zeros(1)  # stage 4, not built
+    # Stage 4, not built. Hiera-T's block 10 starts it: twice the channels (768), and a projection.
+    state["blocks.10.attn.qkv.weight"] = torch.zeros(3 * 768, 384)
+    state["blocks.10.proj.weight"] = torch.zeros(768, 384)
     state["head.projection.weight"] = torch.zeros(1)  # classification head
     path = tmp_path / "hiera.pth"
     torch.save({"model_state": state, "epoch": 400}, path)
@@ -134,6 +164,251 @@ def test_checkpoint_missing_entries_is_a_config_error(tmp_path: Path):
 def test_missing_checkpoint_file_is_a_config_error(tmp_path: Path):
     with pytest.raises(ConfigError, match="not found"):
         HieraEncoder(weights=str(tmp_path / "nothing.pth"))
+
+
+def test_weights_of_a_hiera_with_a_longer_third_stage_are_rejected(tmp_path: Path):
+    # Hiera-S has the same first ten blocks as Hiera-T, with the same shapes, but
+    # its block 10 continues the third stage (no projection) where Hiera-T's
+    # starts the fourth. Loading it would silently train a truncated Hiera-S.
+    state = dict(HieraBackbone().state_dict())
+    state.update({key.replace("blocks.9.", "blocks.10.", 1): value for key, value in state.items() if key.startswith("blocks.9.")})
+    path = tmp_path / "hiera_small.pth"
+    torch.save(state, path)
+
+    with pytest.raises(ConfigError, match="third stage"):
+        HieraEncoder(weights=str(path))
+
+
+def test_weights_whose_next_block_widens_load_without_its_projection(tmp_path: Path):
+    # A partial export: block 10's projection is missing, but its attention has the
+    # width of the fourth stage (3 x 768 outputs from 384 inputs), so it starts that stage.
+    state = dict(HieraBackbone().state_dict())
+    state["blocks.10.attn.qkv.weight"] = torch.zeros(3 * 768, 384)
+    path = tmp_path / "hiera.pth"
+    torch.save(state, path)
+
+    HieraEncoder(weights=str(path), num_features=16)
+
+
+def test_weights_whose_next_block_shows_its_width_by_the_attention_bias_load(tmp_path: Path):
+    state = dict(HieraBackbone().state_dict())
+    state["blocks.10.attn.qkv.bias"] = torch.zeros(3 * 768)  # the fourth stage's width; the weight is missing
+    path = tmp_path / "hiera.pth"
+    torch.save(state, path)
+
+    HieraEncoder(weights=str(path), num_features=16)
+
+
+@pytest.mark.parametrize(
+    "later_entries",
+    [
+        {"blocks.10.norm1.weight": torch.ones(384)},  # the same in both stages
+        {"blocks.10.proj.weight": torch.zeros(768, 384)},  # a projection, but no attention to confirm the width
+        {"blocks.10.proj.weight": None},
+        {"blocks.10.attn.qkv.weight": torch.zeros(3 * 768, 768)},  # wider, but not from the third stage's width
+        {"blocks.11.attn.qkv.weight": torch.zeros(3 * 384, 384)},  # block 10 missing, block 11 still in stage 3
+        # A weight entry that is there but not a tensor is not replaced by a good bias.
+        {"blocks.10.attn.qkv.weight": None, "blocks.10.attn.qkv.bias": torch.zeros(3 * 768)},
+        {"blocks.10.attn.qkv.weight": "qkv", "blocks.10.attn.qkv.bias": torch.zeros(3 * 768)},
+    ],
+    ids=[
+        "norm_only",
+        "projection_only",
+        "projection_none",
+        "malformed_attention",
+        "gap_before_stage_3_block",
+        "weight_none_bias_fine",
+        "weight_text_bias_fine",
+    ],
+)
+def test_weights_that_do_not_show_where_the_third_stage_ends_are_refused(later_entries: dict, tmp_path: Path):
+    state = {**HieraBackbone().state_dict(), **later_entries}
+    path = tmp_path / "hiera.pth"
+    torch.save(state, path)
+
+    with pytest.raises(ConfigError, match="does not show whether"):
+        HieraEncoder(weights=str(path))
+
+
+def test_the_refusal_asks_for_weights_matching_the_configured_hiera(tmp_path: Path):
+    # Configured as Hiera-S (11 blocks in stage 3), the advice must not point at Hiera-T weights.
+    state = {**HieraBackbone(stage_depths=(1, 2, 11)).state_dict(), "blocks.14.norm1.weight": torch.ones(384)}
+    path = tmp_path / "hiera_small.pth"
+    torch.save(state, path)
+
+    with pytest.raises(ConfigError, match="matches the encoder's settings") as error:
+        HieraEncoder(weights=str(path), stage_depths=[1, 2, 11])
+    assert "Hiera-T model" not in str(error.value)
+
+
+def test_weights_of_another_width_report_the_shape_mismatch_first(tmp_path: Path):
+    # Complete Hiera-T weights loaded into an encoder with the wrong embed_dim: the
+    # error must point at the setting, not claim a longer third stage.
+    state = dict(HieraBackbone().state_dict())
+    state["blocks.10.attn.qkv.weight"] = torch.zeros(3 * 768, 384)
+    path = tmp_path / "hiera.pth"
+    torch.save(state, path)
+
+    with pytest.raises(ConfigError, match="do not fit the encoder's shape.*embed_dim"):
+        HieraEncoder(weights=str(path), embed_dim=64)
+
+
+def test_a_weights_file_that_is_not_a_state_dict_is_a_config_error(tmp_path: Path):
+    path = tmp_path / "list.pth"
+    torch.save([1, 2, 3], path)
+
+    with pytest.raises(ConfigError, match="not a state dict"):
+        HieraEncoder(weights=str(path))
+
+
+def test_a_weights_entry_that_is_not_a_tensor_is_a_config_error(tmp_path: Path):
+    state = dict(HieraBackbone().state_dict())
+    state["pos_embed"] = 3
+    path = tmp_path / "hiera.pth"
+    torch.save(state, path)
+
+    with pytest.raises(ConfigError, match="not a tensor: pos_embed"):
+        HieraEncoder(weights=str(path))
+
+
+# ------------------------------------------------------------------ feature alignment
+
+
+def _coordinate_ramp(size: int) -> Tensor:
+    """An image whose red value is each pixel's x coordinate and green its y (pixel centres at i + 0.5)."""
+    centres = torch.arange(size, dtype=torch.float32) + 0.5
+    return torch.stack([centres.expand(size, size), centres[:, None].expand(size, size), torch.zeros(size, size)])
+
+
+def _token_centres(encoder: HieraEncoder, size: int) -> Tensor:
+    """A feature map holding the image coordinates (x, y) each Hiera token is computed around. Shape (1, 2, size/4, size/4)."""
+    convolution = encoder.backbone.patch_embed.proj
+    with torch.no_grad():
+        convolution.weight.zero_()
+        convolution.bias.zero_()
+        centre = convolution.kernel_size[0] // 2
+        convolution.weight[0, 0, centre, centre] = 1.0  # copy the red value of the kernel's centre pixel
+        convolution.weight[1, 1, centre, centre] = 1.0  # and its green value
+        return encoder.backbone.patch_embed(_coordinate_ramp(size)[None])[:, :2]
+
+
+def _camera_seeing(pixels: Tensor, size: int) -> tuple[Cameras, Tensor]:
+    """A camera at the origin looking along +z, and points at depth 1 that it sees at ``pixels`` (N, 2)."""
+    focal, centre = 100.0, size / 2
+    intrinsics = torch.tensor([[focal, 0, centre], [0, focal, centre], [0, 0, 1]])
+    cameras = Cameras(torch.eye(4).expand(1, 1, 4, 4).clone(), intrinsics.expand(1, 1, 3, 3).clone())
+    points = torch.cat([(pixels - centre) / focal, torch.ones(len(pixels), 1)], dim=-1)
+    return cameras, points
+
+
+# Points in the image interior, away from token centres and from the border.
+_PIXELS = torch.tensor([[40.5, 64.5], [42.0, 10.0], [100.25, 77.0]])
+
+
+def test_feature_offset_lines_hiera_tokens_up_with_the_pixels_they_were_computed_from():
+    encoder = HieraEncoder(weights=None, num_features=16)
+    tokens = _token_centres(encoder, 128)
+
+    sampled = sample_features_at_pixels(tokens[:, None], (_PIXELS + encoder.feature_offset)[None, None], (128, 128))
+
+    assert torch.allclose(sampled[0, 0], _PIXELS, atol=1e-4)
+
+
+def test_hiera_nerf_bridge_reads_features_aligned_and_colours_at_the_pixel_itself(hiera_config: Config):
+    # The bridge of the real model, so the test also covers the model handing it the encoder's offset.
+    model = build_model(hiera_config)
+    with torch.no_grad():
+        model.bridge.feature_projection.weight.zero_()
+        model.bridge.feature_projection.weight[:2, :2] = torch.eye(2)  # pass the x and y channels through
+        model.bridge.feature_projection.bias.zero_()
+    tokens = _token_centres(model.encoder, 128)  # (1, 2, 32, 32)
+    unused_channels = tokens.new_zeros(1, model.encoder.num_features - 2, 32, 32)
+    # The last point is just inside the right edge: the photo sees it, though shifted
+    # by the feature offset it would lie outside.
+    pixels = torch.cat([_PIXELS, torch.tensor([[127.8, 64.5]])])
+    cameras, points = _camera_seeing(pixels, 128)
+    scene = HieraSceneEncoding(
+        feature_maps=torch.cat([tokens, unused_channels], dim=1)[:, None],
+        images=_coordinate_ramp(128)[None, None],
+        cameras=cameras,
+        image_size=(128, 128),
+        near=torch.tensor([0.5]),
+        far=torch.tensor([1.5]),
+    )
+
+    with torch.no_grad():
+        output = model.bridge(scene, points[None, :, None], torch.tensor([[[0.0, 0.0, 1.0]]]).expand(1, len(pixels), 3))
+
+    interior = len(_PIXELS)
+    assert torch.allclose(output.view_features[0, :interior, 0, :2], _PIXELS, atol=1e-4)  # features: shifted onto the tokens
+    assert torch.allclose(output.view_colors[0, :interior, 0, :2], _PIXELS, atol=1e-4)  # colours: the photo's own pixels
+    assert output.visible.all()  # visibility: the photo's own pixels too
+
+
+class _RecordFeatures(nn.Module):
+    """Stands in for a decoder and keeps the features it is given."""
+
+    def forward(self, features: Tensor, points_camera: Tensor, directions_camera: Tensor):
+        self.features = features
+        batch_size, _, num_points, _ = features.shape
+        return features.new_zeros(batch_size, num_points, 3), features.new_zeros(batch_size, num_points)
+
+
+def test_pixel_aligned_nerf_reads_hiera_features_aligned():
+    model = PixelAlignedNeRF(
+        encoder={"name": "hiera", "weights": None, "num_features": 2},
+        decoder={"name": "pixelnerf_mlp", "hidden_width": 8},
+    )
+    model.decoder = _RecordFeatures()
+    cameras, points = _camera_seeing(_PIXELS, 128)
+    scene = _SceneEncoding(_token_centres(model.encoder, 128)[:, None], cameras, (128, 128))
+
+    with torch.no_grad():
+        model.query_field(scene, points[None, :, None], torch.tensor([[[0.0, 0.0, 1.0]]]).expand(1, len(_PIXELS), 3), "coarse")
+
+    assert torch.allclose(model.decoder.features[0, 0], _PIXELS, atol=1e-4)
+
+
+# A constant feature_offset holds only when every stride divides the image evenly.
+@pytest.mark.parametrize(
+    ("build_encoder", "size", "multiple"),
+    [
+        (lambda: ConvNeXtV2Encoder(model_name="convnextv2_atto", pretrained=False, num_features=8), 80, 32),
+        (lambda: TinyConvEncoder(num_features=4), 65, 2),
+    ],
+    ids=["convnextv2", "tiny_conv"],
+)
+def test_encoders_reject_image_sides_their_strides_do_not_divide(build_encoder, size: int, multiple: int):
+    encoder = build_encoder()
+
+    with pytest.raises(ValueError, match=f"multiples of {multiple}"):
+        encoder(torch.rand(1, 3, size, size))
+    encoder(torch.rand(1, 3, 2 * multiple, 2 * multiple))  # a size they divide is fine
+
+
+class _EncoderWithoutOffset(nn.Module):
+    """An encoder plug-in that forgot ``feature_offset``."""
+
+    num_features = 4
+
+    def forward(self, images: Tensor) -> Tensor:
+        return images.new_zeros(len(images), 4, images.shape[-2] // 4, images.shape[-1] // 4)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        {"name": "pixel_aligned_nerf", "decoder": {"name": "pixelnerf_mlp", "hidden_width": 8}},
+        {"name": "tiny_pixel_aligned_nerf", "decoder": {"name": "tiny_pooled_mlp", "hidden_width": 8}},
+        {"name": "hiera_nerf", "width": 8, "decoder": {"name": "hiera_ray_attention", "num_heads": 2}},
+    ],
+    ids=lambda model: model["name"],
+)
+def test_every_model_names_an_encoder_missing_feature_offset(model: dict, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(ENCODERS._classes, "without_offset", _EncoderWithoutOffset)
+
+    with pytest.raises(ConfigError, match="'without_offset' has no attribute 'feature_offset'"):
+        MODELS.build({**model, "encoder": {"name": "without_offset"}})
 
 
 # ------------------------------------------------------------------ decoder

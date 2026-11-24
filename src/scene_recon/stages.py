@@ -215,16 +215,20 @@ def check_model(
 
     Args:
         config: The run whose model to check.
-        image_size: Size of the random test images. Defaults to the size of
-            the test split's images.
+        image_size: Size of the random test images for every check. By
+            default each split the stages read is checked at the size of its
+            own images (see ``_check_contract_where_used``).
         stages: The stages the model will be used in; training checks
             (backward pass, gradients, parameter groups) only apply to "train".
     """
+    splits = _how_splits_are_used(config, stages)
     if image_size is None:
-        image_size = dataset_image_size(build_dataset(config, "test"))
+        image_sizes = {split: dataset_image_size(build_dataset(config, split)) for split in splits}
+    else:
+        image_sizes = {split: tuple(image_size) for split in splits}
     device = resolve_device(config.experiment.device)
     model = build_model(config).to(device)
-    _check_contract(model, config, image_size, stages, device)
+    _check_contract_where_used(model, config, image_sizes, stages, device)
     logger.info("Model '%s' satisfies the pipeline contract.", config.model["name"])
 
 
@@ -246,7 +250,7 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
     if files.checkpoint.exists():
         check_checkpoint_matches_config(files.checkpoint, config)
 
-    image_size = None
+    image_sizes = {}  # split -> (height, width) of its images
     if "train" in stages:
         train_scenes = build_dataset(config, "train")
         validation_scenes = build_dataset(config, "val")
@@ -264,10 +268,11 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
             check_training_data_unchanged(files.checkpoint, train_scenes)
         build_loss(config)
         build_metrics(config.validation.metrics)
-        image_size = dataset_image_size(validation_scenes)
+        image_sizes["train"] = dataset_image_size(train_scenes)
+        image_sizes["val"] = dataset_image_size(validation_scenes)
     if "evaluate" in stages or "profile" in stages:
         test_scenes = build_dataset(config, "test")
-        image_size = dataset_image_size(test_scenes)
+        image_sizes["test"] = dataset_image_size(test_scenes)
     if "evaluate" in stages:
         check_evaluation_settings(config, test_scenes)
         build_metrics(config.evaluation.metrics)
@@ -276,7 +281,7 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
 
     device = resolve_device(config.experiment.device)
     model = build_model(config).to(device)
-    _check_contract(model, config, image_size or (64, 64), stages, device)
+    _check_contract_where_used(model, config, image_sizes, stages, device)
     trainable = any(parameter.requires_grad for parameter in model.parameters())
     if "evaluate" in stages and "train" not in stages and not files.checkpoint.exists() and trainable:
         raise ConfigError(
@@ -328,23 +333,63 @@ def _load_trained_model(config: Config, checkpoint_path: Path) -> tuple[Any, Tra
     return model, progress
 
 
-def _check_contract(
-    model: Any, config: Config, image_size: tuple[int, int], stages: Sequence[str], device: torch.device
-) -> None:
-    """Check the model with the view counts the requested stages will actually use."""
-    inference_view_counts = set()
-    if "evaluate" in stages:
-        inference_view_counts |= {len(views) for views in config.evaluation.source_view_sets}
-    if "profile" in stages:
-        inference_view_counts.add(len(config.evaluation.source_view_sets[0]))  # profiling uses the first set only
+def _how_splits_are_used(config: Config, stages: Sequence[str]) -> dict[str, tuple[set[int], list[int] | None]]:
+    """How the given stages use the model on each split they read.
+
+    Returns, for each split: the numbers of source views it is run with in
+    evaluation mode, and those it is trained with (None if it is not trained on).
+    """
+    uses = {}
     if "train" in stages:
-        inference_view_counts.add(len(config.validation.source_views))  # validation runs in evaluation mode
-    check_model_contract(
-        model,
-        image_size=image_size,
-        num_coarse_samples=config.renderer.num_coarse_samples,
-        num_fine_samples=config.renderer.num_fine_samples,
-        inference_view_counts=sorted(inference_view_counts),
-        training_view_counts=config.training.num_source_views if "train" in stages else None,
-        device=device,
-    )
+        uses["train"] = (set(), list(config.training.num_source_views))
+        uses["val"] = ({len(config.validation.source_views)}, None)  # validation runs in evaluation mode
+    test_view_counts = set()
+    if "evaluate" in stages:
+        test_view_counts |= {len(views) for views in config.evaluation.source_view_sets}
+    if "profile" in stages:
+        test_view_counts.add(len(config.evaluation.source_view_sets[0]))  # profiling uses the first set only
+    if test_view_counts:
+        uses["test"] = (test_view_counts, None)
+    return uses
+
+
+def _check_contract_where_used(
+    model: Any,
+    config: Config,
+    image_sizes: dict[str, tuple[int, int]],
+    stages: Sequence[str],
+    device: torch.device,
+) -> None:
+    """Check the model as each split uses it, at the size of that split's images.
+
+    The training split is checked in training mode (with a backward pass),
+    the validation and test splits in evaluation mode, each with its own
+    numbers of source views. Splits whose images have the same size are
+    checked together, so when all splits share one size (the normal case)
+    the model is checked once and an error passes through unchanged. When
+    the sizes differ, a failure names the splits of the size that failed:
+    some encoders accept only some sizes, such as multiples of their stride.
+    """
+    uses = _how_splits_are_used(config, stages)
+    sizes = sorted({image_sizes[split] for split in uses})
+    for size in sizes:
+        splits = [split for split in uses if image_sizes[split] == size]
+        inference_view_counts = set().union(*(uses[split][0] for split in splits))
+        training_view_counts = uses["train"][1] if "train" in splits else None
+        try:
+            check_model_contract(
+                model,
+                image_size=size,
+                num_coarse_samples=config.renderer.num_coarse_samples,
+                num_fine_samples=config.renderer.num_fine_samples,
+                inference_view_counts=sorted(inference_view_counts),
+                training_view_counts=training_view_counts,
+                device=device,
+            )
+        except Exception as error:
+            if len(sizes) == 1:
+                raise
+            raise ConfigError(
+                f"The splits' images differ in size, and the model fails on the {' and '.join(splits)} images "
+                f"({size[0]}x{size[1]}): {type(error).__name__}: {error}"
+            ) from error

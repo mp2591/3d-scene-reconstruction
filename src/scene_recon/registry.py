@@ -76,6 +76,16 @@ class Registry:
             raise ConfigError(f"A {self.kind} config needs a 'name' key, got: {dict(config)}.")
 
         arguments = {key: value for key, value in config.items() if key != "name"}
+        # An argument the code supplies would silently win over the config's
+        # value, so the config would record a setting that was never used.
+        supplied_twice = sorted(set(arguments) & set(extra_arguments))
+        if supplied_twice:
+            names = ", ".join(f"'{key}'" for key in supplied_twice)
+            raise ConfigError(
+                f"The {self.kind} '{config['name']}' gets {names} from the code that builds it, so "
+                f"{'it' if len(supplied_twice) == 1 else 'they'} must not be set in the config: the value "
+                "would be ignored. Remove it there; a setting of the enclosing model controls it."
+            )
         arguments.update(extra_arguments)
         cls = self.get(config["name"])
 

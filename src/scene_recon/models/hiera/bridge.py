@@ -90,15 +90,18 @@ class BridgeOutput:
 
 
 class HieraNeRFBridge(nn.Module):
-    def __init__(self, num_features: int, width: int, position_frequencies: int = 6) -> None:
+    def __init__(self, num_features: int, width: int, position_frequencies: int, feature_offset: float) -> None:
         """
         Args:
             num_features: Channels of the encoder's feature maps.
             width: Channels of the tokens handed to the decoder.
             position_frequencies: Sine/cosine frequencies encoding point positions.
+            feature_offset: Where the encoder's feature grid sits in the image
+                (the encoder's ``feature_offset``; see ``sample_features_at_pixels``).
         """
         super().__init__()
         self.position_frequencies = position_frequencies
+        self.feature_offset = feature_offset
         self.point_embedding = nn.Sequential(
             nn.Linear(encoding_size(3, position_frequencies), width), nn.GELU(), nn.Linear(width, width)
         )
@@ -129,7 +132,9 @@ class HieraNeRFBridge(nn.Module):
         poses = scene.cameras.camera_to_world
         points_camera = world_to_camera(flat_points, poses)
         pixels = project_to_pixels(points_camera, scene.cameras.intrinsics)
-        features = sample_features_at_pixels(scene.feature_maps, pixels, scene.image_size)
+        # The feature grid may sit off the pixel grid; the colours and the
+        # visibility test below use the photo's own pixels.
+        features = sample_features_at_pixels(scene.feature_maps, pixels, scene.image_size, self.feature_offset)
         colors = sample_features_at_pixels(scene.images, pixels, scene.image_size)
 
         height, width = scene.image_size

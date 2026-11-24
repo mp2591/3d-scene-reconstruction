@@ -20,6 +20,13 @@ model:
     weights: weights/hiera_tiny_224_mae_in1k.pth
     num_features: 256
     input_normalization: imagenet
+    # The shape of Hiera-T, which the weights must match. The same encoder
+    # section is in hiera_mlp.yaml; keep the two identical.
+    embed_dim: 96
+    num_heads: 1
+    stage_depths: [1, 2, 7]
+    mlp_ratio: 4.0
+    pretrain_image_size: 224
     drop_path_rate: 0.0
   decoder:
     name: hiera_ray_attention

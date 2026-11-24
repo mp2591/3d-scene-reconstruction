@@ -209,6 +209,8 @@ def test_suite_runs_every_stage_of_every_run_and_writes_the_report(tmp_path: Pat
     report = (suite.directory / "summary.md").read_bytes().decode("utf-8")
     assert "↑" in report
     assert "## Quality with 1 input view" in report and "## Quality with 2 input views" in report
+    # Figures are linked with forward slashes, which every Markdown viewer follows (Windows paths use "\\").
+    assert "](plots/metrics_vs_source_views.png)" in report and "](plots\\" not in report
     plots = {path.name for path in (suite.directory / "plots").iterdir()}
     assert plots == {
         "metrics_vs_source_views.png",

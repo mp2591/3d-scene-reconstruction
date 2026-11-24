@@ -13,3 +13,4 @@ model:
     name: tiny_pooled_mlp
     hidden_width: 64
     num_frequencies: 4
+    dropout: 0.0

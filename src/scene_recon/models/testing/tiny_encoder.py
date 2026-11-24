@@ -12,6 +12,14 @@ from scene_recon.registry import ENCODERS
 class TinyConvEncoder(nn.Module):
     """Maps an image to a feature map at half its resolution."""
 
+    feature_offset = 0.5
+    """Pixels by which the feature grid sits up and to the left of an even tiling of the image.
+
+    The stride-2 convolution (3x3, padding 1) centres feature j on pixel 2j,
+    at image coordinate 2j + 0.5, where an even tiling would put it at 2j + 1.
+    Feature lookups pass this value to ``sample_features_at_pixels``.
+    """
+
     def __init__(self, num_features: int = 16, input_normalization: str = "none") -> None:
         """
         Args:
@@ -35,9 +43,16 @@ class TinyConvEncoder(nn.Module):
     def forward(self, images: Tensor) -> Tensor:
         """
         Args:
-            images: Shape (N, 3, H, W) in [0, 1].
+            images: Shape (N, 3, H, W) in [0, 1]; H and W even.
 
         Returns:
             Feature maps of shape (N, num_features, H / 2, W / 2).
         """
+        height, width = images.shape[-2:]
+        if height % 2 or width % 2:
+            # With an odd side the features no longer tile the image evenly, so feature_offset would not hold.
+            raise ValueError(
+                f"The tiny_conv encoder needs image sides that are multiples of 2 pixels (its stride), "
+                f"got {height}x{width}."
+            )
         return self.layers(self.normalize(images))

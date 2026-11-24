@@ -6,14 +6,18 @@ import shutil
 
 import pytest
 import torch
+import torch.nn.functional as F
+from torch import nn
 
 from scene_recon import cli
 from scene_recon.build import build_model
 from scene_recon.checkpoints import load_checkpoint
 from scene_recon.config import Config, parse_config
+from scene_recon.models.base import ReconstructionModel
 from scene_recon.profiling import count_parameters
-from scene_recon.registry import ConfigError
-from scene_recon.stages import check_run_can_start
+from scene_recon.registry import MODELS, ConfigError
+from scene_recon.stages import check_model, check_run_can_start
+from scene_recon.structures import FieldOutput
 from scene_recon.training import Trainer
 
 
@@ -193,6 +197,61 @@ def test_a_later_scene_with_fewer_views_is_caught(tmp_path):
 
     with pytest.raises(ConfigError, match="uses every view of scene 1"):
         check_run_can_start(config, ["evaluate"])
+
+
+
+@pytest.mark.parametrize(("split", "stages"), [("val", ["train", "evaluate", "profile"]), ("train", ["train"])])
+def test_the_model_is_checked_at_the_image_size_of_every_split(smoke_config: Config, split: str, stages: list[str]):
+    """The review's reproduction: one split's images have a size the encoder's stride does not divide.
+
+    Before, only one split's size was checked (the test split's overrode the
+    validation split's, and the training split's was never checked), so the
+    run passed preflight and failed at its first validation or batch.
+    """
+    config = _with_changes(smoke_config, **{f"data_{split}": {"image_size": 17}})  # tiny_conv needs even sides
+
+    with pytest.raises(ConfigError, match=rf"fails on the {split} images \(17x17\).*multiples of 2"):
+        check_run_can_start(config, stages)
+    with pytest.raises(ConfigError, match=rf"fails on the {split} images \(17x17\)"):
+        check_model(config, stages=stages)
+
+
+
+class _TrainsOnLargerImagesOnly(ReconstructionModel):
+    """Trains only on images of at least 16x16 pixels, but runs in evaluation mode on any size.
+
+    Like a network with batch or instance statistics, which needs more than
+    one feature cell per image to train but not to evaluate.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.color = nn.Parameter(torch.zeros(3))
+        self.density = nn.Parameter(torch.zeros(()))
+
+    def encode_scene(self, source_views):
+        if self.training and min(source_views.image_size) < 16:
+            raise ValueError("cannot train on images smaller than 16x16")
+        return None
+
+    def query_field(self, scene_encoding, points, view_directions, level):
+        shape = points.shape[:-1]
+        return FieldOutput(rgb=torch.sigmoid(self.color).expand(*shape, 3), density=F.softplus(self.density).expand(shape))
+
+
+def test_only_the_training_split_is_checked_in_training_mode(smoke_config: Config, monkeypatch: pytest.MonkeyPatch):
+    """Validation and test images are used in evaluation mode only, so that is how they are checked."""
+    # Registered for this test only, so that no other test can build it by name.
+    monkeypatch.setitem(MODELS._classes, "trains_on_larger_images_only", _TrainsOnLargerImagesOnly)
+    model_config = parse_config({**smoke_config.raw, "model": {"name": "trains_on_larger_images_only"}})
+    config = _with_changes(model_config, data_val={"image_size": 8})  # training and test images stay 16x16
+
+    check_run_can_start(config, ["train", "evaluate", "profile"])
+    check_model(config)
+
+    small_training_images = _with_changes(config, data_train={"image_size": 8})
+    with pytest.raises(ConfigError, match=r"fails on the train and val images \(8x8\).*cannot train"):
+        check_run_can_start(small_training_images, ["train", "evaluate"])
 
 
 # ---------------------------------------------------------------- profiling validates only what it renders (#3 N1)
