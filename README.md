@@ -14,9 +14,12 @@ selected by name in a YAML file. A whole comparison is described by one suite
 file: list the runs, start one command, and get every checkpoint, the test
 metrics, a comparison table and the plots.
 
-> **The repository contains no real architectures yet.** The only model
-> included, `tiny_pixel_aligned_nerf`, is a few small layers that exist to
-> test the pipeline. It must not be used for reported results.
+> **Models included:** `pixel_aligned_nerf` (ConvNeXt V2 encoder, pixelNeRF
+> MLP decoder; `configs/models/convnextv2_mlp.yaml`) and `hiera_nerf`
+> (Hiera-T encoder, HieraNeRF bridge and attention decoder;
+> [`docs/hiera_nerf.md`](docs/hiera_nerf.md)). `tiny_pixel_aligned_nerf` is
+> a few small layers that exist to test the pipeline. It must not be used
+> for reported results.
 
 **Contents:**
 [Installation](#installation) ·
@@ -396,6 +399,7 @@ docs/
   writing_a_model.md     The model contract in full.
   configuration.md       How config files are composed and validated.
   suites.md              Running and comparing many experiments from one file.
+  hiera_nerf.md          The Hiera-T + HieraNeRF model.
 src/scene_recon/
   cli.py                 Command-line entry point.
   config.py              Config loading and validation.
@@ -407,6 +411,8 @@ src/scene_recon/
   rendering/             Ray selection, sampling along rays, volume rendering.
   models/                The model contract and input normalisation; your models go here.
     testing/             The tiny testing model.
+    pixelnerf/           ConvNeXt V2 encoder and pixelNeRF MLP decoder.
+    hiera/               Hiera-T encoder, HieraNeRF bridge and attention decoder.
   losses.py  metrics.py  optim.py  checkpoints.py
   training.py            The training loop.
   evaluation.py          Novel-view evaluation.

@@ -1,0 +1,31 @@
+# Hiera-T + HieraNeRF (docs/hiera_nerf.md).
+#
+# Encoder: Hiera-T, first three stages (96, 192, 384 channels at 1/4, 1/8 and
+# 1/16 of the image), resized to the 1/4 grid, stacked (672) and reduced to
+# num_features by a 1x1 convolution. Image sides must be multiples of 32.
+# Bridge: one embedding per photo (feature, colour, direction to the point) in
+# the shared world frame, not averaged.
+# Decoder: point <-> photos attention, Hiera-style ray step, density; colour
+# query -> photos attention, Hiera-style ray step, colour.
+
+model:
+  name: hiera_nerf
+  width: 128                    # channels shared by the bridge and the decoder
+  position_frequencies: 6       # sine/cosine encoding of point positions
+  encoder:
+    name: hiera
+    weights: null               # REQUIRED for real runs: path to Hiera-T MAE weights (docs/hiera_nerf.md)
+    num_features: 256
+    input_normalization: imagenet
+    drop_path_rate: 0.0
+  decoder:
+    name: hiera_ray_attention
+    num_heads: 4
+    view_depth: 2               # step 1: point and photo embeddings attend to one another
+    color_depth: 1              # step 3: colour query attends to the photos
+    ray_window_size: 8          # steps 2 and 4: samples per local group
+    ray_local_depth: 1
+    ray_global_depth: 1
+    mlp_ratio: 2.0
+    ray_frequencies: 8          # sine/cosine encoding of the position along the ray
+    direction_frequencies: 4    # sine/cosine encoding of the new viewing direction

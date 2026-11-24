@@ -1,0 +1,49 @@
+# Hiera-T + HieraNeRF on the procedural spheres, small enough for a CPU.
+# Random encoder weights: this checks that the model trains, not how well.
+#
+#   scene-recon check-model --config configs/hiera_nerf_smoke_test.yaml
+#   scene-recon train --config configs/hiera_nerf_smoke_test.yaml
+base:
+  - base.yaml
+  - data/synthetic_spheres.yaml
+  - models/hiera_nerf.yaml
+
+experiment:
+  run_name: hiera_nerf_smoke_test
+
+# Smaller and faster for a laptop test (these override models/hiera_nerf.yaml).
+# The encoder keeps the Hiera-T shape but starts from random weights
+# (weights: null), so this checks that the model trains, not how well.
+model:
+  width: 32
+  encoder:
+    weights: null
+    num_features: 32
+  decoder:
+    num_heads: 2
+    view_depth: 1
+
+renderer:
+  num_coarse_samples: 24
+  num_fine_samples: 12
+
+optimization:
+  learning_rate: 3.0e-4
+  decay_steps: 300
+
+training:
+  num_steps: 300
+  rays_per_scene: 128
+  num_workers: 0
+  log_every: 25
+  validate_every: 100
+  checkpoint_every: 100
+
+validation:
+  num_scenes: 2
+  num_target_views: 2
+  source_views: [0]
+
+evaluation:
+  source_view_sets: [[0], [0, 6]]
+  metrics: [psnr, ssim]

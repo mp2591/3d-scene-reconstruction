@@ -1,0 +1,24 @@
+# Hiera-T + HieraNeRF on ShapeNet-SRN Cars.
+#
+#   scene-recon check-model --config configs/hiera_nerf_srn_cars.yaml
+#   scene-recon train --config configs/hiera_nerf_srn_cars.yaml
+#
+# Set model.encoder.weights to the Hiera-T weights first (docs/hiera_nerf.md).
+
+base:
+  - base.yaml
+  - data/srn_cars.yaml
+  - models/hiera_nerf.yaml
+
+experiment:
+  run_name: hiera_nerf_srn_cars
+
+model:
+  encoder:
+    weights: weights/hiera_tiny_224_mae_in1k.pth
+
+optimization:
+  # The encoder starts from pretrained weights; the adapter, the bridge and
+  # the decoder start from scratch at the base learning rate.
+  group_overrides:
+    encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
