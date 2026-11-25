@@ -1,7 +1,7 @@
-# TEMPLATE for the comparison in the project proposal. It does not run yet:
-# the model files it names (configs/models/*.yaml) are written by the team,
-# together with the networks they describe. Until they exist, `run-suite`
-# stops before training anything and lists every missing file.
+# The comparison in the project proposal. The two baselines are commented
+# out until the team adds their model files (configs/models/*.yaml) and the
+# networks they describe; uncomment each one then, and keep pixelnerf_resnet34
+# first, as the reference. Until then the reference is convnextv2_mlp.
 #
 #   scene-recon run-suite --config configs/suites/proposal_template.yaml
 #
@@ -23,12 +23,14 @@ common:
 # The first run is the reference: every other run is compared with it scene by scene.
 runs:
   # (1) Baseline pixelNeRF: ResNet-34 encoder, MLP decoder with average pooling over views.
-  pixelnerf_resnet34:
-    base: ../models/pixelnerf_resnet34.yaml
+  #     Uncomment once configs/models/pixelnerf_resnet34.yaml exists.
+  # pixelnerf_resnet34:
+  #   base: ../models/pixelnerf_resnet34.yaml
 
   # (2) Baseline TransNeRF: U-Net encoder, cross-view and ray attention decoders.
-  transnerf_unet:
-    base: ../models/transnerf_unet.yaml
+  #     Uncomment once configs/models/transnerf_unet.yaml exists.
+  # transnerf_unet:
+  #   base: ../models/transnerf_unet.yaml
 
   # (3) Encoder ablations: the modern backbones with the same pixelNeRF-style
   #     decoder (pixelnerf_mlp), so that only the encoder differs.

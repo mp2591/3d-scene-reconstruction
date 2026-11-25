@@ -653,3 +653,14 @@ def test_a_profiling_failure_after_a_finished_evaluation_keeps_the_comparison(tm
 
     assert list(run_suite(suite)) == ["wide"]
     assert {row["run"] for row in _comparison_rows(suite)} == {"wide"}
+
+
+def test_the_proposal_template_loads_as_shipped():
+    """Review F1: the complete template must load, with the baselines waiting in comments until they exist."""
+    template = CONFIG_DIR / "suites" / "proposal_template.yaml"
+
+    suite = load_suite(template)
+
+    assert list(suite.runs) == ["convnextv2_mlp", "hiera_mlp", "hiera_nerf"]
+    text = template.read_text(encoding="utf-8")
+    assert "  # pixelnerf_resnet34:" in text and "  # transnerf_unet:" in text
