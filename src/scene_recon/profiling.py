@@ -101,8 +101,12 @@ def measure_rendering_speed(
         least_free = _least(least_free, free_gpu_memory(device))
         memory = _check_memory_fits(device, renderer, least_free, min_free_gpu_memory)
     finally:
+        # .train() first, so that parts whose train() does more than set the
+        # flag (an adapter that merges its weights for evaluation) run it; then
+        # every part's own flag, since .train() sets every part below it.
+        model.train(modes[model])
         for module, training in modes.items():
-            module.training = training  # not .train(), which also sets every part below it
+            module.training = training
     return {
         "encode_seconds": encode_seconds,
         "seconds_per_frame": seconds_per_frame,

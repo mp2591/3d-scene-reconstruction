@@ -129,10 +129,19 @@ def read_json(path: Path) -> dict[str, Any] | None:
     """Read a results file, or return ``None`` if it is missing or damaged.
 
     A damaged file (e.g. from a crash under an older version that wrote files
-    directly) is treated like a missing one, so the work is simply redone.
+    directly) is treated like a missing one, so the work is simply redone. A
+    key that appears twice in one object counts as damage: this program never
+    writes one, and JSON readers would silently keep only the last value.
     """
     try:
-        content = json.loads(path.read_text(encoding="utf-8"))
+        content = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_refuse_repeated_keys)
     except (OSError, ValueError):
         return None
     return content if isinstance(content, dict) else None
+
+
+def _refuse_repeated_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    content = dict(pairs)
+    if len(content) != len(pairs):
+        raise ValueError("a key appears twice in one object")
+    return content

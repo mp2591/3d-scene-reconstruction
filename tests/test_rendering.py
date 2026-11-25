@@ -240,8 +240,21 @@ def test_a_speed_measured_while_the_gpu_memory_overflowed_is_refused(monkeypatch
     assert profiling._check_memory_fits(torch.device("cpu"), renderer, None, min_free_gpu_memory=0.02) is None
 
 
+class _MergesForEvaluation(torch.nn.Module):
+    """Like a low-rank adapter that merges its weights into the layer for evaluation and splits them for training."""
+
+    def __init__(self):
+        super().__init__()
+        self.merged = False
+
+    def train(self, mode: bool = True):
+        self.merged = not mode
+        return super().train(mode)
+
+
 def test_the_speed_measurement_restores_a_part_shared_by_two_parents(smoke_config: Config):
-    """Review F80: a part in evaluation mode under two training parents stays in evaluation mode."""
+    """Review F80 and F87: a part in evaluation mode under two training parents stays in evaluation mode,
+    and a part whose train() does more than set its flag is trained again through it."""
     from scene_recon import profiling
     from scene_recon.build import build_dataset
 
@@ -251,6 +264,8 @@ def test_the_speed_measurement_restores_a_part_shared_by_two_parents(smoke_confi
     shared = torch.nn.BatchNorm1d(1)  # running statistics change if it is put back into training mode
     first_parent.add_module("shared_for_test", shared)
     second_parent.add_module("shared_for_test", shared)
+    adapter = _MergesForEvaluation()
+    first_parent.add_module("adapter_for_test", adapter)
     model.train()
     shared.eval()
 
@@ -265,6 +280,7 @@ def test_the_speed_measurement_restores_a_part_shared_by_two_parents(smoke_confi
     )
 
     assert first_parent.training and second_parent.training and not shared.training
+    assert adapter.training and not adapter.merged
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")

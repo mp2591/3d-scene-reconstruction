@@ -40,6 +40,16 @@ PACKAGE_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
 """A normalised Python package name (PEP 503): lower case, so it never takes a capitalised label."""
 
 
+def is_valid_package(name, version) -> bool:
+    """Whether a name and version can stand in a software record: a normalised name, a version without spaces.
+
+    The version rule is kept loose on purpose: a strict version grammar would
+    turn real installations with unusual version strings into unknowns.
+    """
+    valid_name = isinstance(name, str) and PACKAGE_NAME.fullmatch(name) is not None
+    return valid_name and isinstance(version, str) and re.fullmatch(r"\S+", version) is not None
+
+
 def evaluation_software(device: torch.device) -> dict[str, Any]:
     """The software and device of an evaluation, saved with it so that the suite report can compare runs.
 
@@ -78,24 +88,27 @@ def installed_packages() -> dict[str, str] | None:
     If a package is installed twice, the copy Python imports (the first on
     the search path) is listed. ``None``, with a warning that names the
     package's folder, if the metadata of an installed package cannot be
-    read or has no valid name or version.
+    read or has no valid name or version (``is_valid_package``).
     """
     packages: dict[str, str] = {}
-    for distribution in importlib.metadata.distributions():
-        try:
-            name, version = distribution.metadata["Name"], distribution.version
-        except (OSError, ValueError, KeyError):  # an unreadable file, or not UTF-8
-            name = version = None
-        normalised = re.sub(r"[-_.]+", "-", name).lower() if isinstance(name, str) else ""
-        if not PACKAGE_NAME.fullmatch(normalised) or not version:
+    folder = "the list of installed packages"
+    try:
+        for distribution in importlib.metadata.distributions():
             folder = getattr(distribution, "_path", "an unknown folder")  # where its metadata lies
-            logger.warning(
-                "The metadata of the installed package in %s cannot be read, so the software of this "
-                "evaluation is not recorded. Reinstall or remove that package.",
-                folder,
-            )
-            return None
-        packages.setdefault(normalised, version)
+            name, version = distribution.metadata["Name"], distribution.version
+            normalised = re.sub(r"[-_.]+", "-", name).lower() if isinstance(name, str) else name
+            if not is_valid_package(normalised, version):
+                raise ValueError(f"no valid name or version (name {name!r}, version {version!r})")
+            packages.setdefault(normalised, version)
+    except Exception as error:  # any damage: an unreadable file, not UTF-8, a broken archive, a missing field
+        logger.warning(
+            "The metadata of the installed package in %s cannot be read (%s: %s), so the software of this "
+            "evaluation is not recorded. Reinstall or remove that package.",
+            folder,
+            type(error).__name__,
+            error,
+        )
+        return None
     return dict(sorted(packages.items()))
 
 
@@ -149,10 +162,13 @@ def device_description(device: torch.device) -> dict[str, Any]:
 
 
 def package_version(name: str) -> str | None:
-    """The installed version of a Python package, or ``None`` if it is not installed."""
+    """The installed version of a Python package, or ``None`` if it is not installed or its metadata cannot be read."""
     try:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
+        return None
+    except Exception as error:  # damaged metadata must not stop the work whose environment is recorded
+        logger.warning("The version of %s cannot be read (%s: %s).", name, type(error).__name__, error)
         return None
 
 

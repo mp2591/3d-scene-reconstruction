@@ -8,9 +8,19 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from scene_recon import environment
 from scene_recon.config import Config, load_config
 
 CONFIG_DIR = Path(__file__).parent.parent / "configs"
+
+READ_CPU_MODEL = environment.cpu_model
+"""The real reader of the CPU's model, for the test of it; every other test sees a fixed name."""
+
+
+@pytest.fixture(autouse=True)
+def named_cpu(monkeypatch):
+    """A fixed CPU model, so evaluations on the CPU compare as the same even where the model cannot be read."""
+    monkeypatch.setattr(environment, "cpu_model", lambda: "Test CPU")
 
 
 @pytest.fixture

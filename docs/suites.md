@@ -238,6 +238,12 @@ a score depends on, so it may flag an update that does not matter for it;
 the list lets you judge. Evaluate every run again with one installation
 (`scene-recon evaluate`) for an exact comparison.
 
+The report trusts the files this program wrote. It checks that they can be
+read, and treats a damaged one (cut short, not JSON, or with a key given
+twice) like a missing one, so the work is redone. A file edited by hand can
+still claim anything, its scores included, so the report does not try to
+catch hand edits.
+
 `summary.csv` has one row per run and seed. Quality columns are named
 `<metric>_<n>v`: `psnr_1v` is the PSNR with one input view. Load it with
 pandas or a spreadsheet for analysis the report does not cover.

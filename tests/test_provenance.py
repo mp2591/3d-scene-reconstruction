@@ -4,6 +4,7 @@ Each test reproduces a scenario from the repository review in which a result
 could be attributed to the wrong training settings, checkpoint or device.
 """
 
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -25,7 +26,7 @@ from scene_recon.run_files import RunFiles
 from scene_recon.stages import run_evaluation, run_profiling
 from scene_recon.training import Trainer
 
-from conftest import write_srn_image
+from conftest import READ_CPU_MODEL, write_srn_image
 
 
 def _changed(config: Config, section: str, **changes) -> Config:
@@ -376,8 +377,8 @@ class _BrokenDistribution:
 
     _path = "site-packages/broken-1.0.dist-info"
 
-    def __init__(self, error: Exception | None = None, name: str | None = "broken"):
-        self.error, self.name = error, name
+    def __init__(self, error: Exception | None = None, name: str | None = "broken", version: str | None = "1.0"):
+        self.error, self.name, self.version = error, name, version
 
     @property
     def metadata(self):
@@ -385,27 +386,71 @@ class _BrokenDistribution:
             raise self.error
         return {"Name": self.name}
 
-    version = "1.0"
+
+NOT_UTF8 = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
 
 @pytest.mark.parametrize(
     "broken",
     [
-        _BrokenDistribution(UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")),
+        _BrokenDistribution(NOT_UTF8),
         _BrokenDistribution(OSError("unreadable")),
+        _BrokenDistribution(zipfile.BadZipFile("Bad CRC-32")),  # review F86: a zipped package
         _BrokenDistribution(name=None),
         _BrokenDistribution(name="not a name"),
+        _BrokenDistribution(version="\n"),  # review F83: a blank continuation line after "Version:"
+        _BrokenDistribution(version=None),
     ],
-    ids=["not_utf8", "unreadable", "no_name", "invalid_name"],
+    ids=["not_utf8", "unreadable", "bad_archive", "no_name", "invalid_name", "blank_version", "no_version"],
 )
 def test_an_unreadable_package_makes_the_package_list_unknown(monkeypatch, caplog, broken):
-    """Review F77: the evaluation is still written, its package list marked unknown, and the package named."""
+    """Review F77, F83 and F86: the package list is marked unknown, and the package named."""
     from scene_recon import environment as environment_module
 
     monkeypatch.setattr(environment_module.importlib.metadata, "distributions", lambda: [broken])
 
     assert environment_module.installed_packages() is None
     assert "broken-1.0.dist-info cannot be read" in caplog.text
+
+
+def test_a_failing_list_of_installed_packages_makes_the_package_list_unknown(monkeypatch):
+    from scene_recon import environment as environment_module
+
+    def distributions():
+        yield from ()
+        raise OSError("a folder on the search path cannot be listed")
+
+    monkeypatch.setattr(environment_module.importlib.metadata, "distributions", distributions)
+
+    assert environment_module.installed_packages() is None
+
+
+def test_an_evaluation_is_written_when_package_metadata_cannot_be_read(smoke_config: Config, monkeypatch):
+    """Review F77 and F85: the scores are kept; only the package list is unknown."""
+    from scene_recon import environment as environment_module
+
+    Trainer(smoke_config).train()
+
+    def unreadable(name: str):
+        raise NOT_UTF8
+
+    monkeypatch.setattr(environment_module.importlib.metadata, "distributions", lambda: [_BrokenDistribution(NOT_UTF8)])
+    monkeypatch.setattr(environment_module.importlib.metadata, "version", unreadable)
+    environment_module.environment.cache_clear()  # read again, with the damaged metadata
+    try:
+        report = run_evaluation(smoke_config)
+    finally:
+        environment_module.environment.cache_clear()
+
+    assert report["software"]["packages"] is None and report["environment"]["timm"] is None
+    assert RunFiles(smoke_config.run_dir).evaluation.exists() and report["protocols"][0]["mean"]
+
+
+def test_the_cpu_model_is_read_from_the_operating_system():
+    """On Windows, macOS and Linux on x86 the model is named; elsewhere it may be unknown, but reading never fails."""
+    model = READ_CPU_MODEL()
+
+    assert model is None or (model and model == " ".join(model.split()))
 
 
 def test_a_device_whose_model_cannot_be_named_is_recorded_as_unknown(monkeypatch):

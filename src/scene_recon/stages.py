@@ -103,7 +103,8 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
 
     settings = config.evaluation
     device = resolve_device(config.experiment.device)
-    software = evaluation_software(device)  # before scoring, so that reading it can never cost a finished evaluation
+    # Read before scoring, so that reading them can never cost a finished evaluation.
+    recorded_environment, software = environment(), evaluation_software(device)
     evaluator = Evaluator(model, VolumeRenderer(config.renderer), build_metrics(settings.metrics), device)
     test_scenes = build_dataset(config, "test")
     check_evaluation_settings(config, test_scenes)
@@ -147,7 +148,7 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
     report = {
         **weights_record,
         "settings": evaluation_settings(config),
-        "environment": environment(),
+        "environment": recorded_environment,
         "software": software,
         "protocols": protocols,
     }

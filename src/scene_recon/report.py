@@ -59,7 +59,7 @@ import scene_recon.metrics  # noqa: F401  (registers the metrics, whose display 
 from scene_recon.checkpoints import read_checkpoint_starting_weights, read_checkpoint_training_data, read_progress
 from scene_recon.comparison import PairedDifference, Summary, average_over_seeds, paired_difference, summarize
 from scene_recon.config import Config
-from scene_recon.environment import PACKAGE_NAME
+from scene_recon.environment import is_valid_package
 from scene_recon.evaluation import load_preview_images
 from scene_recon.fairness import MISSING, differing_settings, format_value, trained_on_identical_data
 from scene_recon.plots import (
@@ -116,11 +116,11 @@ class RunResult:
     evaluation_software: dict | None = None
     """What its current evaluation was made with (see ``environment.evaluation_software``), checked.
 
-    ``None`` if it has no current evaluation, or its record cannot be compared (see ``software_problem``).
+    ``None`` if it has no current evaluation, or its record cannot be compared (see ``software_problems``).
     """
 
-    software_problem: str | None = None
-    """Why the record of its current evaluation cannot be compared: a key of ``SOFTWARE_PROBLEMS``."""
+    software_problems: list[str] = field(default_factory=list)
+    """Why the record of its current evaluation cannot be compared: keys of ``SOFTWARE_PROBLEMS``."""
 
     requested_steps: int = 0
     """``training.num_steps`` of the run's config."""
@@ -305,26 +305,32 @@ _RUNTIME_LABELS = {"python": "Python", "cuda": "CUDA", "device_type": "Device ty
 _RUNTIME_FIELDS = tuple(_RUNTIME_LABELS)
 
 
-def _read_software(record) -> tuple[dict | None, str | None]:
-    """An evaluation's saved software, checked, or ``None`` and why it cannot be compared (``SOFTWARE_PROBLEMS``)."""
+def _read_software(record) -> tuple[dict | None, list[str]]:
+    """An evaluation's saved software, checked, or ``None`` and every reason it cannot be compared.
+
+    The reasons are keys of ``SOFTWARE_PROBLEMS``, in its order; the list is empty for a readable record.
+    """
     if record is None:
-        return None, "not recorded"
+        return None, ["not recorded"]
     if not isinstance(record, dict) or set(record) != {*_RUNTIME_FIELDS, "packages"}:
-        return None, "damaged"
-    if record["device"] is None:
-        return None, "device model unknown"
-    if record["packages"] is None:
-        return None, "package list unreadable"
-    packages = record["packages"]
-    valid = (
-        all(_is_text(record[name]) for name in _RUNTIME_FIELDS)
-        and isinstance(packages, dict)
-        and bool(packages)
-        and all(isinstance(name, str) and PACKAGE_NAME.fullmatch(name) and _is_text(v) for name, v in packages.items())
+        return None, ["damaged"]
+    problems = set()
+    device, packages = record["device"], record["packages"]
+    if device is None:
+        problems.add("device model unknown")
+    if packages is None:
+        problems.add("package list unreadable")
+    runtime_valid = all(_is_text(record[name]) for name in ("python", "cuda", "device_type")) and (
+        device is None or _is_text(device)  # None has its own reason, above
     )
-    if not valid:
-        return None, "damaged"
-    return {**{name: record[name] for name in _RUNTIME_FIELDS}, "packages": dict(sorted(packages.items()))}, None
+    packages_valid = packages is None or (
+        isinstance(packages, dict) and bool(packages) and all(is_valid_package(n, v) for n, v in packages.items())
+    )
+    if not runtime_valid or not packages_valid:
+        problems.add("damaged")
+    if problems:
+        return None, [problem for problem in SOFTWARE_PROBLEMS if problem in problems]
+    return {**{name: record[name] for name in _RUNTIME_FIELDS}, "packages": dict(sorted(packages.items()))}, []
 
 
 def _is_text(value) -> bool:
@@ -360,7 +366,7 @@ def _collect(key: str, config: Config, failed: bool, training_requested: bool) -
 
     evaluation = evaluation_status(config)
     if evaluation.is_current:
-        result.evaluation_software, result.software_problem = _read_software(evaluation.content.get("software"))
+        result.evaluation_software, result.software_problems = _read_software(evaluation.content.get("software"))
         for protocol in evaluation.content["protocols"]:
             count = len(protocol["source_views"])
             result.metrics[count] = protocol["mean"]
@@ -707,7 +713,7 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
             "score. For an exact comparison, evaluate every run again with one installation (`scene-recon evaluate`)."
         )
     elif software == SOFTWARE_UNKNOWN:
-        found = {run.software_problem for run in evaluated}
+        found = {problem for run in evaluated for problem in run.software_problems}
         problems = [problem for problem in SOFTWARE_PROBLEMS if problem in found]
         lines.append(
             "**Warning: the software of some evaluations cannot be compared** (see the row \"evaluation software "
@@ -785,7 +791,7 @@ def _describe_evaluation_software(run: RunResult, names: list[str]) -> str:
     if not run.metrics:
         return MISSING
     if run.evaluation_software is None:
-        return run.software_problem
+        return ", ".join(run.software_problems)
     software = _software_for_display(run.evaluation_software)
     return ", ".join(f"{name} {software.get(name, 'absent')}" for name in names) or "–"
 

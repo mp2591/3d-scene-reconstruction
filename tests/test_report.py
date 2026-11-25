@@ -224,7 +224,7 @@ def _evaluated_with(name: str, lpips: str | None, **packages: str) -> GroupResul
     group = _group(name, {1: {"psnr": 20.0}})
     run = group.replicates[0]
     record = _software_record(lpips=lpips, **packages) if lpips else None
-    run.evaluation_software, run.software_problem = _read_software(record)
+    run.evaluation_software, run.software_problems = _read_software(record)
     return group
 
 
@@ -262,35 +262,67 @@ def test_a_package_named_like_a_record_field_is_compared_as_a_package(name: str)
         lambda record: record["packages"].update({"Torch": "1"}),  # not a normalised name
         lambda record: record["packages"].update(torch=""),
         lambda record: record["packages"].update(torch=["2.8"]),
+        lambda record: record["packages"].update(torch="\n"),  # review F83
+        lambda record: record["packages"].update(torch="2.8 beta"),
         lambda record: record.update(packages={}),
+        lambda record: record.update(device=""),
         lambda record: record.update(python=3.1),
         lambda record: record.pop("device_type"),  # also a record from before the device type was saved
         lambda record: record.update(extra="1"),
     ],
     ids=[
-        "empty_name", "unnormalised_name", "empty_version", "list_version", "no_packages", "number", "missing", "extra"
+        "empty_name",
+        "unnormalised_name",
+        "empty_version",
+        "list_version",
+        "blank_version",
+        "spaced_version",
+        "no_packages",
+        "empty_device",
+        "number",
+        "missing",
+        "extra",
     ],
 )
 def test_a_damaged_software_record_cannot_be_compared(change):
     record = _software_record(lpips="0.1.4")
     change(record)
 
-    assert _read_software(record) == (None, "damaged")
+    assert _read_software(record) == (None, ["damaged"])
 
 
 def test_the_report_says_why_a_software_record_cannot_be_compared():
-    """Review F76 and F77: an unnamed device or an unreadable package list is unknown, never the same."""
-    assert _read_software(None) == (None, "not recorded")
-    assert _read_software({**_software_record(), "device": None}) == (None, "device model unknown")
-    assert _read_software({**_software_record(), "packages": None}) == (None, "package list unreadable")
-    assert _read_software(_software_record())[0] == _software_record()
+    """Review F76, F77 and F88: an unnamed device or an unreadable package list is unknown, never the same."""
+    unreadable = {**_software_record(), "device": None, "packages": None}
+    both = ["device model unknown", "package list unreadable"]
+    assert _read_software(None) == (None, ["not recorded"])
+    assert _read_software({**_software_record(), "device": None}) == (None, ["device model unknown"])
+    assert _read_software({**_software_record(), "packages": None}) == (None, ["package list unreadable"])
+    assert _read_software(unreadable) == (None, both)
+    assert _read_software({**unreadable, "python": ""}) == (None, [*both, "damaged"])
+    assert _read_software(_software_record()) == (_software_record(), [])
 
     runs = [_evaluated_with("first", "0.1.4"), _group("second", {1: {"psnr": 20.0}})]
-    runs[1].replicates[0].software_problem = "device model unknown"
+    runs[1].replicates[0].software_problems = both
     text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
 
     assert "*device model unknown*: the model of the device it ran on cannot be named" in text
-    assert "| evaluation software that differs | – | device model unknown |" in text  # one record: nothing differs
+    assert "*package list unreadable*: the metadata of an installed package could not be read" in text
+    # One readable record: nothing can differ from it.
+    assert "| evaluation software that differs | – | device model unknown, package list unreadable |" in text
+
+
+def test_a_results_file_with_a_key_given_twice_is_treated_as_damaged(tmp_path: Path):
+    """Review F84: a JSON reader would keep only the last value, so the file is redone rather than trusted."""
+    from scene_recon.run_files import read_json
+
+    twice = tmp_path / "evaluation.json"
+    twice.write_text('{"software": {"device": "A100", "device": "RTX 4090"}}', encoding="utf-8")
+    once = tmp_path / "once.json"
+    once.write_text('{"software": {"device": "RTX 4090"}}', encoding="utf-8")
+
+    assert read_json(twice) is None
+    assert read_json(once) == {"software": {"device": "RTX 4090"}}
 
 
 def test_a_single_evaluation_whose_software_cannot_be_compared_is_flagged():
