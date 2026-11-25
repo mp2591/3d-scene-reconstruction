@@ -292,8 +292,8 @@ SOFTWARE_PROBLEMS = {
         "operating system reports, are named)"
     ),
     "package list unreadable": (
-        "the metadata of an installed package could not be read; the evaluation's log names the package "
-        "to reinstall, or the folders on Python's search path to check if the packages could not be listed"
+        "the installed packages could not all be read; the evaluation's log names the package's folder when "
+        "one is to blame, and otherwise says to check the folders on Python's search path"
     ),
     "damaged": "its record in evaluation.json is damaged or from an older version; evaluate it again",
 }

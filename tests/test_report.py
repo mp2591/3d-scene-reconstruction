@@ -307,8 +307,8 @@ def test_the_report_says_why_a_software_record_cannot_be_compared():
     text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
 
     assert "*device model unknown*: the model of the device it ran on cannot be named" in text
-    assert "*package list unreadable*: the metadata of an installed package could not be read" in text
-    assert "or the folders on Python's search path to check if the packages could not be listed" in text  # F102
+    assert "*package list unreadable*: the installed packages could not all be read" in text
+    assert "otherwise says to check the folders on Python's search path" in text  # review F102 and F103
     # One readable record: nothing can differ from it.
     assert "| evaluation software that differs | – | device model unknown, package list unreadable |" in text
 

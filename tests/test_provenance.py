@@ -520,7 +520,10 @@ def test_the_timm_version_is_recorded_and_decides_whether_a_profile_is_current(s
     assert profile_status(smoke_config).state == "stale"
 
 
-def _damage_the_metadata_of_timm(monkeypatch) -> None:
+@pytest.fixture
+def damaged_timm_metadata(monkeypatch):
+    """The metadata of timm cannot be read. The cached environment record is read again before and after,
+    so that neither the real nor the damaged version leaks into another test."""
     from scene_recon import environment as environment_module
 
     real_version = environment_module.importlib.metadata.version
@@ -531,13 +534,17 @@ def _damage_the_metadata_of_timm(monkeypatch) -> None:
         return real_version(name)
 
     monkeypatch.setattr(environment_module.importlib.metadata, "version", version)
+    environment_module.environment.cache_clear()
+    yield
+    environment_module.environment.cache_clear()  # the next test reads the real metadata again
 
 
-def test_an_update_of_timm_is_seen_when_its_metadata_cannot_be_read(smoke_config: Config, monkeypatch):
+def test_an_update_of_timm_is_seen_when_its_metadata_cannot_be_read(
+    smoke_config: Config, monkeypatch, damaged_timm_metadata
+):
     """Review F92: the version comes from the module itself, so an update still makes the saved speed stale."""
     import timm
 
-    _damage_the_metadata_of_timm(monkeypatch)
     run_profiling(smoke_config)
     assert profile_status(smoke_config).is_current
 
@@ -546,11 +553,12 @@ def test_an_update_of_timm_is_seen_when_its_metadata_cannot_be_read(smoke_config
     assert profile_status(smoke_config).state == "stale"
 
 
-def test_a_speed_is_measured_again_while_the_version_of_timm_cannot_be_read(smoke_config: Config, monkeypatch):
+def test_a_speed_is_measured_again_while_the_version_of_timm_cannot_be_read(
+    smoke_config: Config, monkeypatch, damaged_timm_metadata
+):
     """Review F92: neither the metadata nor the module gives a version, so no saved speed can be checked."""
     from scene_recon import environment as environment_module
 
-    _damage_the_metadata_of_timm(monkeypatch)
     real_import = environment_module.importlib.import_module
 
     def import_module(name: str, *arguments):
