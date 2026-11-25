@@ -34,8 +34,9 @@ class ConvNeXtV2Encoder(nn.Module):
         """
         Args:
             model_name: The ``timm`` name of the ConvNeXt V2 variant and its weights.
-                ``convnextv2_tiny.fcmae`` is pretrained without labels (FCMAE on
-                ImageNet-1k), like the Hiera-T weights.
+                ``convnextv2_tiny.fcmae`` is pretrained without labels on
+                ImageNet-1k (FCMAE), as the Hiera-T weights are (MAE); the
+                two recipes still differ in their details.
             pretrained: Start from pretrained weights. Use False for quick tests.
             num_features: Channels of the output feature map.
             input_normalization: How images are normalised first. ConvNeXt V2 expects

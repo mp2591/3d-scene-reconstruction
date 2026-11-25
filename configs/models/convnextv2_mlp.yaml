@@ -1,10 +1,13 @@
 # ConvNeXt V2-T with the pixelNeRF-style MLP decoder.
 #
-# The weights come from self-supervised pretraining only (FCMAE, a masked
-# autoencoder, on ImageNet-1k), like the Hiera-T weights of hiera_mlp.yaml
-# (MAE on ImageNet-1k), so the encoder comparison is not also a comparison of
-# pretraining. convnextv2_tiny.fcmae_ft_in22k_in1k, the same network
-# fine-tuned with labels on ImageNet-22k and -1k, would be a separate run.
+# Both encoders of the ablation start from their authors' published
+# self-supervised weights, learnt on ImageNet-1k without labels: FCMAE (a
+# masked autoencoder) here, MAE for the Hiera-T weights of hiera_mlp.yaml.
+# Neither has seen labels or more data than the other. Their pretraining
+# recipes still differ (masking, length, augmentation), so the ablation
+# compares each encoder as published, not the architectures alone.
+# convnextv2_tiny.fcmae_ft_in22k_in1k, the same network fine-tuned with labels
+# on ImageNet-22k and -1k, would be a separate run.
 
 model:
   name: pixel_aligned_nerf

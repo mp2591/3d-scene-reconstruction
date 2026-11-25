@@ -65,7 +65,7 @@ this method to split them into named groups:
 ```python
 def parameter_groups(self) -> list[ParameterGroup]:
     return [
-        ParameterGroup("encoder", list(self.encoder.parameters())),
+        *encoder_parameter_groups(self.encoder),  # "encoder" (pretrained) and "adapter" (new layers)
         ParameterGroup("decoder", list(self.decoder.parameters())),
     ]
 ```
@@ -74,10 +74,15 @@ Group names are what the config refers to:
 
 ```yaml
 optimization:
-  learning_rate: 1.0e-4            # the decoder uses this
+  learning_rate: 1.0e-4            # the decoder and the adapter use this
   group_overrides:
     encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
 ```
+
+Only pretrained parameters belong in `encoder`: `encoder_parameter_groups`
+(in `scene_recon.models.base`) keeps the layers the encoder adds on top of
+them, its `adapter`, in a group of their own at the base learning rate (see
+"Optional: choosing the encoder and decoder from config" below).
 
 For layer-wise learning-rate decay, return one group per encoder stage, named
 `encoder.stage0`, `encoder.stage1`, and so on, each with its own `lr_scale`.
@@ -201,7 +206,12 @@ The pipeline decides everything about the data, identically for every model
   the camera parameters. Augmentation, if wanted, belongs in the pipeline.
 - **No choosing of views.** Use all source views you are given.
 - **No seeding.** Do not call `torch.manual_seed` or similar; the pipeline
-  seeds from `experiment.seed` and restores the random state on resume.
+  seeds from `experiment.seed` and restores the random state on resume. The
+  one exception is `seeded_random_numbers(part_seed("decoder"))` from
+  `scene_recon.models.base`, which gives one part of a model its own random
+  start, derived from `experiment.seed`, and leaves the global generator as
+  it was. `pixel_aligned_nerf` builds its decoder this way, so that runs
+  differing only in their encoder start with the same decoder.
 - **No reading of data during `forward`.** Load weights once, in `__init__`,
   from a path given in the config.
 

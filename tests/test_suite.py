@@ -314,6 +314,23 @@ def test_a_finished_run_whose_training_settings_changed_is_not_skipped_silently(
         run_suite(load_suite(_write_suite(tmp_path, changed)))
 
 
+def test_report_keeps_evaluations_from_other_software_and_says_which(tmp_path: Path):
+    """Review F46: a saved evaluation stays current, so the report can be made on another machine."""
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
+    run_suite(suite)
+    evaluation_file = RunFiles(suite.runs["wide"].run_dir).evaluation
+    evaluation = json.loads(evaluation_file.read_text(encoding="utf-8"))
+    evaluation["environment"]["lpips"] = "0.0.1"  # as if evaluated on another machine
+    evaluation_file.write_text(json.dumps(evaluation), encoding="utf-8")
+
+    write_report(suite.name, suite.directory, suite.grouped_runs(), {}, suite.stages)
+
+    report = (suite.directory / "summary.md").read_text(encoding="utf-8")
+    assert "## Quality with" in report and "evaluation:" not in report  # nothing left out
+    assert "the runs were evaluated with different software versions" in report
+    assert "lpips 0.0.1" in report
+
+
 def test_report_leaves_out_results_that_no_longer_match(tmp_path: Path):
     run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS)))
     changed = load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["evaluation.source_view_sets=[[0, 6]]"])
@@ -663,4 +680,5 @@ def test_the_proposal_template_loads_as_shipped():
 
     assert list(suite.runs) == ["convnextv2_mlp", "hiera_mlp", "hiera_nerf"]
     text = template.read_text(encoding="utf-8")
-    assert "  # pixelnerf_resnet34:" in text and "  # transnerf_unet:" in text
+    # Review F52: uncommenting transnerf_unet alone keeps convnextv2_mlp the reference.
+    assert text.index("  # pixelnerf_resnet34:") < text.index("  convnextv2_mlp:") < text.index("  # transnerf_unet:")

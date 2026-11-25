@@ -28,6 +28,11 @@ number of training steps. A result that is current but not eligible, e.g.
 the evaluation of the old checkpoint after a training extension failed, is
 *interim*: the quality tables still show it, marked, with its actual step,
 but it is left out of best values, figures and paired comparisons.
+
+A saved evaluation stays current when the software changes, so that the
+report can be made on another machine. If the runs' evaluations were made
+with different versions of the packages that compute the metrics
+(``EVALUATION_SOFTWARE``), the report says so.
 """
 
 from __future__ import annotations
@@ -100,6 +105,9 @@ class RunResult:
 
     starting_weights: dict | None = None
     """The pretrained weights recorded in the run's checkpoint (see ``pretrained_weights_of``), if it has one."""
+
+    evaluation_software: dict | None = None
+    """Versions of ``EVALUATION_SOFTWARE`` its current evaluation was made with, if it has one."""
 
     requested_steps: int = 0
     """``training.num_steps`` of the run's config."""
@@ -251,6 +259,11 @@ def write_report(
     logger.info("Suite report updated: %s", files.summary_markdown)
 
 
+EVALUATION_SOFTWARE = ("torch", "timm", "lpips")
+"""The packages whose code computes the quality metrics: PyTorch runs every
+model, ``timm`` the ConvNeXt V2 encoder and ``lpips`` the LPIPS metric."""
+
+
 def _collect(key: str, config: Config, failed: bool, training_requested: bool) -> RunResult:
     """Read what a run has produced, keeping only results that still describe the run."""
     files = RunFiles(config.run_dir)
@@ -275,6 +288,8 @@ def _collect(key: str, config: Config, failed: bool, training_requested: bool) -
 
     evaluation = evaluation_status(config)
     if evaluation.is_current:
+        recorded_environment = evaluation.content.get("environment", {})
+        result.evaluation_software = {name: recorded_environment.get(name) for name in EVALUATION_SOFTWARE}
         for protocol in evaluation.content["protocols"]:
             count = len(protocol["source_views"])
             result.metrics[count] = protocol["mean"]
@@ -550,8 +565,10 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
     recorded_data_differs = len({_canonical_json(fp) for fp in recorded if fp is not None}) > 1
     weights_by_source = _pretrained_weights_by_source(results)
     weights_differ = [source for source, hashes in weights_by_source.items() if len(hashes) > 1]
+    software = [run.evaluation_software for group in results for run in group.replicates]
+    software_differs = len({_canonical_json(versions) for versions in software if versions is not None}) > 1
 
-    if not differences and not recorded_data_differs and not weights_differ:
+    if not differences and not recorded_data_differs and not weights_differ and not software_differs:
         lines.append("Nothing: all runs use identical settings.")
     else:
         lines.append(
@@ -581,7 +598,14 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
             f"**Warning: runs that start from `{source}` started from different weights** (see the row "
             "\"pretrained weights\" of the table): the file was replaced between runs, or exists in several versions."
         )
-    if not differences and not recorded_data_differs and not weights_differ:
+    if software_differs:
+        lines.append(
+            "**Warning: the runs were evaluated with different software versions** (see the row \"software that "
+            "evaluated the run\" of the table). Small differences in quality may come from the software rather "
+            "than the models. For an exact comparison, evaluate every run again with one installation "
+            "(`scene-recon evaluate`)."
+        )
+    if not differences and not recorded_data_differs and not weights_by_source and not software_differs:
         return lines
 
     lines += [
@@ -596,9 +620,20 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
         cells = [_describe_training_data(group) for group in results]
         lines.append("| training data recorded in the checkpoint | " + " | ".join(cells) + " |")
     if weights_by_source:
-        cells = [_describe_starting_weights(group) for group in results]
+        cells = [_by_seed(group, _describe_starting_weights) for group in results]
         lines.append("| pretrained weights recorded in the checkpoint | " + " | ".join(cells) + " |")
+    if software_differs:
+        cells = [_by_seed(group, _describe_evaluation_software) for group in results]
+        lines.append("| software that evaluated the run | " + " | ".join(cells) + " |")
     return lines
+
+
+def _by_seed(group: GroupResult, describe) -> str:
+    """``describe(run)`` for a run's seeds: one entry if they agree, otherwise one per seed, labelled with it."""
+    by_seed = {run.seed: describe(run) for run in group.replicates}
+    if len(set(by_seed.values())) <= 1:
+        return next(iter(by_seed.values()), MISSING)
+    return "; ".join(f"seed {seed}: {text}" for seed, text in by_seed.items())
 
 
 def _pretrained_weights_by_source(results: list[GroupResult]) -> dict[str, set[str]]:
@@ -611,22 +646,23 @@ def _pretrained_weights_by_source(results: list[GroupResult]) -> dict[str, set[s
     return hashes
 
 
-def _describe_starting_weights(group: GroupResult) -> str:
-    """A short, readable identifier of the pretrained weights a run's checkpoints started from."""
-    descriptions = []
-    for run in group.replicates:
-        if run.starting_weights is None:
-            text = MISSING
-        elif not run.starting_weights:
-            text = "none (random start)"
-        else:
-            text = ", ".join(
-                f"`{part}: {Path(weights['source']).name} {weights['sha256'][:12]}`"
-                for part, weights in run.starting_weights.items()
-            )
-        if text not in descriptions:
-            descriptions.append(text)
-    return ", ".join(descriptions)
+def _describe_starting_weights(run: RunResult) -> str:
+    """A short, readable identifier of the pretrained weights a run's checkpoint started from."""
+    if run.starting_weights is None:
+        return MISSING
+    if not run.starting_weights:
+        return "none (random start)"
+    return ", ".join(
+        f"`{part}: {Path(weights['source']).name} {weights['sha256'][:12]}`"
+        for part, weights in run.starting_weights.items()
+    )
+
+
+def _describe_evaluation_software(run: RunResult) -> str:
+    """The package versions a run's evaluation was made with."""
+    if run.evaluation_software is None:
+        return MISSING
+    return ", ".join(f"{name} {version or 'not recorded'}" for name, version in run.evaluation_software.items())
 
 
 def _describe_training_data(group: GroupResult) -> str:

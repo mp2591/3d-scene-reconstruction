@@ -269,7 +269,7 @@ def test_a_checkpoint_from_older_code_is_refused_everywhere(srn_config: Config, 
 
     with pytest.raises(ConfigError, match="older version of the code") as error:
         check_run_can_start(srn_config, ["train", "evaluate", "profile"])
-    assert "Train it again" in str(error.value)
+    assert "Train it again under a new name" in str(error.value) and "delete" not in str(error.value)
     with pytest.raises(ConfigError, match="older version of the code"):
         Trainer(_changed(srn_config, "training", num_steps=srn_config.training.num_steps + 1), resume=True)
     with pytest.raises(ConfigError, match="older version of the code"):
@@ -316,6 +316,23 @@ def test_checkpoints_record_the_pretrained_weights_the_run_started_from(smoke_co
     monkeypatch.setattr(TinyConvEncoder, "pretrained_weights", {"source": "weights/encoder.pth", "sha256": "2" * 64})
     Trainer(_changed(smoke_config, "training", num_steps=smoke_config.training.num_steps + 2), resume=True).train()
     assert read_checkpoint_starting_weights(checkpoint) == {"encoder": first}
+
+
+@pytest.mark.parametrize("part", ["encoder", "decoder"])
+def test_a_weights_record_a_checkpoint_could_not_hold_is_refused_before_training(
+    smoke_config: Config, monkeypatch, part: str
+):
+    """Review F44: suite preflight finds it in any part of the model, instead of the first checkpoint save."""
+    from scene_recon.models.testing.tiny_decoder import TinyPooledMLPDecoder
+    from scene_recon.models.testing.tiny_encoder import TinyConvEncoder
+    from scene_recon.stages import check_run_can_start
+
+    owner = {"encoder": TinyConvEncoder, "decoder": TinyPooledMLPDecoder}[part]
+    monkeypatch.setattr(owner, "pretrained_weights", {"source": Path("weights/part.pth"), "sha256": "1" * 64}, raising=False)
+
+    with pytest.raises(ConfigError, match="has pretrained_weights"):
+        check_run_can_start(smoke_config, ["train"])
+    assert not RunFiles(smoke_config.run_dir).checkpoint.exists()
 
 
 def test_a_model_that_starts_from_random_values_records_no_pretrained_weights(smoke_config: Config):

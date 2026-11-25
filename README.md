@@ -253,7 +253,7 @@ model. Inside your modules:
 |---|---|
 | Augment images (random crops, flips, resizing, colour jitter) | Each model would see different data. Crops, flips and resizes would also no longer match the camera parameters. If augmentation is wanted, it gets added to the pipeline for every model. |
 | Pick, drop or reorder input views | Which views a model sees is part of the shared training data. |
-| Call `torch.manual_seed(...)` or other seeding functions | The pipeline seeds from `experiment.seed` and restores the random state when a run is resumed. Reseeding breaks both. |
+| Call `torch.manual_seed(...)` or other seeding functions | The pipeline seeds from `experiment.seed` and restores the random state when a run is resumed. Reseeding breaks both. If a part must start from the same random values in several models (a decoder shared by an encoder ablation), build it inside `seeded_random_numbers(part_seed("decoder"))` from `scene_recon.models.base`, as `pixel_aligned_nerf` does: it follows `experiment.seed` and leaves the global generator as it was. |
 | Read data, cameras or files during `forward` | All inputs arrive as arguments. Loading weights once in `__init__` is fine (next section). |
 
 Dropout and stochastic depth are fine: they are part of the model.
@@ -265,21 +265,27 @@ config, never a hard-coded one. To give a pretrained encoder its own learning
 rate and warmup, split the parameters into named groups:
 
 ```python
-from scene_recon.models.base import ParameterGroup
+from scene_recon.models.base import ParameterGroup, encoder_parameter_groups
 
     def parameter_groups(self):
         return [
-            ParameterGroup("encoder", list(self.encoder.parameters())),
+            *encoder_parameter_groups(self.encoder),  # "encoder" (pretrained) and "adapter" (new layers)
             ParameterGroup("decoder", list(self.decoder.parameters())),
         ]
 ```
 
 ```yaml
 optimization:
-  learning_rate: 1.0e-4                    # the decoder
+  learning_rate: 1.0e-4                    # the decoder and the adapter
   group_overrides:
     encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
 ```
+
+Only pretrained parameters belong in `encoder`. Layers the encoder adds on
+top of them, such as a 1x1 convolution that fuses its stages, start from
+random values like the decoder, so they keep the base learning rate:
+`encoder_parameter_groups` puts the encoder's `adapter` (section 6) in a
+group of its own.
 
 Every trainable parameter must be in exactly one group. For layer-wise
 learning-rate decay, use one group per stage (`encoder.stage0`,

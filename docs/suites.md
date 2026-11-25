@@ -90,7 +90,11 @@ The runs must also be **measured identically**: the `evaluation`,
 `validation` and `profiling` sections, the validation and test data, and
 `renderer.ray_chunk_size` (rendering speed depends on it) must be the same
 for every run, or the suite does not start. Set them in `common`. Runs
-measured differently could not be compared.
+measured differently could not be compared. Profiling also stops with an
+error if rendering filled the GPU's memory: some drivers (on Windows) then
+move memory to the computer's main memory instead of failing, and the
+measured speed would be several times too low. Each `profile.json` records
+the peak GPU memory of rendering.
 
 **2. The runs are executed one after another**, each through the requested
 stages. Work that is already done is skipped:
@@ -202,7 +206,16 @@ its run started from: where they came from (a file path or a `timm` name)
 and a SHA-256 hash of the weights as loaded. The table shows them for each
 run, and if runs that name the same file started from different weights (the
 file was replaced, or a teammate downloaded another version), the report
-says so prominently.
+says so prominently. If the seeds of one run started from different weights,
+each seed is listed.
+
+A saved evaluation stays valid when the software is updated, so that the
+report can also be made on another machine. Every evaluation records the
+versions of PyTorch, `timm` and `lpips` it was made with, the packages whose
+code computes the scores. If the runs' evaluations were made with different
+versions, the report says so and lists them: small differences in quality
+may then come from the software. Evaluate every run again with one
+installation (`scene-recon evaluate`) for an exact comparison.
 
 `summary.csv` has one row per run and seed. Quality columns are named
 `<metric>_<n>v`: `psnr_1v` is the PSNR with one input view. Load it with
@@ -241,7 +254,7 @@ interval excludes zero *and* it is larger than the spread between seeds.
 before committing GPU days to it:
 
 ```bash
-scene-recon run-suite --config configs/suites/proposal_template.yaml --set training.num_steps=200 training.validate_every=100 evaluation.num_scenes=5
+scene-recon run-suite --config configs/suites/proposal_template.yaml --set training.num_steps=200 training.validate_every=100 evaluation.num_scenes=5 evaluation.num_target_views=10
 ```
 
 The trial writes into the same directory as the real suite would. Delete

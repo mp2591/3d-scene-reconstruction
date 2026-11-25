@@ -177,3 +177,50 @@ def test_the_report_lists_the_pretrained_weights_without_a_warning_when_they_agr
 
     assert "started from different weights" not in text
     assert "| pretrained weights recorded in the checkpoint | `encoder: hiera.pth 111111111111` | `encoder: hiera.pth" in text
+
+
+def test_the_pretrained_weights_are_listed_even_when_every_setting_is_identical():
+    """Review F47."""
+    runs = [_started_from(_group("first", {}), "1" * 64), _started_from(_group("second", {}), "1" * 64)]
+
+    text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
+
+    assert "Nothing: all runs use identical settings." in text
+    assert "| pretrained weights recorded in the checkpoint | `encoder: hiera.pth 111111111111` |" in text
+
+
+def test_seeds_of_one_run_that_started_from_different_weights_are_labelled():
+    """Review F47."""
+    run = _group("hiera_mlp", {}, {})
+    for replicate, sha256 in zip(run.replicates, ["1" * 64, "2" * 64]):
+        replicate.starting_weights = {"encoder": {"source": "weights/hiera.pth", "sha256": sha256}}
+
+    text = "\n".join(_differences_section([run], {}, multiple_seeds=True))
+
+    assert "started from different weights" in text
+    assert "seed 0: `encoder: hiera.pth 111111111111`; seed 1: `encoder: hiera.pth 222222222222`" in text
+
+
+# ---------------------------------------------------------------- evaluation software (review F46)
+
+
+def _evaluated_with(group: GroupResult, lpips: str) -> GroupResult:
+    group.replicates[0].evaluation_software = {"torch": "2.14.1", "timm": "1.0.31", "lpips": lpips}
+    return group
+
+
+def test_the_report_warns_when_runs_were_evaluated_with_different_software():
+    runs = [_evaluated_with(_group("first", {}), "0.1.4"), _evaluated_with(_group("second", {}), "0.2.0")]
+
+    text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
+
+    assert "the runs were evaluated with different software versions" in text
+    assert "| software that evaluated the run | torch 2.14.1, timm 1.0.31, lpips 0.1.4 | torch 2.14.1, timm 1.0.31, lpips 0.2.0 |" in text
+
+
+def test_runs_evaluated_with_the_same_software_get_no_software_row():
+    runs = [_evaluated_with(_group("first", {}), "0.1.4"), _evaluated_with(_group("second", {}), "0.1.4")]
+
+    text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
+
+    assert "Nothing: all runs use identical settings." in text and "software" not in text

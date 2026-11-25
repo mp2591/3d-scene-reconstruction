@@ -20,10 +20,12 @@ renderer:
   background_color: [1.0, 1.0, 1.0]   # ShapeNet-SRN renders have a white background.
   # Rays rendered at once for full images (evaluation, profiling). The same
   # for every run of a suite, because rendering speed depends on it. Memory
-  # grows with it and with the number of source views: on an RTX 4090 at
-  # 128x128, 2048 rays with 3 source views needed about 5.3 GB for each of
-  # convnextv2_mlp, hiera_mlp and hiera_nerf, and 8192 overflowed the GPU.
-  # Frame rates between 1024 and 4096 differed by less than 4%.
+  # grows with it and with the number of source views: on an RTX 4090
+  # (22.5 GB) at 128x128, 2048 rays with 3 source views needed about 5.3 GB
+  # for each of convnextv2_mlp, hiera_mlp and hiera_nerf. At 8192 rays with
+  # 2 views PyTorch reserved the whole GPU, the driver moved memory to main
+  # memory and the frame rate fell by 60%; 16384 ran out of memory. Frame
+  # rates between 1024 and 4096 differed by less than 4%.
   ray_chunk_size: 2048
 
 optimization:

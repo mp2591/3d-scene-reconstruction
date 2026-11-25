@@ -10,7 +10,7 @@ from torch import Tensor, nn
 from scene_recon.build import build_model
 from scene_recon.config import Config, load_config
 from scene_recon.geometry import sample_features_at_pixels
-from scene_recon.models.base import weights_sha256
+from scene_recon.models.base import pretrained_weights_of, weights_sha256
 from scene_recon.models.contract import check_model_contract
 from scene_recon.models.hiera.attention import HieraRayTransformer
 from scene_recon.models.hiera.bridge import HieraSceneEncoding
@@ -394,15 +394,21 @@ _MODELS_WITH_AN_ENCODER = [
 ]
 
 
-def _encoder_without(attribute: str) -> type:
-    """An encoder plug-in with every attribute that build_encoder checks, except one."""
-    attributes = {"num_features": 4, "feature_offset": 0.0, "adapter": None, "pretrained_weights": None}
-    del attributes[attribute]
+_ENCODER_ATTRIBUTES = {"num_features": 4, "feature_offset": 0.0, "adapter": None, "pretrained_weights": None}
+
+
+def _encoder_class(attributes: dict) -> type:
+    """An encoder plug-in with the given class attributes."""
 
     def forward(self, images: Tensor) -> Tensor:
         return images.new_zeros(len(images), 4, images.shape[-2] // 4, images.shape[-1] // 4)
 
-    return type(f"EncoderWithout_{attribute}", (nn.Module,), {**attributes, "forward": forward})
+    return type("TestEncoder", (nn.Module,), {**attributes, "forward": forward})
+
+
+def _encoder_without(attribute: str) -> type:
+    """An encoder plug-in with every attribute that build_encoder checks, except one."""
+    return _encoder_class({name: value for name, value in _ENCODER_ATTRIBUTES.items() if name != attribute})
 
 
 @pytest.mark.parametrize("attribute", ["num_features", "feature_offset", "adapter", "pretrained_weights"])
@@ -412,6 +418,52 @@ def test_every_model_names_an_encoder_missing_an_attribute(model: dict, attribut
 
     with pytest.raises(ConfigError, match=f"'incomplete' has no attribute '{attribute}'"):
         MODELS.build({**model, "encoder": {"name": "incomplete"}})
+
+
+_A_HASH = "0" * 64
+
+
+@pytest.mark.parametrize(
+    "attribute, value",
+    [
+        ("adapter", "conv"),
+        ("pretrained_weights", "weights/encoder.pth"),
+        ("pretrained_weights", {"source": Path("weights/encoder.pth"), "sha256": _A_HASH}),
+        ("pretrained_weights", {"source": "weights/encoder.pth", "sha256": "not a hash"}),
+        ("pretrained_weights", {"source": "weights/encoder.pth", "sha256": _A_HASH, "step": 0}),
+    ],
+    ids=["adapter_not_a_module", "weights_not_a_dict", "source_not_a_string", "hash_malformed", "extra_entry"],
+)
+def test_an_encoder_whose_adapter_or_weights_record_is_malformed_is_refused(
+    attribute: str, value, monkeypatch: pytest.MonkeyPatch
+):
+    """Review F44: caught when the model is built, not when the checkpoint is read back."""
+    monkeypatch.setitem(ENCODERS._classes, "malformed", _encoder_class({**_ENCODER_ATTRIBUTES, attribute: value}))
+
+    with pytest.raises(ConfigError, match="The encoder 'malformed' has"):
+        MODELS.build({**_MODELS_WITH_AN_ENCODER[0], "encoder": {"name": "malformed"}})
+
+
+def test_a_malformed_weights_record_outside_the_encoder_is_refused_too():
+    part = nn.Linear(2, 2)
+    part.pretrained_weights = {"source": "weights/part.pth"}
+
+    with pytest.raises(ConfigError, match="part '1' has pretrained_weights"):
+        pretrained_weights_of(nn.Sequential(nn.Identity(), part))
+
+
+def test_the_weights_hash_works_for_every_data_type_and_ignores_creation_order():
+    """Review F48."""
+    first, second = nn.Linear(2, 2), nn.Linear(2, 2)
+    one_way, other_way = nn.Module(), nn.Module()
+    one_way.a, one_way.b = first, second
+    other_way.b, other_way.a = second, first
+
+    in_float32 = weights_sha256(one_way)
+    assert weights_sha256(other_way) == in_float32
+
+    one_way.to(torch.bfloat16)  # other_way holds the same layers
+    assert weights_sha256(one_way) == weights_sha256(other_way) != in_float32
 
 
 def test_the_hiera_encoder_records_the_weights_it_loaded(tmp_path: Path):
@@ -433,14 +485,26 @@ def test_the_hiera_encoder_records_the_weights_it_loaded(tmp_path: Path):
 
 
 def test_the_depth_feature_measures_distance_along_the_ray_like_near_and_far():
-    """Review F4: on a slanted ray, the points at the near and far bounds get exactly 0 and 1."""
-    from scene_recon.models.hiera.bridge import normalized_distance
+    """Review F4 and F51: on a slanted ray, the points at the near and far bounds get exactly 0 and 1."""
+    from scene_recon.models.hiera.bridge import HieraNeRFBridge
 
-    direction = torch.tensor([0.6, 0.0, 0.8])  # a unit-length ray away from the image centre
+    bridge = HieraNeRFBridge(num_features=4, width=8, position_frequencies=2, feature_offset=1.5)
+    cameras, _ = _camera_seeing(torch.zeros(0, 2), 32)  # the photo's camera sits at the origin
+    scene = HieraSceneEncoding(
+        feature_maps=torch.zeros(1, 1, 4, 8, 8),
+        images=torch.zeros(1, 1, 3, 32, 32),
+        cameras=cameras,
+        image_size=(32, 32),
+        near=torch.tensor([1.0]),
+        far=torch.tensor([2.0]),
+    )
+    direction = torch.tensor([0.6, 0.0, 0.8])  # a unit-length ray from that camera, away from the image centre
     points = torch.stack([1.0 * direction, 1.5 * direction, 2.0 * direction])
 
-    depth = normalized_distance(points, near=torch.tensor(1.0), far=torch.tensor(2.0))
+    with torch.no_grad():
+        output = bridge(scene, points[None, None], direction.expand(1, 1, 3))
 
+    depth = output.view_geometry[0, :, 0, -1]  # the last geometry entry, for the one photo
     assert torch.allclose(depth, torch.tensor([0.0, 0.5, 1.0]))
 
 
@@ -524,22 +588,52 @@ def test_the_new_fusion_layer_learns_at_the_base_rate_in_every_model(model: dict
     assert not adapter_ids & {id(p) for p in groups["encoder"]["params"]}
 
 
-def _mlp_decoder_start(encoder: dict, seed: int) -> dict[str, Tensor]:
+def _built_at_seed(model: dict, seed: int) -> nn.Module:
     torch.manual_seed(seed)
-    model = MODELS.build({"name": "pixel_aligned_nerf", "encoder": encoder, "decoder": {"name": "pixelnerf_mlp", "hidden_width": 8}})
-    return model.decoder.state_dict()
+    return MODELS.build(model)
+
+
+def _same_weights(first: nn.Module, second: nn.Module) -> bool:
+    first_state, second_state = first.state_dict(), second.state_dict()
+    return first_state.keys() == second_state.keys() and all(
+        torch.equal(first_state[name], second_state[name]) for name in first_state
+    )
+
+
+_MLP = {"name": "pixelnerf_mlp", "hidden_width": 8}
+_CONVNEXT = {"name": "convnextv2", "model_name": "convnextv2_atto", "pretrained": False, "num_features": 8}
 
 
 def test_the_mlp_decoder_starts_the_same_whichever_encoder_is_built_before_it():
     """Review F8: in the encoder ablation the runs differ only in their encoder, also before the first step."""
-    convnext = {"name": "convnextv2", "model_name": "convnextv2_atto", "pretrained": False, "num_features": 8}
-    after_convnext, after_hiera = _mlp_decoder_start(convnext, seed=0), _mlp_decoder_start(_SMALL_HIERA, seed=0)
+    after_convnext = _built_at_seed({"name": "pixel_aligned_nerf", "encoder": _CONVNEXT, "decoder": _MLP}, seed=0)
+    after_hiera = _built_at_seed({"name": "pixel_aligned_nerf", "encoder": _SMALL_HIERA, "decoder": _MLP}, seed=0)
+    other_seed = _built_at_seed({"name": "pixel_aligned_nerf", "encoder": _CONVNEXT, "decoder": _MLP}, seed=1)
 
-    assert after_convnext.keys() == after_hiera.keys()
-    assert all(torch.equal(after_convnext[name], after_hiera[name]) for name in after_convnext)
-    # The decoder's start still follows the seed.
-    other_seed = _mlp_decoder_start(convnext, seed=1)
-    assert not all(torch.equal(after_convnext[name], other_seed[name]) for name in after_convnext)
+    assert _same_weights(after_convnext.decoder, after_hiera.decoder)
+    assert not _same_weights(after_convnext.decoder, other_seed.decoder)  # it still follows the seed
+
+
+def test_a_shared_hiera_encoder_starts_the_same_in_both_hiera_models():
+    """Review F43: hiera_mlp and hiera_nerf differ in what follows the encoder, not in the encoder's start."""
+    hiera_mlp = _built_at_seed({"name": "pixel_aligned_nerf", "encoder": _SMALL_HIERA, "decoder": _MLP}, seed=0)
+    hiera_nerf = _built_at_seed(
+        {"name": "hiera_nerf", "width": 8, "encoder": _SMALL_HIERA, "decoder": {"name": "hiera_ray_attention", "num_heads": 2}},
+        seed=0,
+    )
+
+    assert _same_weights(hiera_mlp.encoder, hiera_nerf.encoder)  # backbone and adapter
+
+
+def test_a_part_with_its_own_random_numbers_leaves_the_global_generator_alone():
+    from scene_recon.models.base import part_seed, seeded_random_numbers
+
+    torch.manual_seed(0)
+    before = torch.get_rng_state()
+    with seeded_random_numbers(part_seed("decoder")):
+        inside = torch.rand(3)
+    assert torch.equal(torch.get_rng_state(), before)
+    assert not torch.equal(inside, torch.rand(3))  # the part's numbers are not the global ones
 
 
 def test_points_no_photo_sees_still_get_a_finite_prediction(hiera_config: Config):

@@ -40,6 +40,7 @@ from scene_recon.data import TrainingSchedule
 from scene_recon.data.base import SceneDataset
 from scene_recon.environment import environment
 from scene_recon.evaluation import Evaluator, check_protocol_feasible, save_preview
+from scene_recon.models.base import pretrained_weights_of
 from scene_recon.models.contract import check_model_contract
 from scene_recon.optim import build_optimizer_and_scheduler
 from scene_recon.profiling import count_parameters, measure_rendering_speed
@@ -289,6 +290,7 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
             "evaluating it as built would measure untrained weights. Add the 'train' stage, or train the run first."
         )
     if "train" in stages:
+        pretrained_weights_of(model)  # raises if a part's record could not be stored in the checkpoint
         build_optimizer_and_scheduler(model, config.optimization)
 
 

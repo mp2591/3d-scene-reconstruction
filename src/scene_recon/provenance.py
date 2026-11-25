@@ -139,9 +139,11 @@ def check_checkpoint_is_compatible(checkpoint_path: Path) -> None:
     if version < COMPATIBILITY_VERSION:
         raise ConfigError(
             f"{checkpoint_path} was written by an older version of the code (compatibility version {version}, "
-            f"the code is at {COMPATIBILITY_VERSION}). Since then the code uses trained weights differently, so "
-            "this checkpoint would give wrong results; COMPATIBILITY_VERSION in scene_recon/checkpoints.py "
-            f"says what changed. Train it again: delete {checkpoint_path.parent} or change experiment.run_name."
+            f"the code is at {COMPATIBILITY_VERSION}). Since then the code uses or trains weights differently, "
+            "so this checkpoint is no longer what its config describes; COMPATIBILITY_VERSION in "
+            "scene_recon/checkpoints.py says what changed. Train it again under a new name: another "
+            "experiment.run_name for a single run, "
+            "or another suite_name (or run name) in the suite file for a suite."
         )
     raise ConfigError(
         f"{checkpoint_path} was written by a newer version of the code (compatibility version {version}, "

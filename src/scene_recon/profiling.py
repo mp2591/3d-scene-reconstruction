@@ -54,15 +54,17 @@ def measure_rendering_speed(
             costs (memory allocation, CUDA kernel selection) are not counted.
 
     Returns:
-        ``encode_seconds``, ``seconds_per_frame``, ``frames_per_second`` and,
-        on a GPU, ``peak_memory_gb``: the most GPU memory in use while
-        rendering a frame (``None`` on the CPU).
+        ``encode_seconds``, ``seconds_per_frame``, ``frames_per_second``, and
+        two GPU memory peaks while rendering frames, in GB (``None`` on the
+        CPU): ``peak_memory_allocated_gb``, held by tensors, and
+        ``peak_memory_reserved_gb``, held by PyTorch from the driver, which
+        includes memory kept for reuse.
 
     Raises:
-        RuntimeError: If rendering needed more memory than the GPU has. Some
-            drivers (on Windows) then move memory to the computer's main
-            memory instead of failing, which makes rendering many times
-            slower, so the measured speed would be wrong.
+        RuntimeError: If rendering filled the GPU's memory. Some drivers (on
+            Windows) then move memory to the computer's main memory instead
+            of failing, which makes rendering several times slower, so the
+            measured speed would be wrong.
     """
     was_training = model.training
     model.eval()
@@ -84,39 +86,70 @@ def measure_rendering_speed(
         renderer.render_images(model, scene_encoding, target_view)
     _wait_for_gpu(device)
     seconds_per_frame = (time.perf_counter() - start) / num_frames
-    peak_memory_gb = _check_memory_fits(device, renderer)
+    memory = _check_memory_fits(device, renderer)
 
     model.train(was_training)
     return {
         "encode_seconds": encode_seconds,
         "seconds_per_frame": seconds_per_frame,
         "frames_per_second": 1.0 / seconds_per_frame,
-        "peak_memory_gb": peak_memory_gb,
+        "peak_memory_allocated_gb": memory["allocated"] / 1e9 if memory else None,
+        "peak_memory_reserved_gb": memory["reserved"] / 1e9 if memory else None,
     }
 
 
 def _start_counting_memory(device: torch.device) -> None:
+    """Release memory PyTorch keeps for reuse, so that the peaks count rendering alone."""
     if device.type == "cuda":
+        torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats(device)
 
 
-def _check_memory_fits(device: torch.device, renderer: VolumeRenderer) -> float | None:
-    """The peak GPU memory of the rendered frames in GB, after checking it fitted on the GPU."""
+MIN_FREE_GPU_MEMORY = 0.02
+"""Share of the GPU's memory that must still be free after the timed frames.
+
+Measured on an RTX 4090 (22.5 GB) under Windows, at 128x128 with two source
+views: at 2048 rays per chunk PyTorch reserved 5.8 GB and 15.1 GB stayed
+free; at 8192 it reserved 22.9 GB (tensors used only 13.9 GB of it), nothing
+stayed free, the driver moved the rest to main memory and the frame rate fell
+from 0.93 to 0.39. Memory used by other programs counts too, so the check
+uses what the driver reports as free, not only what PyTorch reserved.
+"""
+
+
+def _check_memory_fits(device: torch.device, renderer: VolumeRenderer) -> dict[str, int] | None:
+    """The GPU memory of the rendered frames (see ``gpu_memory``), after checking that it fitted on the GPU."""
     if device.type != "cuda":
         return None
-    peak, total = gpu_memory_bytes(device)
-    if peak > total:
+    memory = gpu_memory(device)
+    if memory["reserved"] > memory["total"] or memory["free"] < MIN_FREE_GPU_MEMORY * memory["total"]:
         raise RuntimeError(
-            f"Rendering a frame needed {peak / 1e9:.1f} GB, more than the {total / 1e9:.1f} GB of {device}, so "
-            "the measured speed would be wrong. Lower renderer.ray_chunk_size (now "
-            f"{renderer.settings.ray_chunk_size}) for every run of the suite."
+            f"Rendering filled the memory of {device}: PyTorch reserved {memory['reserved'] / 1e9:.1f} GB of "
+            f"{memory['total'] / 1e9:.1f} GB, and {memory['free'] / 1e9:.1f} GB stayed free. Part of it may have "
+            "been moved to main memory, so the measured speed would be wrong. Lower renderer.ray_chunk_size "
+            f"(now {renderer.settings.ray_chunk_size}) for every run of the suite, or close other programs "
+            "that use the GPU."
         )
-    return peak / 1e9
+    return memory
 
 
-def gpu_memory_bytes(device: torch.device) -> tuple[int, int]:
-    """The most memory PyTorch had in use on a GPU since it was last reset, and the GPU's total memory."""
-    return torch.cuda.max_memory_allocated(device), torch.cuda.get_device_properties(device).total_memory
+def gpu_memory(device: torch.device) -> dict[str, int]:
+    """In bytes: the most memory PyTorch held on a GPU since it was last reset, and what is left now.
+
+    * ``allocated``: the peak held by tensors;
+    * ``reserved``: the peak PyTorch held from the driver, including memory
+      kept for reuse;
+    * ``free``: what the driver reports as free now, after the other
+      programs on the GPU and the memory PyTorch still holds;
+    * ``total``: the GPU's memory.
+    """
+    free, total = torch.cuda.mem_get_info(device)
+    return {
+        "allocated": torch.cuda.max_memory_allocated(device),
+        "reserved": torch.cuda.max_memory_reserved(device),
+        "free": free,
+        "total": total,
+    }
 
 
 def _wait_for_gpu(device: torch.device) -> None:

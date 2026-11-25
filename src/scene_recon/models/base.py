@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Iterator, Mapping
@@ -133,7 +134,9 @@ def build_encoder(section: Mapping[str, Any], model_name: str) -> nn.Module:
         model_name: The registered name of the model building it, for the error message.
 
     Raises:
-        ConfigError: If the encoder lacks one of the attributes.
+        ConfigError: If the encoder lacks one of the attributes, or its
+            ``adapter`` or ``pretrained_weights`` is not of the kind described
+            in ``ENCODER_ATTRIBUTES``.
     """
     encoder = ENCODERS.build(section)
     for attribute in ENCODER_ATTRIBUTES:
@@ -142,6 +145,12 @@ def build_encoder(section: Mapping[str, Any], model_name: str) -> nn.Module:
                 f"The encoder '{section['name']}' has no attribute '{attribute}', which {model_name} "
                 "needs (see docs/writing_a_model.md)."
             )
+    if encoder.adapter is not None and not isinstance(encoder.adapter, nn.Module):
+        raise ConfigError(
+            f"The encoder '{section['name']}' has an adapter of type {type(encoder.adapter).__name__}; "
+            "it must be a module (nn.Module) or None."
+        )
+    check_pretrained_weights(encoder.pretrained_weights, f"The encoder '{section['name']}'")
     return encoder
 
 
@@ -165,9 +174,16 @@ def encoder_parameter_groups(encoder: nn.Module) -> list[ParameterGroup]:
     ]
 
 
-def draw_seed() -> int:
-    """A seed for ``seeded_random_numbers``, drawn from PyTorch's global CPU generator (seeded by ``experiment.seed``)."""
-    return int(torch.randint(0, 2**62, ()).item())
+def part_seed(part: str) -> int:
+    """A seed for one part of a model, made from ``experiment.seed`` and the part's name.
+
+    It is computed from the seed PyTorch's global generator was seeded with
+    (``torch.initial_seed()``, which the pipeline sets to ``experiment.seed``),
+    so it draws no random numbers: the parts built before and after it start
+    exactly as they would without it.
+    """
+    text = f"{torch.initial_seed()}/{part}"
+    return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "little")
 
 
 @contextlib.contextmanager
@@ -176,8 +192,9 @@ def seeded_random_numbers(seed: int) -> Iterator[None]:
 
     Lets one part of a model start from the same random values in every model
     that shares it, however many random numbers the parts built before it
-    used. ``PixelAlignedNeRF`` builds its decoder this way. Models are built
-    on the CPU, so the GPU generators are left alone.
+    used: ``PixelAlignedNeRF`` builds its decoder inside
+    ``seeded_random_numbers(part_seed("decoder"))``. Models are built on the
+    CPU, so the GPU generators are left alone.
     """
     with torch.random.fork_rng(devices=[]):
         torch.default_generator.manual_seed(seed)
@@ -203,6 +220,35 @@ def describe_pretrained_weights(source: str, module: nn.Module) -> dict[str, str
     return {"source": source, "sha256": weights_sha256(module)}
 
 
+def check_pretrained_weights(value: Any, owner: str) -> None:
+    """Check that a ``pretrained_weights`` value is ``None`` or what ``describe_pretrained_weights`` returns.
+
+    Checkpoints store the value, and they are read back with
+    ``torch.load(..., weights_only=True)``, which only accepts plain types.
+
+    Args:
+        value: The ``pretrained_weights`` attribute.
+        owner: Who has the attribute, for the error message.
+
+    Raises:
+        ConfigError: If it is anything else.
+    """
+    if value is None:
+        return
+    valid = (
+        type(value) is dict
+        and value.keys() == {"source", "sha256"}
+        and type(value["source"]) is str
+        and type(value["sha256"]) is str
+        and re.fullmatch("[0-9a-f]{64}", value["sha256"]) is not None
+    )
+    if not valid:
+        raise ConfigError(
+            f"{owner} has pretrained_weights {value!r:.200}; it must be None, or the "
+            "{'source': ..., 'sha256': ...} that describe_pretrained_weights(source, module) returns."
+        )
+
+
 def pretrained_weights_of(model: nn.Module) -> dict[str, dict[str, str]]:
     """The pretrained weights a model starts from, by the name of the part that holds them.
 
@@ -210,19 +256,31 @@ def pretrained_weights_of(model: nn.Module) -> dict[str, dict[str, str]]:
     not ``None`` (every encoder made by ``build_encoder`` has the attribute),
     e.g. ``{"encoder": {"source": "weights/hiera_tiny_224_mae_in1k.pth",
     "sha256": "..."}}``. Empty if the whole model starts from random values.
+
+    Raises:
+        ConfigError: If a part's ``pretrained_weights`` is not of the kind
+            ``check_pretrained_weights`` accepts.
     """
-    return {
-        name: module.pretrained_weights
-        for name, module in model.named_modules()
-        if getattr(module, "pretrained_weights", None) is not None
-    }
+    weights = {}
+    for name, module in model.named_modules():
+        value = getattr(module, "pretrained_weights", None)
+        check_pretrained_weights(value, f"The model's part '{name}'")
+        if value is not None:
+            weights[name] = value
+    return weights
 
 
 def weights_sha256(module: nn.Module) -> str:
-    """SHA-256 of a module's saved state (parameters and persistent buffers): which weights it holds."""
+    """SHA-256 of a module's saved state (parameters and persistent buffers): which weights it holds.
+
+    The entries are taken in order of their names, so the hash does not depend
+    on the order the parts were created in, and their raw bytes are hashed,
+    so it works for every data type (``bfloat16`` too).
+    """
     digest = hashlib.sha256()
-    for name, tensor in module.state_dict().items():
-        values = tensor.detach().cpu().contiguous()
+    state = module.state_dict()
+    for name in sorted(state):
+        values = state[name].detach().cpu().contiguous()
         digest.update(f"{name}\t{values.dtype}\t{tuple(values.shape)}\n".encode())
-        digest.update(values.numpy().tobytes() if values.numel() else b"")
+        digest.update(values.flatten().view(torch.uint8).numpy().tobytes())
     return digest.hexdigest()
