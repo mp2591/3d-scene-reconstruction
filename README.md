@@ -99,8 +99,10 @@ Starting the same command again resumes an interrupted suite and skips
 everything that is already done.
 
 [`docs/suites.md`](docs/suites.md) describes the suite file and the outputs.
-[`configs/suites/proposal_template.yaml`](configs/suites/proposal_template.yaml)
-lays out the comparison from the proposal.
+[`configs/suites/proposal_comparison.yaml`](configs/suites/proposal_comparison.yaml)
+is the comparison from the proposal, ready to run. Before it,
+[`configs/suites/encoder_lr_pilot.yaml`](configs/suites/encoder_lr_pilot.yaml)
+chooses each pretrained encoder's learning rate on the validation split.
 
 ## Fair comparisons: what the pipeline guarantees
 
@@ -420,8 +422,10 @@ scene-recon train --config configs/smoke_test.yaml --set training.batch_size=8 e
    ```
 
 3. Write your models ([instructions above](#writing-a-network-instructions-for-model-authors)),
-   describe each in `configs/models/`, and list them as runs in a copy of
-   `configs/suites/proposal_template.yaml`.
+   describe each in `configs/models/`, and add them as runs to
+   `configs/suites/proposal_comparison.yaml` (a model with a pretrained
+   encoder also to `configs/suites/encoder_lr_pilot.yaml`, with the same
+   three learning rates as the others).
 
 ## Repository layout
 

@@ -9,8 +9,13 @@ scene-recon run-suite --config configs/suites/smoke_suite.yaml
 ```
 
 The smoke suite finishes in a few minutes on a CPU and is the quickest way to
-see what a suite produces. [`configs/suites/proposal_template.yaml`](../configs/suites/proposal_template.yaml)
-is the starting point for the comparison in the proposal.
+see what a suite produces. [`configs/suites/proposal_comparison.yaml`](../configs/suites/proposal_comparison.yaml)
+is the comparison in the proposal, ready to run; its comments give the time
+it takes and how to run it in two stages.
+[`configs/suites/encoder_lr_pilot.yaml`](../configs/suites/encoder_lr_pilot.yaml)
+runs before it: it trains each model briefly with three learning rates for
+its pretrained encoder and scores them on the validation split, so that the
+rates are chosen the same way for every model and never on the test split.
 
 ## The suite file
 
@@ -286,12 +291,17 @@ interval excludes zero *and* it is larger than the spread between seeds.
 before committing GPU days to it:
 
 ```bash
-scene-recon run-suite --config configs/suites/proposal_template.yaml --set training.num_steps=200 training.validate_every=100 evaluation.num_scenes=5 evaluation.num_target_views=10
+scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set training.num_steps=200 training.validate_every=100 evaluation.num_scenes=5 experiment.output_dir=runs/trial
 ```
 
-The trial writes into the same directory as the real suite would. Delete
-`runs/<suite_name>/` afterwards, or the real run will resume from the trial's
-checkpoints.
+Without `experiment.output_dir`, the trial writes into the same directory as
+the real suite would. Delete `runs/<suite_name>/` afterwards, or the real run
+will resume from the trial's checkpoints.
+
+Checkpoints are large (several hundred MB, rewritten every
+`training.checkpoint_every` steps). If the repository sits in a synced
+folder such as OneDrive, point `experiment.output_dir` outside it for real
+runs, or every checkpoint is uploaded.
 
 ## Comparing runs during training
 

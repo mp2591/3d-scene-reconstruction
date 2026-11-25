@@ -1,0 +1,99 @@
+# The comparison of the project proposal, ready to run. Each run is one
+# encoder-decoder combination. All runs are trained on the same data, one
+# after another, and scored the same way (docs/suites.md).
+#
+# Before the first real run:
+#   1. Choose each pretrained encoder's learning rate on the validation split
+#      with configs/suites/encoder_lr_pilot.yaml, and write the chosen rates
+#      into the runs below (1.0e-5 until then).
+#   2. Keep the outputs outside OneDrive, which would upload every checkpoint
+#      (several hundred MB, rewritten every 5,000 steps): add
+#      --set experiment.output_dir=<a folder outside OneDrive> to every command.
+#   3. Delete the outputs of any trial of this file, or the real run resumes
+#      from the trial's checkpoints.
+#
+# Fixed once a run has trained (changing one means training the run again
+# under a new name): the seed, the training data and batch settings, every
+# learning rate and its schedule, the renderer's sample counts, and the model.
+# Free to change later without retraining: training.num_steps (raise it to
+# continue training), evaluation, validation and profiling.
+#
+# Run it:
+#
+#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml
+#
+# On the RTX 4090 the three runs below take about 3.6 days of training
+# (0.24, 0.24 and 0.31 s per step, 400,000 steps each) and about 13 hours of
+# evaluation. To see results sooner, train in two stages. First:
+#
+#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml \
+#       --set training.num_steps=100000 evaluation.num_scenes=100
+#
+# (about 22 hours of training, then 2 hours of evaluation on 100 test scenes),
+# then the first command again: every run continues from step 100,000 and is
+# evaluated in full. The learning rate depends on optimization.decay_steps,
+# not on num_steps, so the result is the same as training 400,000 steps at once.
+#
+# Try the whole file quickly before the real run (delete the folder afterwards):
+#
+#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml \
+#       --set training.num_steps=200 training.validate_every=100 \
+#             evaluation.num_scenes=5 experiment.output_dir=<a scratch folder>
+#
+# The two baselines are commented out until the team adds their model files
+# (configs/models/*.yaml) and the networks they describe; uncomment each one
+# then. pixelnerf_resnet34 stays first, as the reference; until it exists the
+# reference is convnextv2_mlp. transnerf_unet is listed last, so that
+# uncommenting it first does not make it the reference. A baseline with a
+# pretrained encoder gets the same learning-rate pilot as the others.
+
+suite_name: proposal_comparison
+stages: [train, evaluate, profile]
+# One seed for now. Listing it keeps every run in <run>/seed_0/, so that more
+# seeds ([0, 1, 2]) can be added later without moving or retraining seed 0.
+seeds: [0]
+
+common:
+  base: [../base.yaml, ../data/srn_cars.yaml]
+  evaluation:
+    # Every test scene (704), but 10 of each scene's 250 views, evenly spread:
+    # about 13 hours for the three runs below instead of about two weeks. The
+    # report's confidence intervals are over scenes. pixelNeRF's benchmark
+    # renders every view; null does that (it re-evaluates, without retraining).
+    num_target_views: 10
+
+# The first run is the reference: every other run is compared with it scene by scene.
+runs:
+  # (1) Baseline pixelNeRF: ResNet-34 encoder, MLP decoder with average pooling over views.
+  #     Uncomment once configs/models/pixelnerf_resnet34.yaml exists.
+  # pixelnerf_resnet34:
+  #   base: ../models/pixelnerf_resnet34.yaml
+
+  # (2) Encoder ablations: the modern backbones with the same pixelNeRF-style
+  #     decoder (pixelnerf_mlp), so that only the encoder differs.
+  convnextv2_mlp:
+    base: ../models/convnextv2_mlp.yaml   # ConvNeXt V2-T, pretrained weights via timm
+    optimization:
+      group_overrides:
+        encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}   # pretrained weights; the new 1x1 adapter keeps the base rate
+
+  hiera_mlp:
+    base: ../models/hiera_mlp.yaml        # convnextv2_mlp with Hiera-T as the encoder; needs the
+    optimization:                         # Hiera-T weights (docs/hiera_nerf.md)
+      group_overrides:
+        encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
+
+  # (3) End-to-end modernised model (issue #5): Hiera-T encoder with the HieraNeRF
+  #     bridge and the Hiera-style attention decoder (docs/hiera_nerf.md). Like
+  #     hiera_mlp, it needs the Hiera-T weights at weights/hiera_tiny_224_mae_in1k.pth;
+  #     without them the suite stops before training anything.
+  hiera_nerf:
+    base: ../models/hiera_nerf.yaml
+    optimization:
+      group_overrides:
+        encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
+
+  # (4) Baseline TransNeRF: U-Net encoder, cross-view and ray attention decoders.
+  #     Uncomment once configs/models/transnerf_unet.yaml exists.
+  # transnerf_unet:
+  #   base: ../models/transnerf_unet.yaml

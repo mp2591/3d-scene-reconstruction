@@ -12,8 +12,12 @@
 #   integer       as the original SRN and pixelNeRF code reads them (centres at i);
 #                 shifts the principal point by half a pixel. Matches the original
 #                 rays exactly at the native 128x128 (see srn.py for resized images).
-# Which one matches the renders is not yet established; see the docstring of
-# src/scene_recon/data/srn.py for how to decide on your copy of the data.
+# half_integer is used: all 3,514 scenes store cx = cy = 64.0 for 128x128
+# images, the exact image centre in the pipeline's convention, where a
+# rendering camera without lens shift has its principal point. Read the
+# original way, the centre would sit half a pixel off. The choice is part of
+# the training data: a run trained with one value must be trained again to
+# change it. See the docstring of src/scene_recon/data/srn.py.
 
 data:
   train:

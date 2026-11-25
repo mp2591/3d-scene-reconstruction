@@ -736,13 +736,29 @@ def test_a_profiling_failure_after_a_finished_evaluation_keeps_the_comparison(tm
     assert {row["run"] for row in _comparison_rows(suite)} == {"wide"}
 
 
-def test_the_proposal_template_loads_as_shipped():
-    """Review F1: the complete template must load, with the baselines waiting in comments until they exist."""
-    template = CONFIG_DIR / "suites" / "proposal_template.yaml"
+def test_the_proposal_comparison_loads_as_shipped():
+    """Review F1: the complete suite must load, with the baselines waiting in comments until they exist."""
+    path = CONFIG_DIR / "suites" / "proposal_comparison.yaml"
 
-    suite = load_suite(template)
+    suite = load_suite(path)
 
-    assert list(suite.runs) == ["convnextv2_mlp", "hiera_mlp", "hiera_nerf"]
-    text = template.read_text(encoding="utf-8")
+    assert list(suite.grouped_runs()) == ["convnextv2_mlp", "hiera_mlp", "hiera_nerf"]
+    assert list(suite.runs) == ["convnextv2_mlp/seed_0", "hiera_mlp/seed_0", "hiera_nerf/seed_0"]
+    text = path.read_text(encoding="utf-8")
     # Review F52: uncommenting transnerf_unet alone keeps convnextv2_mlp the reference.
     assert text.index("  # pixelnerf_resnet34:") < text.index("  convnextv2_mlp:") < text.index("  # transnerf_unet:")
+
+
+def test_the_learning_rate_pilot_never_scores_on_the_test_split_and_treats_every_model_alike():
+    pilot = load_suite(CONFIG_DIR / "suites" / "encoder_lr_pilot.yaml")
+    comparison = load_suite(CONFIG_DIR / "suites" / "proposal_comparison.yaml")
+    test_split = next(iter(comparison.runs.values())).data["test"]["split_dir"]
+
+    rates: dict[str, set[float]] = {}
+    for name, config in pilot.runs.items():
+        assert config.data["test"]["split_dir"] == config.data["val"]["split_dir"] != test_split
+        model = name.rsplit("_lr", 1)[0]
+        rates.setdefault(model, set()).add(config.raw["optimization"]["group_overrides"]["encoder"]["learning_rate"])
+
+    assert set(rates) == set(comparison.grouped_runs())  # every model of the comparison is in the pilot
+    assert all(candidates == {1e-5, 3e-5, 1e-4} for candidates in rates.values())
