@@ -11,11 +11,15 @@ scene-recon run-suite --config configs/suites/smoke_suite.yaml
 The smoke suite finishes in a few minutes on a CPU and is the quickest way to
 see what a suite produces. [`configs/suites/proposal_comparison.yaml`](../configs/suites/proposal_comparison.yaml)
 is the comparison in the proposal, ready to run; its comments give the time
-it takes and how to run it in two stages.
+it takes.
 [`configs/suites/encoder_lr_pilot.yaml`](../configs/suites/encoder_lr_pilot.yaml)
 runs before it: it trains each model briefly with three learning rates for
 its pretrained encoder and scores them on the validation split, so that the
 rates are chosen the same way for every model and never on the test split.
+`scene-recon choose-encoder-rates` then writes the chosen rates into the
+comparison and copies the chosen pilot runs into it, which continue them
+(`src/scene_recon/pilot.py`). `scripts/run_comparison.sh` runs all of it in
+order ([running_on_a_gpu_server.md](running_on_a_gpu_server.md)).
 
 ## The suite file
 

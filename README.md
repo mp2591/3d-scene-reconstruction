@@ -68,7 +68,7 @@ Outputs are written to `runs/<run_name>/`:
 
 | File                  | Content                                                              |
 |-----------------------|----------------------------------------------------------------------|
-| `config.yaml`         | The complete config of the run, with all inheritance resolved.       |
+| `config.yaml`         | The complete config of the run as last trained or evaluated, with all inheritance resolved. |
 | `checkpoints/last.pt` | Model, optimiser and scheduler state.                                |
 | `tensorboard/`        | Loss curves, learning rates, validation metrics and renders.         |
 | `evaluation.json`     | Test metrics, overall and per scene (`evaluate`).                    |
@@ -103,6 +103,11 @@ everything that is already done.
 is the comparison from the proposal, ready to run. Before it,
 [`configs/suites/encoder_lr_pilot.yaml`](configs/suites/encoder_lr_pilot.yaml)
 chooses each pretrained encoder's learning rate on the validation split.
+On a Linux GPU server (for example a GH200), two scripts do all of it:
+`scripts/setup_linux.sh` prepares the machine and
+`scripts/run_comparison.sh` runs the pilot, chooses the rates and runs the
+comparison, unattended. See
+[`docs/running_on_a_gpu_server.md`](docs/running_on_a_gpu_server.md).
 
 ## Fair comparisons: what the pipeline guarantees
 
@@ -441,6 +446,10 @@ docs/
   configuration.md       How config files are composed and validated.
   suites.md              Running and comparing many experiments from one file.
   hiera_nerf.md          The Hiera-T + HieraNeRF model.
+  running_on_a_gpu_server.md   Setting up a Linux GPU machine and running the whole comparison.
+scripts/
+  setup_linux.sh         Prepares a Linux GPU machine: environment, weights, data, tests.
+  run_comparison.sh      The pilot, the choice of learning rates and the comparison, unattended.
 src/scene_recon/
   cli.py                 Command-line entry point.
   config.py              Config loading and validation.
@@ -461,6 +470,7 @@ src/scene_recon/
   stages.py              Train, evaluate and profile one run (used by every command).
   run_files.py           Where each output of a run is stored.
   suite.py               Loading a suite file and running its experiments in order.
+  pilot.py               Choosing encoder learning rates from the pilot, and continuing the chosen runs.
   fairness.py            What must match across runs, and what differs.
   provenance.py          Which checkpoint and settings produced a result, and whether it is still valid.
   comparison.py          Spread over seeds, and paired per-scene differences between runs.
