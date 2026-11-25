@@ -40,7 +40,9 @@
 # the same training data and learning rate at every step as one 400,000-step
 # run (the learning rate depends on optimization.decay_steps, not on
 # num_steps), and is evaluated again in full. On a GPU the weights can still
-# differ in their last digits, as between any two GPU runs.
+# differ in their last digits, as between any two GPU runs. The speed measured
+# after the first stage is kept: it depends on the network and the device, not
+# on the trained weights.
 #
 # Try the whole file quickly before the real run (delete the folder afterwards):
 #

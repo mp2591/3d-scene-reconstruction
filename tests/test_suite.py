@@ -764,18 +764,21 @@ def test_the_learning_rate_pilot_never_scores_on_the_test_split_and_treats_every
         return identity
 
     # Only a run whose encoder has a learning rate of its own (a pretrained encoder) is tuned.
-    tuned = {name: config for name, config in comparison.runs.items() if "encoder" in config.optimization.group_overrides}
+    # A run has one config per seed of the comparison; a pilot run must train like one of them.
+    tuned = {
+        name: [training_without_encoder_rate(config) for config in seeds.values()]
+        for name, seeds in comparison.grouped_runs().items()
+        if "encoder" in next(iter(seeds.values())).optimization.group_overrides
+    }
     assert tuned, "the comparison has no pretrained encoder to tune"
     rates: dict[str, list[float]] = {name: [] for name in tuned}
     for name, config in pilot.runs.items():
         assert config.data["test"]["split_dir"] == config.data["val"]["split_dir"] != test_split, name
-        matches = [
-            run
-            for run, comparison_config in tuned.items()
-            if training_without_encoder_rate(comparison_config) == training_without_encoder_rate(config)
-        ]
+        training = training_without_encoder_rate(config)
+        matches = [run for run, trainings in tuned.items() if training in trainings]
         assert len(matches) == 1, f"{name} trains like {len(matches)} runs of the comparison, not exactly one"
         rates[matches[0]].append(training_identity(config.raw)[encoder_rate])
 
+    assert len({config.experiment.seed for config in pilot.runs.values()}) == 1, "the pilot runs use different seeds"
     # Every tuned run gets each candidate rate exactly once: the same budget for every model.
     assert {run: sorted(found) for run, found in rates.items()} == {run: [1e-5, 3e-5, 1e-4] for run in tuned}
