@@ -5,23 +5,38 @@
 # candidates, steps and data. Only the encoder's rate is tried; everything
 # else learns at the base rate of base.yaml (1e-4), as in pixelNeRF.
 #
-#   scene-recon run-suite --config configs/suites/encoder_lr_pilot.yaml --set experiment.output_dir=C:/scene-recon-runs
+# Each pilot run is the beginning of a real run: apart from the encoder's
+# rate it trains exactly like its run in proposal_comparison.yaml, with the
+# same learning-rate schedule (optimization.decay_steps below is the real
+# run's). The chosen run is therefore continued by the comparison, not
+# trained again. tests/test_suite.py checks that the two files fit, and so
+# does `scene-recon choose-encoder-rates --check-only` before a pilot starts.
 #
-# (one line, so it can be pasted into PowerShell; any folder outside OneDrive
-# will do). About 16 hours on the RTX 4090: 13 of training (9 runs of 20,000
-# steps) and 3 of evaluation.
+# scripts/run_comparison.sh runs this file, chooses the rates and starts the
+# comparison (docs/running_on_a_gpu_server.md). By hand, each command on one
+# line (any output folder outside OneDrive will do; use the same for both):
 #
-# How to choose, decided before running: for each model, average psnr_1v and
-# psnr_2v of summary.csv (unrounded; summary.md rounds them), find the best
-# average, and take the lowest rate whose average is within 0.1 dB of it: a
-# lower rate changes the pretrained weights less. Write the chosen rates into
-# proposal_comparison.yaml. A baseline with a pretrained encoder, added
-# later, gets the same three runs. The comparison is then one of models each
-# tuned on the validation split with the same budget.
+#   scene-recon run-suite --config configs/suites/encoder_lr_pilot.yaml --set experiment.output_dir=runs
+#   scene-recon choose-encoder-rates --pilot configs/suites/encoder_lr_pilot.yaml --comparison configs/suites/proposal_comparison.yaml --set experiment.output_dir=runs
 #
-# 20,000 steps are 5% of the real run, so a rate that starts slowly may still
-# win over 400,000 steps. The pilot ranks the rates; it does not predict the
-# final scores.
+# About 7.5 hours on an RTX 4090: 6.5 of training (9 runs of 10,000 steps)
+# and 1 of evaluation.
+#
+# How the rate is chosen, decided before running (src/scene_recon/pilot.py):
+# for each model, average the mean PSNR of the two evaluation protocols (1
+# and 2 input views), find the best average, and take the lowest rate whose
+# average is within 0.1 dB of it: a lower rate changes the pretrained weights
+# less. The command writes the chosen rates into proposal_comparison.yaml,
+# copies the chosen runs' checkpoints into the comparison's folder, and saves
+# the scores as chosen_rates.json next to this suite's report. A baseline with
+# a pretrained encoder, added later, gets the same three runs. The comparison
+# is then one of models each tuned on the validation split with the same
+# budget.
+#
+# 10,000 steps are a tenth of the real run, so a rate that starts slowly may
+# still win over 100,000 steps. The pilot ranks the rates; it does not
+# predict the final scores. The GPU hours of the two runs not chosen per model
+# are the pilot's own cost; summary.csv of this suite lists them.
 
 suite_name: encoder_lr_pilot
 stages: [train, evaluate]
@@ -32,10 +47,12 @@ common:
     test:
       split_dir: data/srn_cars/cars_val   # the validation split stands in for the test split
   training:
-    num_steps: 20000
+    num_steps: 10000
+  optimization:
+    decay_steps: 100000        # the real run's schedule (proposal_comparison.yaml), not the pilot's length
   evaluation:
     num_scenes: 100            # the first 100 of the 352 validation scenes
-    num_target_views: 5        # evenly spread over each scene's views
+    num_target_views: 2        # evenly spread over each scene's views, the same ones for every rate
 
 runs:
   convnextv2_mlp_lr1e-5:

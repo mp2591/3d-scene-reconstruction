@@ -46,7 +46,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from scene_recon.build import build_dataset, build_seeded_model, configured_float32_matmul_precision, resolve_device
 from scene_recon.checkpoints import (
@@ -157,10 +157,20 @@ def check_training_data_unchanged(checkpoint_path: Path, train_scenes: SceneData
     The config can name the same directory while its content changed (e.g.
     a re-extracted or resized copy of the dataset); the fingerprint notices.
     """
+    check_training_fingerprint(checkpoint_path, train_scenes.fingerprint)
+
+
+def check_training_fingerprint(checkpoint_path: Path, current_fingerprint: Callable[[], dict]) -> None:
+    """``check_training_data_unchanged`` for a training split whose fingerprint is given.
+
+    For checking many checkpoints against one split: its fingerprint, which
+    reads every file's metadata, can then be computed once. It is asked for
+    only if the checkpoint records the data it was trained on.
+    """
     trained_on = read_checkpoint_training_data(checkpoint_path)
     if trained_on is None:  # a checkpoint from before fingerprints were recorded
         return
-    current = _canonical(train_scenes.fingerprint())
+    current = _canonical(current_fingerprint())
     if set(trained_on) != set(current):
         # E.g. an SRN checkpoint from before content hashing ("files_sha256"):
         # its fingerprint cannot tell whether the content is the same, so the

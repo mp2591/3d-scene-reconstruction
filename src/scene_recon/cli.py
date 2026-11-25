@@ -11,6 +11,11 @@ Command for a set of runs (``--config`` is a suite file):
 
     run-suite    Train, evaluate and profile every run of a suite, then write a comparison report.
 
+Command for the learning-rate pilot (see ``scene_recon.pilot``):
+
+    choose-encoder-rates  Choose each encoder's learning rate from the pilot's scores, write the
+                          rates into the comparison's suite file, and continue the chosen runs.
+
 Any config value can be changed from the command line with ``--set``, e.g.
 ``--set training.batch_size=8 experiment.run_name=my_run``. For ``run-suite``
 the overrides apply to every run of the suite.
@@ -25,6 +30,7 @@ from typing import Sequence
 
 from scene_recon.config import load_config
 from scene_recon.models.contract import ModelContractError
+from scene_recon.pilot import check_pilot, choose_and_continue
 from scene_recon.registry import ConfigError
 from scene_recon.stages import STAGES, check_model, run_evaluation, run_profiling, run_training
 from scene_recon.run_files import SuiteFiles
@@ -58,9 +64,8 @@ def _build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
 
     # Options shared by every command.
-    shared = argparse.ArgumentParser(add_help=False)
-    shared.add_argument("--config", required=True, help="Path to a YAML config file.")
-    shared.add_argument(
+    overrides = argparse.ArgumentParser(add_help=False)
+    overrides.add_argument(
         "--set",
         nargs="*",
         action="extend",  # every --set counts: adding one never drops the overrides of another
@@ -68,6 +73,8 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="KEY=VALUE",
         help="Override config values, e.g. training.batch_size=8. May be given more than once; later values win.",
     )
+    shared = argparse.ArgumentParser(add_help=False, parents=[overrides])
+    shared.add_argument("--config", required=True, help="Path to a YAML config file.")
 
     # Options shared by the commands that work on a trained model.
     uses_checkpoint = argparse.ArgumentParser(add_help=False)
@@ -118,6 +125,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     suite.set_defaults(run=_run_suite)
 
+    choose = commands.add_parser(
+        "choose-encoder-rates",
+        parents=[overrides],
+        help="Choose each encoder's learning rate from the pilot and continue the chosen runs.",
+    )
+    choose.add_argument("--pilot", required=True, type=Path, help="The pilot's suite file.")
+    choose.add_argument("--comparison", required=True, type=Path, help="The comparison's suite file.")
+    choose.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Only check what can be checked before the pilot trains (see scene_recon.pilot); choose nothing.",
+    )
+    choose.set_defaults(run=_choose_encoder_rates)
+
     return parser
 
 
@@ -164,6 +185,15 @@ def _run_suite(args: argparse.Namespace) -> None:
     if problems:
         raise SystemExit(f"The suite did not finish cleanly (details in {files.log}):\n" + "\n".join(problems))
     logger.info("Suite finished. Report: %s", files.summary_markdown)
+
+
+def _choose_encoder_rates(args: argparse.Namespace) -> None:
+    if args.check_only:
+        pilot, comparison = load_suite(args.pilot, args.set), load_suite(args.comparison, args.set)
+        tuned = check_pilot(pilot, comparison, args.comparison, args.set)
+        logger.info("The pilot fits the comparison: it tunes %s.", ", ".join(run.name for run in tuned))
+        return
+    choose_and_continue(args.pilot, args.comparison, args.set)
 
 
 if __name__ == "__main__":

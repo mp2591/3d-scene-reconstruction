@@ -36,7 +36,7 @@ from scene_recon.build import (
     resolve_device,
 )
 from scene_recon.checkpoints import TrainingProgress, load_checkpoint
-from scene_recon.config import Config
+from scene_recon.config import Config, save_config
 from scene_recon.data import TrainingSchedule
 from scene_recon.data.base import SceneDataset
 from scene_recon.environment import environment, evaluation_software
@@ -55,7 +55,7 @@ from scene_recon.provenance import (
 )
 from scene_recon.registry import ConfigError
 from scene_recon.rendering import VolumeRenderer
-from scene_recon.run_files import RunFiles, write_json
+from scene_recon.run_files import RunFiles, write_atomically, write_json
 from scene_recon.training import Trainer, check_training_settings
 
 logger = logging.getLogger(__name__)
@@ -72,7 +72,10 @@ def run_training(config: Config, resume: bool = False) -> None:
 def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[str, Any]:
     """Evaluate a trained model on the test split with every configured source-view set.
 
-    Writes ``evaluation.json`` and the preview renders into the run directory.
+    Writes ``evaluation.json`` and the preview renders into the run directory,
+    and saves the config it was evaluated with as the run's ``config.yaml``, so
+    that evaluating with that file repeats this evaluation (e.g. on every test
+    scene, after training was last run on fewer).
 
     A model without trainable parameters (frozen, or analytic) cannot be
     trained, so it never has a checkpoint: it is evaluated as built, and the
@@ -155,6 +158,7 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
         "protocols": protocols,
     }
     write_json(report, files.evaluation)
+    write_atomically(files.config, lambda path: save_config(config, path))
     logger.info("Wrote %s", files.evaluation)
     return report
 

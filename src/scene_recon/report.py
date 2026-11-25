@@ -305,7 +305,7 @@ _RUNTIME_LABELS = {"python": "Python", "cuda": "CUDA", "device_type": "Device ty
 _RUNTIME_FIELDS = tuple(_RUNTIME_LABELS)
 
 
-def _read_software(record) -> tuple[dict | None, list[str]]:
+def read_software(record) -> tuple[dict | None, list[str]]:
     """An evaluation's saved software, checked, or ``None`` and every reason it cannot be compared.
 
     The reasons are keys of ``SOFTWARE_PROBLEMS``, in its order; the list is empty for a readable record.
@@ -366,7 +366,7 @@ def _collect(key: str, config: Config, failed: bool, training_requested: bool) -
 
     evaluation = evaluation_status(config)
     if evaluation.is_current:
-        result.evaluation_software, result.software_problems = _read_software(evaluation.content.get("software"))
+        result.evaluation_software, result.software_problems = read_software(evaluation.content.get("software"))
         for protocol in evaluation.content["protocols"]:
             count = len(protocol["source_views"])
             result.metrics[count] = protocol["mean"]

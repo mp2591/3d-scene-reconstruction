@@ -105,8 +105,10 @@ and all problems are reported at once:
 
 ## Reproducing a run
 
-Each run saves its fully merged config to `runs/<run_name>/config.yaml`. That
-file has no `base` and can be passed to `--config` directly.
+Each run saves its fully merged config to `runs/<run_name>/config.yaml` when
+it trains and when it is evaluated, so the file holds the settings of its
+latest evaluation too. That file has no `base` and can be passed to
+`--config` directly.
 
 ## No hidden defaults
 

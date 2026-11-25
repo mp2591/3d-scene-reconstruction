@@ -2,52 +2,45 @@
 # encoder-decoder combination. All runs are trained on the same data, one
 # after another, and scored the same way (docs/suites.md).
 #
-# Before the first real run:
-#   1. Choose each pretrained encoder's learning rate on the validation split
-#      with configs/suites/encoder_lr_pilot.yaml, and write the chosen rates
-#      into the runs below (1.0e-5 until then).
-#   2. Keep the outputs outside OneDrive, which would upload every checkpoint
-#      (several hundred MB, rewritten every 5,000 steps): every command below
-#      sets experiment.output_dir to C:/scene-recon-runs. Any folder outside
-#      OneDrive will do; use the same one for both stages of the real run.
-#   3. If a trial of this file wrote into that folder, delete its
-#      proposal_comparison/ directory first, or the real run resumes from the
-#      trial's checkpoints.
+# Run it with scripts/run_comparison.sh, which does everything in order and
+# can be left alone for two days (docs/running_on_a_gpu_server.md):
+#   1. a short trial of every run, in a folder of its own;
+#   2. the learning-rate pilot (encoder_lr_pilot.yaml), on the validation split;
+#   3. `scene-recon choose-encoder-rates`: writes each encoder's chosen rate
+#      into the runs below (1.0e-5 until then) and copies the chosen pilot
+#      runs into this suite's folder, where they continue from step 10,000;
+#   4. this file, scored on the first 100 test scenes, so that every run has
+#      results as early as possible;
+#   5. this file again, scored on every test scene.
+#
+# The budget is 100,000 steps per run (a quarter of the proposal's 400,000),
+# with the learning rate falling tenfold over them. On an RTX 4090 the five
+# steps take about 42 hours: 7.5 for the pilot, 20 for the rest of the
+# training, 2 for the first scores and 12.5 for the full ones. A GH200 should
+# be faster. Asking for more steps later (training.num_steps) continues every
+# run; the learning rate keeps falling past optimization.decay_steps.
+#
+# Keep the outputs outside OneDrive, which would upload every checkpoint
+# (several hundred MB, rewritten every 5,000 steps). If a trial of this file
+# wrote into the real output folder, delete its proposal_comparison/
+# directory first, or the real run resumes from the trial's checkpoints.
 #
 # Fixed once a run has trained: every setting that is not listed in
 # CONTINUATION_SETTINGS in src/scene_recon/provenance.py, for example the
-# seed, the training data and batch settings, the loss, the optimiser and
-# every learning rate, the renderer's sample counts and the model. Changing
-# one means training the run again under a new name. Free to change later:
-# training.num_steps (raise it to continue training), evaluation, validation
-# and profiling.
+# seed, the training data and batch settings, the loss, the optimiser, every
+# learning rate and its schedule, the renderer's sample counts and the model.
+# Changing one means training the run again under a new name. Free to change
+# later: training.num_steps, evaluation, validation and profiling. The pilot
+# must train like this file (see encoder_lr_pilot.yaml): change a training
+# setting in both, before the pilot starts.
 #
-# Each command is one line, so it can be pasted into PowerShell as it is.
+# By hand, each command on one line, after the pilot and the choice:
 #
-# Run it:
+#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set experiment.output_dir=runs
 #
-#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set experiment.output_dir=C:/scene-recon-runs
+# A quick try of this file alone, in a folder that can be deleted afterwards:
 #
-# On the RTX 4090 the three runs below take about 3.7 days of training
-# (0.24, 0.24 and 0.31 s per step, 400,000 steps each) and about 13 hours of
-# evaluation. To see results sooner, train in two stages. First (about 22
-# hours of training, then 2 hours of evaluation on the first 100 test scenes):
-#
-#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set training.num_steps=100000 evaluation.num_scenes=100 experiment.output_dir=C:/scene-recon-runs
-#
-# Use the first stage's scores to check progress, not to change settings.
-# Then the first command again: every run continues from step 100,000 with
-# the same training data and learning rate at every step as one 400,000-step
-# run (the learning rate depends on optimization.decay_steps, not on
-# num_steps), and is evaluated again in full. On a GPU the weights can still
-# differ in their last digits, as between any two GPU runs. The speed measured
-# after the first stage is kept: it depends on the network and the device, not
-# on the trained weights.
-#
-# Try the whole file quickly before the real run, in a folder of its own that
-# can be deleted afterwards:
-#
-#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set training.num_steps=200 training.validate_every=100 evaluation.num_scenes=5 experiment.output_dir=C:/scene-recon-trial
+#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set training.num_steps=200 training.validate_every=100 evaluation.num_scenes=5 experiment.output_dir=runs/trial
 #
 # The two baselines are commented out until the team adds their model files
 # (configs/models/*.yaml) and the networks they describe; uncomment each one
@@ -64,12 +57,17 @@ seeds: [0]
 
 common:
   base: [../base.yaml, ../data/srn_cars.yaml]
+  training:
+    num_steps: 100000
+  optimization:
+    decay_steps: 100000      # the learning rate falls tenfold over the 100,000 steps
   evaluation:
     # Every test scene (704), but 10 of each scene's views, evenly spread:
-    # about 13 hours for the three runs below instead of about two weeks. The
-    # report's confidence intervals are over scenes. pixelNeRF's benchmark
-    # renders every view that is not a source view (250 with one source view,
-    # 249 with two); null does that (it evaluates again, without retraining).
+    # about 12.5 hours for the three runs below on an RTX 4090 instead of about
+    # two weeks. The report's confidence intervals are over scenes.
+    # pixelNeRF's benchmark renders every view that is not a source view (250
+    # with one source view, 249 with two); null does that (it evaluates again,
+    # without retraining).
     num_target_views: 10
 
 # The first run is the reference: every other run is compared with it scene by scene.

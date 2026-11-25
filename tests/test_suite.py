@@ -10,8 +10,9 @@ import pytest
 import yaml
 
 from scene_recon import suite as suite_module
+from scene_recon.pilot import pair_pilot_with_comparison
 from scene_recon.config import flatten_settings, setting_in_sections
-from scene_recon.provenance import CONTINUATION_SETTINGS, training_identity
+from scene_recon.provenance import CONTINUATION_SETTINGS
 from scene_recon.registry import ConfigError
 from scene_recon.report import write_report
 from scene_recon.run_files import RunFiles
@@ -155,6 +156,7 @@ def test_stages_always_run_in_pipeline_order(tmp_path: Path):
         {"profiling": {"num_frames": 2}},
         {"data": {"test": {"num_scenes": 3}}},
         {"renderer": {"ray_chunk_size": 512}},  # rendering speed depends on it (review B(c))
+        {"experiment": {"float32_matmul_precision": "highest"}},  # so does it on this
     ],
 )
 def test_runs_must_be_measured_identically(tmp_path: Path, run_change: dict):
@@ -755,40 +757,34 @@ def test_the_learning_rate_pilot_never_scores_on_the_test_split_and_treats_every
     """Reviews F111-F113: a pilot run is matched to a comparison run by its training, not by its name."""
     pilot = load_suite(CONFIG_DIR / "suites" / "encoder_lr_pilot.yaml")
     comparison = load_suite(CONFIG_DIR / "suites" / "proposal_comparison.yaml")
-    test_split = next(iter(comparison.runs.values())).data["test"]["split_dir"]
-    encoder_rate = "optimization.group_overrides.encoder.learning_rate"
 
-    def training_without_encoder_rate(config):
-        # Everything that shapes the trained weights: the model, the seed, the data, the optimiser, ...
-        identity = training_identity(config.raw)
-        identity.pop(encoder_rate, None)  # a comparison run may leave its encoder at the base rate
-        return identity
+    # Each pilot run trains like exactly one comparison run apart from the encoder's rate, so the
+    # comparison can continue it, and is scored on the validation split (checked by the same code
+    # that `scene-recon choose-encoder-rates --check-only` runs before a pilot starts).
+    tuned = {run.name: run for run in pair_pilot_with_comparison(pilot, comparison)}
 
-    # A run has one config per seed of the comparison; a pilot run must train like one of them.
-    tuned = {
-        name: [training_without_encoder_rate(config) for config in seeds.values()]
+    # Every comparison run with a pretrained encoder is tuned.
+    pretrained = [
+        name
         for name, seeds in comparison.grouped_runs().items()
         if _starts_from_pretrained_weights(next(iter(seeds.values())).model["encoder"])
-    }
-    assert tuned, "the comparison has no pretrained encoder to tune"
-    rates: dict[str, list[float]] = {name: [] for name in tuned}
-    for name, config in pilot.runs.items():
-        assert config.data["test"]["split_dir"] == config.data["val"]["split_dir"] != test_split, name
-        training = training_without_encoder_rate(config)
-        matches = [run for run, trainings in tuned.items() if training in trainings]
-        assert len(matches) == 1, f"{name} trains like {len(matches)} runs of the comparison, not exactly one"
-        rate = training_identity(config.raw)[encoder_rate]
-        # summary.csv names each score by its run, so the name must tell the truth.
-        assert name == f"{matches[0]}_lr{_rate_label(rate)}", f"{name} trains {matches[0]} at {rate}"
-        rates[matches[0]].append(rate)
+    ]
+    assert pretrained and sorted(tuned) == sorted(pretrained)
+    for name, run in tuned.items():
+        # Every tuned run gets each candidate rate exactly once; summary.csv names each score by
+        # its run, so the name must tell the truth.
+        assert [candidate.rate for candidate in run.candidates] == [1e-5, 3e-5, 1e-4], name
+        assert [candidate.key for candidate in run.candidates] == [
+            f"{name}_lr{_rate_label(candidate.rate)}" for candidate in run.candidates
+        ]
+        # A pilot run is the beginning of its comparison run, not all of it.
+        steps = {candidate.config.training.num_steps for candidate in run.candidates}
+        assert max(steps) < comparison.runs[run.key].training.num_steps, name
 
     # The same budget and measurement for every model: steps, validation and evaluation are
     # not part of the training identity (they may change later), so they are compared here.
     measured = [_measurement_and_budget(config) for config in pilot.runs.values()]
     assert all(settings == measured[0] for settings in measured), "the pilot runs differ in steps or measurement"
-    assert len({config.experiment.seed for config in pilot.runs.values()}) == 1, "the pilot runs use different seeds"
-    # Every tuned run gets each candidate rate exactly once.
-    assert {run: sorted(found) for run, found in rates.items()} == {run: [1e-5, 3e-5, 1e-4] for run in tuned}
 
 
 def _starts_from_pretrained_weights(encoder: dict) -> bool:

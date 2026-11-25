@@ -17,8 +17,8 @@ from scene_recon.report import (
     _format_summary,
     _mean_curves,
     _paired_comparisons,
-    _read_software,
     _short_hash,
+    read_software,
 )
 from scene_recon.run_files import RunFiles
 
@@ -224,7 +224,7 @@ def _evaluated_with(name: str, lpips: str | None, **packages: str) -> GroupResul
     group = _group(name, {1: {"psnr": 20.0}})
     run = group.replicates[0]
     record = _software_record(lpips=lpips, **packages) if lpips else None
-    run.evaluation_software, run.software_problems = _read_software(record)
+    run.evaluation_software, run.software_problems = read_software(record)
     return group
 
 
@@ -288,19 +288,19 @@ def test_a_damaged_software_record_cannot_be_compared(change):
     record = _software_record(lpips="0.1.4")
     change(record)
 
-    assert _read_software(record) == (None, ["damaged"])
+    assert read_software(record) == (None, ["damaged"])
 
 
 def test_the_report_says_why_a_software_record_cannot_be_compared():
     """Review F76, F77 and F88: an unnamed device or an unreadable package list is unknown, never the same."""
     unreadable = {**_software_record(), "device": None, "packages": None}
     both = ["device model unknown", "package list unreadable"]
-    assert _read_software(None) == (None, ["not recorded"])
-    assert _read_software({**_software_record(), "device": None}) == (None, ["device model unknown"])
-    assert _read_software({**_software_record(), "packages": None}) == (None, ["package list unreadable"])
-    assert _read_software(unreadable) == (None, both)
-    assert _read_software({**unreadable, "python": ""}) == (None, [*both, "damaged"])
-    assert _read_software(_software_record()) == (_software_record(), [])
+    assert read_software(None) == (None, ["not recorded"])
+    assert read_software({**_software_record(), "device": None}) == (None, ["device model unknown"])
+    assert read_software({**_software_record(), "packages": None}) == (None, ["package list unreadable"])
+    assert read_software(unreadable) == (None, both)
+    assert read_software({**unreadable, "python": ""}) == (None, [*both, "damaged"])
+    assert read_software(_software_record()) == (_software_record(), [])
 
     runs = [_evaluated_with("first", "0.1.4"), _group("second", {1: {"psnr": 20.0}})]
     runs[1].replicates[0].software_problems = both
