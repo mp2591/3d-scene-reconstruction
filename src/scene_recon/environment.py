@@ -7,7 +7,9 @@ always be traced back to the code and machine that produced it.
 from __future__ import annotations
 
 import functools
+import importlib
 import importlib.metadata
+import importlib.util
 import logging
 import platform
 import re
@@ -86,30 +88,50 @@ def installed_packages() -> dict[str, str] | None:
     """Every installed Python package and its version, by normalised name, sorted.
 
     If a package is installed twice, the copy Python imports (the first on
-    the search path) is listed. ``None``, with a warning that names the
-    package's folder, if the metadata of an installed package cannot be
-    read or has no valid name or version (``is_valid_package``).
+    the search path) is listed. ``None``, with a warning, if the metadata
+    of an installed package cannot be read or has no valid name or version
+    (``is_valid_package``; the warning names the package's folder), or if
+    the installed packages cannot be listed at all.
     """
     packages: dict[str, str] = {}
-    folder = "the list of installed packages"
     try:
-        for distribution in importlib.metadata.distributions():
-            folder = getattr(distribution, "_path", "an unknown folder")  # where its metadata lies
+        distributions = iter(importlib.metadata.distributions())
+    except Exception as error:
+        _warn_packages_cannot_be_listed(error)
+        return None
+    while True:
+        try:
+            distribution = next(distributions, None)
+        except Exception as error:  # finding the next package failed: no package is to blame
+            _warn_packages_cannot_be_listed(error)
+            return None
+        if distribution is None:
+            return dict(sorted(packages.items()))
+        folder = getattr(distribution, "_path", "an unknown folder")  # where its metadata lies
+        try:
             name, version = distribution.metadata["Name"], distribution.version
             normalised = re.sub(r"[-_.]+", "-", name).lower() if isinstance(name, str) else name
             if not is_valid_package(normalised, version):
                 raise ValueError(f"no valid name or version (name {name!r}, version {version!r})")
-            packages.setdefault(normalised, version)
-    except Exception as error:  # any damage: an unreadable file, not UTF-8, a broken archive, a missing field
-        logger.warning(
-            "The metadata of the installed package in %s cannot be read (%s: %s), so the software of this "
-            "evaluation is not recorded. Reinstall or remove that package.",
-            folder,
-            type(error).__name__,
-            error,
-        )
-        return None
-    return dict(sorted(packages.items()))
+        except Exception as error:  # any damage: an unreadable file, not UTF-8, a broken archive, a missing field
+            logger.warning(
+                "The metadata of the installed package in %s cannot be read (%s: %s), so the software of this "
+                "evaluation is not recorded. Reinstall or remove that package.",
+                folder,
+                type(error).__name__,
+                error,
+            )
+            return None
+        packages.setdefault(normalised, version)
+
+
+def _warn_packages_cannot_be_listed(error: Exception) -> None:
+    logger.warning(
+        "The installed packages cannot be listed (%s: %s), so the software of this evaluation is not recorded. "
+        "Check that every folder on Python's search path (sys.path) can be read.",
+        type(error).__name__,
+        error,
+    )
 
 
 def device_model(device: torch.device) -> str | None:
@@ -158,7 +180,7 @@ def device_description(device: torch.device) -> dict[str, Any]:
         name = torch.cuda.get_device_name(device) if torch.cuda.is_available() else "CUDA not available"
     else:
         name = f"{platform.machine()} CPU, {torch.get_num_threads()} threads"
-    return {"device": str(device), "name": name, "torch": str(torch.__version__), "timm": package_version("timm")}
+    return {"device": str(device), "name": name, "torch": str(torch.__version__), "timm": loaded_version("timm")}
 
 
 def package_version(name: str) -> str | None:
@@ -170,6 +192,39 @@ def package_version(name: str) -> str | None:
     except Exception as error:  # damaged metadata must not stop the work whose environment is recorded
         logger.warning("The version of %s cannot be read (%s: %s).", name, type(error).__name__, error)
         return None
+
+
+UNREADABLE_VERSION = "unreadable"
+"""What ``loaded_version`` gives for a package that is installed but whose version cannot be read."""
+
+
+def loaded_version(name: str) -> str | None:
+    """The version of a package's code, for a record that decides whether a saved result is reused.
+
+    Read from the package's metadata or, if that is damaged, from the
+    ``__version__`` of the module itself, so that damaged metadata does not
+    hide an update. ``None`` if the package is not installed;
+    ``UNREADABLE_VERSION`` if it is installed but neither can be read.
+    ``profile_status`` never reuses a speed measured while the version of
+    ``timm`` is unreadable.
+    """
+    try:
+        version = importlib.metadata.version(name)
+    except Exception:  # not installed, or its metadata is damaged: the module itself is asked next
+        version = None
+    if isinstance(version, str) and version.strip():
+        return version
+    try:
+        if importlib.util.find_spec(name) is None:
+            return None  # not installed
+        version = getattr(importlib.import_module(name), "__version__", None)
+    except Exception as error:  # installed, but it cannot be imported
+        logger.warning("The version of %s cannot be read (%s: %s).", name, type(error).__name__, error)
+        return UNREADABLE_VERSION
+    if isinstance(version, str) and version.strip():
+        return version
+    logger.warning("The version of %s cannot be read: neither its metadata nor the module gives one.", name)
+    return UNREADABLE_VERSION
 
 
 def _source_revision() -> dict[str, Any]:

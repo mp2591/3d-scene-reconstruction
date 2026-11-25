@@ -413,16 +413,25 @@ def test_an_unreadable_package_makes_the_package_list_unknown(monkeypatch, caplo
     assert "broken-1.0.dist-info cannot be read" in caplog.text
 
 
-def test_a_failing_list_of_installed_packages_makes_the_package_list_unknown(monkeypatch):
+@pytest.mark.parametrize("packages_listed_first", [0, 1], ids=["at_once", "after_a_healthy_package"])
+def test_a_failing_list_of_installed_packages_makes_the_package_list_unknown(
+    monkeypatch, caplog, packages_listed_first
+):
+    """Review F93: the warning blames no package, not even the healthy one listed just before."""
     from scene_recon import environment as environment_module
 
+    healthy = _BrokenDistribution(name="healthy")
+    healthy._path = "site-packages/healthy-1.0.dist-info"
+
     def distributions():
-        yield from ()
+        yield from [healthy][:packages_listed_first]
         raise OSError("a folder on the search path cannot be listed")
 
     monkeypatch.setattr(environment_module.importlib.metadata, "distributions", distributions)
 
     assert environment_module.installed_packages() is None
+    assert "installed packages cannot be listed (OSError" in caplog.text
+    assert "healthy" not in caplog.text and "Reinstall or remove" not in caplog.text
 
 
 def test_an_evaluation_is_written_when_package_metadata_cannot_be_read(smoke_config: Config, monkeypatch):
@@ -473,9 +482,57 @@ def test_the_timm_version_is_recorded_and_decides_whether_a_profile_is_current(s
     run_profiling(smoke_config)
     assert profile_status(smoke_config).is_current
 
-    real_version = environment_module.package_version
+    real_version = environment_module.importlib.metadata.version
     monkeypatch.setattr(
-        environment_module, "package_version", lambda name: "0.0.1" if name == "timm" else real_version(name)
+        environment_module.importlib.metadata, "version", lambda name: "0.0.1" if name == "timm" else real_version(name)
     )
 
     assert profile_status(smoke_config).state == "stale"
+
+
+def _damage_the_metadata_of_timm(monkeypatch) -> None:
+    from scene_recon import environment as environment_module
+
+    real_version = environment_module.importlib.metadata.version
+
+    def version(name: str) -> str:
+        if name == "timm":
+            raise NOT_UTF8
+        return real_version(name)
+
+    monkeypatch.setattr(environment_module.importlib.metadata, "version", version)
+
+
+def test_an_update_of_timm_is_seen_when_its_metadata_cannot_be_read(smoke_config: Config, monkeypatch):
+    """Review F92: the version comes from the module itself, so an update still makes the saved speed stale."""
+    import timm
+
+    _damage_the_metadata_of_timm(monkeypatch)
+    run_profiling(smoke_config)
+    assert profile_status(smoke_config).is_current
+
+    monkeypatch.setattr(timm, "__version__", "0.0.1")  # updated, and its metadata still damaged
+
+    assert profile_status(smoke_config).state == "stale"
+
+
+def test_a_speed_is_measured_again_while_the_version_of_timm_cannot_be_read(smoke_config: Config, monkeypatch):
+    """Review F92: neither the metadata nor the module gives a version, so no saved speed can be checked."""
+    from scene_recon import environment as environment_module
+
+    _damage_the_metadata_of_timm(monkeypatch)
+    real_import = environment_module.importlib.import_module
+
+    def import_module(name: str, *arguments):
+        if name == "timm":
+            raise ImportError("timm cannot be imported")
+        return real_import(name, *arguments)
+
+    monkeypatch.setattr(environment_module.importlib, "import_module", import_module)
+    assert environment_module.loaded_version("timm") == environment_module.UNREADABLE_VERSION
+
+    run_profiling(smoke_config)
+    status = profile_status(smoke_config)
+
+    assert status.state == "stale" and "version of timm cannot be read" in status.reason
+    assert environment_module.loaded_version("not-an-installed-package") is None

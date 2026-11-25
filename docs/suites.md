@@ -105,9 +105,13 @@ stages. Work that is already done is skipped:
 |----------|--------------------------------------------------------------------------------|---------------------------------|
 | train    | the checkpoint has reached `training.num_steps`                                | resumed if a checkpoint exists, started if not |
 | evaluate | `evaluation.json` was made from the current checkpoint file (compared by the hash of its content, not its name or step) with the current evaluation, renderer and test-data settings | evaluated again |
-| profile  | `profile.json` was made with the current model, renderer and profiling settings, on the same kind of device with the same PyTorch version | profiled again |
+| profile  | `profile.json` was made with the current model, renderer and profiling settings, on the same kind of device with the same PyTorch and `timm` versions | profiled again |
 
-A damaged or half-written results file counts as missing and is redone.
+A damaged or half-written results file counts as missing and is redone. If
+the training progress next to a checkpoint (`checkpoints/last.json`) is
+damaged, it is read from the checkpoint itself instead. If the version of
+`timm` cannot be read, a saved profile cannot be checked against it, so the
+run is profiled again and the report leaves its speed out, saying why.
 
 As a result:
 

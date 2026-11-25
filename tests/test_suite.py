@@ -438,6 +438,28 @@ def test_a_damaged_results_file_is_redone_and_does_not_stop_the_suite(tmp_path: 
     assert json.loads(narrow.evaluation.read_text())["protocols"]
 
 
+@pytest.mark.parametrize(
+    "damaged",
+    ['{"step": 4,', '{"step": 4, "training_seconds": 1.0, "step": 300}', '{"step": "4", "training_seconds": 1.0}'],
+    ids=["cut_short", "key_given_twice", "not_a_number"],
+)
+def test_a_damaged_progress_file_is_replaced_by_the_checkpoint(tmp_path: Path, monkeypatch, damaged: str):
+    """Review F94: the step is read from the checkpoint itself, so more training steps resume training."""
+    from scene_recon.checkpoints import progress_file
+
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
+    run_suite(suite)
+    narrow = RunFiles(suite.runs["narrow"].run_dir)
+    progress_file(narrow.checkpoint).write_text(damaged)
+    training = _CallRecorder(monkeypatch, "run_training")
+    _CallRecorder(monkeypatch, "run_profiling", run_real_function=False)
+
+    assert run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["training.num_steps=6"])) == {}
+
+    assert training.calls == [("narrow", (), {"resume": True}), ("wide", (), {"resume": True})]
+    assert json.loads(progress_file(narrow.checkpoint).read_text())["step"] == 6  # written again by the training
+
+
 def test_report_survives_damaged_files(tmp_path: Path):
     suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
     run_suite(suite)

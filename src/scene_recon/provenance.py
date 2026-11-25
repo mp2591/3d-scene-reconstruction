@@ -58,7 +58,7 @@ from scene_recon.checkpoints import (
 )
 from scene_recon.config import Config, flatten_settings, setting_in_sections
 from scene_recon.data.base import SceneDataset
-from scene_recon.environment import device_description
+from scene_recon.environment import UNREADABLE_VERSION, device_description
 from scene_recon.models.base import weights_sha256
 from scene_recon.registry import ConfigError
 from scene_recon.run_files import RunFiles, read_json
@@ -302,7 +302,13 @@ def profile_status(config: Config) -> OutputStatus:
     content, problem = _read_result(files.profile, required_keys=("settings", "parameters", "rendering"))
     if problem is not None:
         return problem
-    if content["settings"] != profiling_settings(config):
+    settings = profiling_settings(config)
+    if settings["device"]["timm"] == UNREADABLE_VERSION:
+        return OutputStatus(
+            "stale", "the installed version of timm cannot be read, so the speed cannot be checked against it; "
+            "repair the timm installation", content
+        )
+    if content["settings"] != settings:
         return OutputStatus(
             "stale", "made with different settings, test data, device or software, or an older version of the code",
             content,

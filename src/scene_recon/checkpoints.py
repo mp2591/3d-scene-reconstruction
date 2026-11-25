@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,9 @@ from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LRScheduler
 
 from scene_recon.environment import environment
-from scene_recon.run_files import write_atomically
+from scene_recon.run_files import read_json, write_atomically
+
+logger = logging.getLogger(__name__)
 
 COMPATIBILITY_VERSION = 3
 """Which version of the code a checkpoint's trained weights belong to.
@@ -130,18 +133,37 @@ def load_checkpoint(
 
 
 def read_progress(checkpoint_path: Path) -> TrainingProgress | None:
-    """The training progress stored with a checkpoint, or ``None`` if there is no checkpoint."""
+    """The training progress stored with a checkpoint, or ``None`` if there is no checkpoint.
+
+    Read from the small JSON file next to the checkpoint. If that file is
+    missing or damaged (cut short, not JSON, a key given twice, or not the
+    numbers ``save_checkpoint`` writes), the progress is read from the
+    checkpoint itself instead, which takes longer.
+    """
     if not checkpoint_path.is_file():
         return None
 
     sidecar = progress_file(checkpoint_path)
     if sidecar.is_file():
-        return TrainingProgress(**json.loads(sidecar.read_text(encoding="utf-8")))
+        progress = _recorded_progress(read_json(sidecar))
+        if progress is not None:
+            return progress
+        logger.warning("%s is damaged; the training progress is read from %s instead.", sidecar, checkpoint_path.name)
 
-    # A checkpoint without the JSON file was not written by save_checkpoint;
-    # fall back to reading the (much larger) checkpoint itself.
     state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     return TrainingProgress(step=state["step"], training_seconds=state["training_seconds"])
+
+
+def _recorded_progress(content: dict[str, Any] | None) -> TrainingProgress | None:
+    """The progress a JSON file records, or ``None`` if it is not exactly what ``save_checkpoint`` writes."""
+    if content is None or set(content) != {field.name for field in fields(TrainingProgress)}:
+        return None
+    step, seconds = content["step"], content["training_seconds"]
+    if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+        return None
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not seconds >= 0:
+        return None
+    return TrainingProgress(step=step, training_seconds=float(seconds))
 
 
 def read_checkpoint_config(path: Path) -> dict[str, Any]:

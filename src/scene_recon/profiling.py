@@ -10,6 +10,7 @@ import time
 from typing import Any
 
 import torch
+from torch import nn
 
 from scene_recon.models.base import ReconstructionModel
 from scene_recon.rendering import VolumeRenderer
@@ -71,8 +72,8 @@ def measure_rendering_speed(
             measured speed would be wrong.
     """
     modes = {module: module.training for module in model.modules()}  # a part may be frozen in eval mode
-    model.eval()
     try:
+        model.eval()  # inside the try: if a part fails to switch, the parts already switched are restored
         device = source_views.images.device
         scene_encoding = model.encode_scene(source_views)  # warm-up for the encoder
         _wait_for_gpu(device)
@@ -101,12 +102,7 @@ def measure_rendering_speed(
         least_free = _least(least_free, free_gpu_memory(device))
         memory = _check_memory_fits(device, renderer, least_free, min_free_gpu_memory)
     finally:
-        # .train() first, so that parts whose train() does more than set the
-        # flag (an adapter that merges its weights for evaluation) run it; then
-        # every part's own flag, since .train() sets every part below it.
-        model.train(modes[model])
-        for module, training in modes.items():
-            module.training = training
+        _restore_modes(model, modes)
     return {
         "encode_seconds": encode_seconds,
         "seconds_per_frame": seconds_per_frame,
@@ -115,6 +111,39 @@ def measure_rendering_speed(
         "peak_memory_reserved_gb": memory["reserved"] / 1e9 if memory else None,
         "least_free_memory_gb": memory["least_free"] / 1e9 if memory else None,
     }
+
+
+def _restore_modes(model: nn.Module, modes: dict[nn.Module, bool]) -> None:
+    """Put every part of the model back into the training or evaluation mode it had.
+
+    Each part is switched through its own ``train()``, so that a part whose
+    ``train()`` does more than set its flag (an adapter that merges its
+    weights for evaluation and splits them for training) is left in a
+    consistent state. ``train()`` also switches every part below, so parents
+    go first: a part is switched only after every part that contains it,
+    including a part shared by two parents.
+    """
+    for module in _parents_first(model):
+        if module.training != modes[module]:
+            module.train(modes[module])
+    for module, training in modes.items():
+        module.training = training  # a part whose train() leaves its own flag alone
+
+
+def _parents_first(model: nn.Module) -> list[nn.Module]:
+    """Every part of the model, each one listed after all parts that contain it."""
+    finished: list[nn.Module] = []
+    visited: set[nn.Module] = set()
+
+    def visit(module: nn.Module) -> None:
+        visited.add(module)
+        for child in module.children():
+            if child not in visited:
+                visit(child)
+        finished.append(module)  # after everything it contains
+
+    visit(model)
+    return finished[::-1]
 
 
 def _start_counting_memory(device: torch.device) -> None:

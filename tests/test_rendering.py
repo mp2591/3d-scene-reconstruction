@@ -283,6 +283,71 @@ def test_the_speed_measurement_restores_a_part_shared_by_two_parents(smoke_confi
     assert adapter.training and not adapter.merged
 
 
+def _measure_speed(model, smoke_config: Config) -> None:
+    from scene_recon import profiling
+    from scene_recon.build import build_dataset
+
+    views = build_dataset(smoke_config, "test").load_scene(0, [0, 1])
+    profiling.measure_rendering_speed(
+        model,
+        VolumeRenderer(smoke_config.renderer),
+        views.select_views([0]),
+        views.select_views([1]),
+        num_frames=1,
+        num_warmup_frames=0,
+        min_free_gpu_memory=0.02,
+    )
+
+
+@pytest.mark.parametrize("parent_in_evaluation_mode", ["the_model", "a_second_parent"])
+def test_a_training_part_under_a_parent_in_evaluation_mode_is_split_again(
+    smoke_config: Config, parent_in_evaluation_mode: str
+):
+    """Review F90: the part's own train() runs after every parent's, so its weights end up split for training."""
+    model = build_model(smoke_config)
+    first_parent, second_parent = list(model.children())[:2]
+    adapter = _MergesForEvaluation()
+    first_parent.add_module("adapter_for_test", adapter)
+    if parent_in_evaluation_mode == "the_model":
+        model.eval()
+    else:  # shared: the second parent comes after the first, and would merge the part again
+        second_parent.add_module("adapter_for_test", adapter)
+        model.train()
+        second_parent.eval()
+    adapter.train()
+    modes = {module: module.training for module in model.modules()}
+
+    _measure_speed(model, smoke_config)
+
+    assert {module: module.training for module in model.modules()} == modes
+    assert adapter.training and not adapter.merged
+
+
+class _FailsToSwitch(torch.nn.Module):
+    """A part that raises when it is switched to evaluation mode."""
+
+    def train(self, mode: bool = True):
+        if not mode:
+            raise RuntimeError("cannot switch to evaluation mode")
+        return super().train(mode)
+
+
+def test_a_part_that_fails_to_switch_to_evaluation_mode_leaves_the_model_as_it_was(smoke_config: Config):
+    """Review F91: the adapter switched before the failing part is split again, and the error reaches the caller."""
+    model = build_model(smoke_config)
+    adapter = _MergesForEvaluation()
+    model.add_module("adapter_for_test", adapter)
+    model.add_module("fails_for_test", _FailsToSwitch())  # switched after the adapter
+    model.train()
+    modes = {module: module.training for module in model.modules()}
+
+    with pytest.raises(RuntimeError, match="cannot switch to evaluation mode"):
+        _measure_speed(model, smoke_config)
+
+    assert {module: module.training for module in model.modules()} == modes
+    assert not adapter.merged
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_config: Config, monkeypatch):
     """Review F45, F55, F56, F63, F69, F70, F73 and F82: through measure_rendering_speed itself, on a real GPU."""
