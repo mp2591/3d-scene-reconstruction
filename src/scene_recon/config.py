@@ -494,6 +494,12 @@ def _check_values(settings: dict[str, Any]) -> None:
         if value is not None and value < minimum:
             problems.append(f"{setting} must be at least {minimum}, got {value}.")
 
+    if settings["profiling"].min_free_gpu_memory >= 1:
+        problems.append(
+            "profiling.min_free_gpu_memory is a share of the GPU's memory and must be below 1, "
+            f"got {settings['profiling'].min_free_gpu_memory}."
+        )
+
     renderer = settings["renderer"]
     if renderer.num_fine_samples > 0 and renderer.num_coarse_samples < 3:
         problems.append(

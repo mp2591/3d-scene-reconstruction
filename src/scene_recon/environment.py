@@ -9,6 +9,7 @@ from __future__ import annotations
 import functools
 import importlib.metadata
 import platform
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -24,13 +25,49 @@ def environment() -> dict[str, Any]:
         "torch": str(torch.__version__),  # a str subclass that restricted loading would reject
         "timm": package_version("timm"),  # implements the ConvNeXt V2 encoder
         "lpips": package_version("lpips"),  # implements the LPIPS metric
-        "torchvision": package_version("torchvision"),  # its VGG network runs inside LPIPS
-        "scikit-image": package_version("scikit-image"),  # implements the SSIM metric
         "cuda": torch.version.cuda,
         "platform": platform.platform(),
         "gpus": [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())],
         **_source_revision(),
     }
+
+
+def evaluation_software(device: torch.device) -> dict[str, Any]:
+    """What a score can depend on besides the model and the data, saved with every evaluation.
+
+    Every installed package is listed, not only those known to matter, so a
+    package a new model or metric brings along is covered without anyone
+    having to name it. The suite report compares these between runs (see
+    ``scene_recon.report``). The source revision is left out: a change that
+    alters results raises ``COMPATIBILITY_VERSION`` instead.
+
+    Returns:
+        ``python``: its version; ``cuda``: the CUDA version PyTorch was
+        built with (``"none"`` without); ``device``: the name of the device
+        the scores were computed on (floating-point results can differ
+        slightly between GPU models); ``packages``: every installed package
+        and its version, by normalised name (``scikit-image``, ``torch``).
+    """
+    return {
+        "python": platform.python_version(),
+        "cuda": torch.version.cuda or "none",
+        "device": device_description(device)["name"],
+        "packages": installed_packages(),
+    }
+
+
+def installed_packages() -> dict[str, str]:
+    """Every installed Python package and its version, by normalised name, sorted.
+
+    If a package is installed twice, the copy Python imports (the first on
+    the search path) is listed.
+    """
+    packages: dict[str, str] = {}
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata["Name"]
+        if name:
+            packages.setdefault(re.sub(r"[-_.]+", "-", name).lower(), distribution.version)
+    return dict(sorted(packages.items()))
 
 
 def device_description(device: torch.device) -> dict[str, Any]:

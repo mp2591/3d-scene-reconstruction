@@ -38,7 +38,7 @@ from scene_recon.checkpoints import TrainingProgress, load_checkpoint
 from scene_recon.config import Config
 from scene_recon.data import TrainingSchedule
 from scene_recon.data.base import SceneDataset
-from scene_recon.environment import environment
+from scene_recon.environment import environment, evaluation_software
 from scene_recon.evaluation import Evaluator, check_protocol_feasible, save_preview
 from scene_recon.models.base import pretrained_weights_of
 from scene_recon.models.contract import check_model_contract
@@ -147,6 +147,7 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
         **weights_record,
         "settings": evaluation_settings(config),
         "environment": environment(),
+        "software": evaluation_software(device),
         "protocols": protocols,
     }
     write_json(report, files.evaluation)

@@ -360,17 +360,14 @@ def test_a_model_that_starts_from_random_values_records_no_pretrained_weights(sm
 # ---------------------------------------------------------------- software versions (review F13)
 
 
-def test_every_evaluation_records_the_packages_that_compute_its_metrics():
-    """Review F53: otherwise the report could not tell that two runs were scored with different versions."""
-    from scene_recon.environment import environment
-    from scene_recon.registry import METRICS
-    from scene_recon.report import metric_software
+def test_the_evaluation_software_record_lists_every_installed_package():
+    """Review F66 and F67: also packages nobody names, such as SciPy inside scikit-image's SSIM."""
+    from scene_recon.environment import evaluation_software
 
-    recorded = environment()
+    software = evaluation_software(torch.device("cpu"))
 
-    for metric in METRICS.names():
-        assert set(metric_software(metric)) <= recorded.keys(), metric
-    assert "scikit-image" in metric_software("ssim") and "lpips" in metric_software("lpips")
+    assert {"torch", "numpy", "scipy", "scikit-image", "timm"} <= software["packages"].keys()
+    assert software["python"] and software["cuda"] and "CPU" in software["device"]
 
 
 def test_the_timm_version_is_recorded_and_decides_whether_a_profile_is_current(smoke_config: Config, monkeypatch):

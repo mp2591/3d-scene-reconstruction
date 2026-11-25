@@ -185,6 +185,7 @@ def test_missing_base_file_is_named_in_the_error(tmp_path: Path):
         ("evaluation.num_scenes=0", "evaluation.num_scenes must be at least 1"),
         ("validation.source_views=[]", "must contain at least one view index"),
         ("renderer.num_coarse_samples=1", "renderer.num_coarse_samples must be at least 2"),
+        ("profiling.min_free_gpu_memory=1", "profiling.min_free_gpu_memory is a share of the GPU's memory"),
         ("renderer.num_coarse_samples=2", "at least 3 when the fine pass is enabled"),
         ("optimization.learning_rate=0", "learning_rate must be positive"),
         ("optimization.betas=[0.9]", "betas must be two values"),

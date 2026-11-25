@@ -5,10 +5,8 @@ with the ground truth and returns one value per image::
 
     values = metric(prediction, target)   # both (N, 3, H, W) in [0, 1] -> (N,)
 
-and declares three class attributes used by the suite report:
-``display_name``, ``higher_is_better`` and ``software``, the packages besides
-PyTorch whose code computes it. Every evaluation records their versions, and
-the report says when runs were scored with different ones.
+and declares two class attributes used by the suite report: ``display_name``
+and ``higher_is_better``.
 
 SSIM and LPIPS follow the settings of the pixelNeRF evaluation code so that
 numbers are comparable with the published baselines.
@@ -28,7 +26,6 @@ class PSNR(nn.Module):
 
     display_name = "PSNR (dB)"
     higher_is_better = True
-    software = ()
 
     def forward(self, prediction: Tensor, target: Tensor) -> Tensor:
         mse = ((prediction - target) ** 2).mean(dim=(1, 2, 3))
@@ -45,7 +42,6 @@ class SSIM(nn.Module):
 
     display_name = "SSIM"
     higher_is_better = True
-    software = ("scikit-image",)
 
     def forward(self, prediction: Tensor, target: Tensor) -> Tensor:
         from skimage.metrics import structural_similarity
@@ -69,7 +65,6 @@ class LPIPS(nn.Module):
 
     display_name = "LPIPS"
     higher_is_better = False
-    software = ("lpips", "torchvision")  # lpips runs torchvision's VGG
 
     def __init__(self, network: str = "vgg") -> None:
         """

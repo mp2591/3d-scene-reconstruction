@@ -240,9 +240,11 @@ def test_a_speed_measured_while_the_gpu_memory_overflowed_is_refused(monkeypatch
     assert profiling._check_memory_fits(torch.device("cpu"), renderer, None, min_free_gpu_memory=0.02) is None
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or torch.cuda.mem_get_info()[0] < 2 * 10**9, reason="needs a CUDA GPU with 2 GB free"
+)
 def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_config: Config, monkeypatch):
-    """Review F45, F55, F56 and F63: through measure_rendering_speed itself, on a real GPU."""
+    """Review F45, F55, F56, F63, F69, F70 and F73: through measure_rendering_speed itself, on a real GPU."""
     from scene_recon import profiling
     from scene_recon.build import build_dataset
 
@@ -263,7 +265,7 @@ def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_c
 
     # Memory PyTorch keeps for reuse after earlier work, such as training in the same process,
     # is released first: the peaks count rendering alone.
-    left_over_bytes = min(10**9, torch.cuda.mem_get_info()[0] // 4)
+    left_over_bytes = 10**9  # far more than rendering the smoke test's small frames reserves
     left_over = torch.empty(left_over_bytes, dtype=torch.uint8, device="cuda")
     del left_over
     speed = measure()
@@ -271,9 +273,16 @@ def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_c
     assert speed["least_free_memory_gb"] > 0
 
     # Another program filled the GPU during the first frame and released it before the second.
-    readings = iter([0, 8 * 10**9])
+    readings = iter([0, 8 * 10**9, 8 * 10**9])
     monkeypatch.setattr(profiling, "free_gpu_memory", lambda device: next(readings))
-    model.train()
     with pytest.raises(RuntimeError, match="at one point only 0.0 GB was free"):
         measure(num_frames=2)
-    assert model.training  # restored, although the measurement was refused
+
+    # The GPU filled up with work that was still queued when the frames had been handed over.
+    readings = iter([8 * 10**9, 8 * 10**9, 0])
+    model.train()
+    frozen = next(model.children())
+    frozen.eval()  # a part kept in evaluation mode while the rest trains
+    with pytest.raises(RuntimeError, match="at one point only 0.0 GB was free"):
+        measure(num_frames=2)
+    assert model.training and not frozen.training  # every part's mode restored, although the measurement was refused

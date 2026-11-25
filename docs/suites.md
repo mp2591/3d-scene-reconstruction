@@ -210,15 +210,22 @@ says so prominently. If the seeds of one run started from different weights,
 each seed is listed.
 
 A saved evaluation stays valid when the software is updated, so that the
-report can also be made on another machine. Every evaluation records the
-versions of the packages it was made with. The report looks at those whose
-code computes the scores: PyTorch and `timm` for the models, scikit-image
-for SSIM, and `lpips` with torchvision for LPIPS. If the runs' evaluations
-were made with different versions, the report says so and lists them, in
-`summary.md` and in `summary.csv`, and a paired comparison of an affected
-metric says *scored with different software* instead of a plain verdict
-(`same_software` in `paired_comparison.csv`). Evaluate every run again with
-one installation (`scene-recon evaluate`) for an exact comparison.
+report can also be made on another machine. Every evaluation saves what it
+was made with: the Python version, the CUDA version, the name of the device
+(floating-point results can differ slightly between GPU models) and every
+installed package with its version, so that a package a new model or metric
+uses is covered without anyone naming it. The source revision is not part of
+it: a change that alters results raises the compatibility version instead.
+
+The report compares these records whole. If two runs' records differ, it
+warns and lists only what differs; if a record is missing or damaged, it
+says the software is not recorded. Their paired comparisons then give no
+plain verdict: *scored with different software* or *not recorded*
+(`software` in `paired_comparison.csv`: `same`, `different` or `unknown`).
+`summary.csv` has a short hash of each run's record. The report cannot tell
+which package a score depends on, so it may flag an update that does not
+matter for it; the list lets you judge. Evaluate every run again with one
+installation (`scene-recon evaluate`) for an exact comparison.
 
 `summary.csv` has one row per run and seed. Quality columns are named
 `<metric>_<n>v`: `psnr_1v` is the PSNR with one input view. Load it with

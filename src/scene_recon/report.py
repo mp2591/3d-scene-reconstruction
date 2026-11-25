@@ -30,15 +30,19 @@ the evaluation of the old checkpoint after a training extension failed, is
 but it is left out of best values, figures and paired comparisons.
 
 A saved evaluation stays current when the software changes, so that the
-report can be made on another machine. If the runs' evaluations were made
-with different versions of the packages that compute a metric (see
-``metric_software``), the report says so, and a paired comparison of that
-metric gives no plain verdict.
+report can be made on another machine. Every evaluation saves what it was
+made with: Python, CUDA, the device and every installed package (see
+``environment.evaluation_software``). The report compares these records
+whole: if two runs' records differ, or one is missing, it says so, lists
+what differs, and gives no plain verdict in their paired comparison. It
+cannot tell which package a score depends on, so it may also flag a
+difference that does not matter; the list lets the reader judge.
 """
 
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import logging
@@ -107,10 +111,10 @@ class RunResult:
     starting_weights: dict | None = None
     """The pretrained weights recorded in the run's checkpoint (see ``pretrained_weights_of``), if it has one."""
 
-    evaluation_software: dict | None = None
-    """Package -> version its current evaluation was made with (``None``: not recorded), if it has one.
+    evaluation_software: dict[str, str] | None = None
+    """What its current evaluation was made with, as name -> version (packages, ``python``, ``cuda``, ``device``).
 
-    Only the packages that compute the metrics it was scored with (see ``metric_software``).
+    ``None`` if it has no current evaluation, or its record is missing or damaged.
     """
 
     requested_steps: int = 0
@@ -263,17 +267,27 @@ def write_report(
     logger.info("Suite report updated: %s", files.summary_markdown)
 
 
-MODEL_SOFTWARE = ("torch", "timm")
-"""The packages whose code runs the models: PyTorch, and ``timm`` for the ConvNeXt V2 encoder."""
+SOFTWARE_SAME, SOFTWARE_DIFFERENT, SOFTWARE_UNKNOWN = "same", "different", "unknown"
+"""Whether evaluations were made with the same software (see ``environment.evaluation_software``):
+identical records, different records, or at least one record missing or damaged."""
 
 
-def metric_software(metric: str) -> tuple[str, ...]:
-    """The packages whose code a metric's scores depend on: those that run the models, and the metric's ``software``."""
-    try:
-        metric_class = METRICS.get(metric)
-    except ConfigError:  # a metric that is no longer registered
-        return MODEL_SOFTWARE
-    return MODEL_SOFTWARE + tuple(getattr(metric_class, "software", ()))
+def _compare_software(runs: list[RunResult]) -> str:
+    """``SOFTWARE_SAME``, ``SOFTWARE_DIFFERENT`` or ``SOFTWARE_UNKNOWN`` for the evaluations of these runs."""
+    records = [run.evaluation_software for run in runs]
+    if any(record is None for record in records):
+        return SOFTWARE_UNKNOWN
+    return SOFTWARE_SAME if all(record == records[0] for record in records) else SOFTWARE_DIFFERENT
+
+
+def _read_software(record) -> dict[str, str] | None:
+    """An evaluation's saved software as one name -> version mapping, or ``None`` if it is missing or damaged."""
+    if not isinstance(record, dict) or not isinstance(record.get("packages"), dict):
+        return None
+    software = {**record["packages"], **{name: record.get(name) for name in ("python", "cuda", "device")}}
+    if not all(isinstance(name, str) and isinstance(version, str) and version for name, version in software.items()):
+        return None
+    return software
 
 
 def _collect(key: str, config: Config, failed: bool, training_requested: bool) -> RunResult:
@@ -300,12 +314,7 @@ def _collect(key: str, config: Config, failed: bool, training_requested: bool) -
 
     evaluation = evaluation_status(config)
     if evaluation.is_current:
-        recorded_environment = evaluation.content.get("environment")
-        if not isinstance(recorded_environment, dict):  # damaged: the versions are unknown
-            recorded_environment = {}
-        metrics = [name for protocol in evaluation.content["protocols"] for name in protocol["mean"]]
-        packages = dict.fromkeys(package for metric in metrics for package in metric_software(metric))
-        result.evaluation_software = {package: recorded_environment.get(package) for package in packages}
+        result.evaluation_software = _read_software(evaluation.content.get("software"))
         for protocol in evaluation.content["protocols"]:
             count = len(protocol["source_views"])
             result.metrics[count] = protocol["mean"]
@@ -355,14 +364,18 @@ class _Comparison:
     partial: bool
     """True if some of the suite's seeds are not (yet) available on both sides."""
 
-    same_software: bool
-    """True if every compared evaluation was made with the same versions of ``metric_software(metric)``."""
+    software: str
+    """Whether the compared evaluations were made with the same software (``SOFTWARE_SAME``, ...)."""
 
     @property
     def verdict(self) -> str:
-        """better, worse or no clear difference; qualified if the scores came from different software."""
+        """better, worse or no clear difference; qualified unless the scores came from the same software."""
         verdict = self.difference.verdict(_metric_presentation(self.metric)[1])
-        return verdict if self.same_software else f"{verdict}, but scored with different software"
+        if self.software == SOFTWARE_DIFFERENT:
+            return f"{verdict}, but scored with different software"
+        if self.software == SOFTWARE_UNKNOWN:
+            return f"{verdict}, but the software of a score is not recorded"
+        return verdict
 
 
 def _paired_comparisons(results: list[GroupResult]) -> list[_Comparison]:
@@ -390,24 +403,20 @@ def _paired_comparisons(results: list[GroupResult]) -> list[_Comparison]:
                 if difference is None:
                     continue
                 partial = seeds != set(reference.seeds) or seeds != set(group.seeds)
-                same_software = _same_software([reference, group], seeds, metric_software(metric))
+                compared_runs = [run for side in (reference, group) for run in side.replicates if run.seed in seeds]
                 comparisons.append(
                     _Comparison(
-                        group.name, reference.name, count, metric, difference, sorted(seeds), partial, same_software
+                        group.name,
+                        reference.name,
+                        count,
+                        metric,
+                        difference,
+                        sorted(seeds),
+                        partial,
+                        _compare_software(compared_runs),
                     )
                 )
     return comparisons
-
-
-def _same_software(groups: list[GroupResult], seeds: set[int], packages: tuple[str, ...]) -> bool:
-    """Whether the evaluations of these seeds of these runs used the same versions of ``packages``."""
-    versions = {
-        tuple((run.evaluation_software or {}).get(package) for package in packages)
-        for group in groups
-        for run in group.replicates
-        if run.seed in seeds
-    }
-    return len(versions) <= 1
 
 
 # ---------------------------------------------------------------- tables
@@ -432,13 +441,10 @@ def _write_csv(results: list[GroupResult], path: Path) -> None:
     metric_names, view_counts = _metric_names(results), _view_counts(results)
     quality_columns = [f"{metric}_{count}v" for count in view_counts for metric in metric_names]
     columns = ["run", "seed", "status", "training_steps", "training_hours", "parameters", "frames_per_second"]
-    packages = dict.fromkeys(
-        package for group in results for run in group.replicates for package in (run.evaluation_software or {})
-    )
-    software_columns = [f"evaluated_with_{package}" for package in packages]
+    software_column = "evaluation_software"  # a short hash of the record: equal hashes, equal software
 
     file = io.StringIO()
-    writer = csv.DictWriter(file, fieldnames=columns + quality_columns + software_columns)
+    writer = csv.DictWriter(file, fieldnames=columns + quality_columns + [software_column])
     writer.writeheader()
     for group in results:
         for run in group.replicates:
@@ -454,8 +460,8 @@ def _write_csv(results: list[GroupResult], path: Path) -> None:
             for count, per_metric in run.metrics.items():
                 for metric, value in per_metric.items():
                     row[f"{metric}_{count}v"] = value
-            for package, version in (run.evaluation_software or {}).items():
-                row[f"evaluated_with_{package}"] = version
+            if run.evaluation_software is not None:
+                row[software_column] = _short_hash(run.evaluation_software)
             writer.writerow(row)
     # The csv module already ends rows with "\r\n"; newline="" stops Windows adding another "\r".
     write_atomically(path, lambda temporary_path: temporary_path.write_text(file.getvalue(), encoding="utf-8", newline=""))
@@ -473,7 +479,7 @@ def _write_comparison_csv(comparisons: list[_Comparison], path: Path) -> None:
         "num_scenes",
         "seeds",
         "partial",
-        "same_software",
+        "software",
         "verdict",
     ]
     file = io.StringIO()
@@ -493,7 +499,7 @@ def _write_comparison_csv(comparisons: list[_Comparison], path: Path) -> None:
                 "num_scenes": difference.num_scenes,
                 "seeds": " ".join(map(str, comparison.seeds)),
                 "partial": comparison.partial,
-                "same_software": comparison.same_software,
+                "software": comparison.software,
                 "verdict": comparison.verdict,
             }
         )
@@ -612,8 +618,9 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
     recorded_data_differs = len({_canonical_json(fp) for fp in recorded if fp is not None}) > 1
     weights_by_source = _pretrained_weights_by_source(results)
     weights_differ = [source for source, hashes in weights_by_source.items() if len(hashes) > 1]
-    software = [run.evaluation_software for group in results for run in group.replicates]
-    software_differs = len({_canonical_json(versions) for versions in software if versions is not None}) > 1
+    evaluated = [run for group in results for run in group.replicates if run.metrics]
+    software = _compare_software(evaluated) if len(evaluated) > 1 else SOFTWARE_SAME
+    software_differs = software != SOFTWARE_SAME
 
     if not differences and not recorded_data_differs and not weights_differ and not software_differs:
         lines.append("Nothing: all runs use identical settings.")
@@ -645,12 +652,18 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
             f"**Warning: runs that start from `{source}` started from different weights** (see the row "
             "\"pretrained weights\" of the table): the file was replaced between runs, or exists in several versions."
         )
-    if software_differs:
+    if software == SOFTWARE_DIFFERENT:
         lines.append(
-            "**Warning: the runs were evaluated with different software versions** (see the row \"software that "
-            "evaluated the run\" of the table). Small differences in quality may come from the software rather "
-            "than the models. For an exact comparison, evaluate every run again with one installation "
-            "(`scene-recon evaluate`)."
+            "**Warning: the runs were evaluated with different software** (see the row \"evaluation software "
+            "that differs\" of the table). Small differences in quality may come from it rather than from the "
+            "models. The report compares every installed package, so a listed package may not matter for a "
+            "score. For an exact comparison, evaluate every run again with one installation (`scene-recon evaluate`)."
+        )
+    elif software == SOFTWARE_UNKNOWN:
+        lines.append(
+            "**Warning: the software of some evaluations is not recorded** (see the row \"evaluation software "
+            "that differs\" of the table), so the report cannot tell whether all runs were scored with the same "
+            "software. Evaluate those runs again (`scene-recon evaluate`)."
         )
     if not differences and not recorded_data_differs and not weights_by_source and not software_differs:
         return lines
@@ -670,8 +683,9 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
         cells = [_by_seed(group, _describe_starting_weights) for group in results]
         lines.append("| pretrained weights recorded in the checkpoint | " + " | ".join(cells) + " |")
     if software_differs:
-        cells = [_by_seed(group, _describe_evaluation_software) for group in results]
-        lines.append("| software that evaluated the run | " + " | ".join(cells) + " |")
+        names = _differing_software(evaluated)
+        cells = [_by_seed(group, lambda run: _describe_evaluation_software(run, names)) for group in results]
+        lines.append("| evaluation software that differs | " + " | ".join(cells) + " |")
     return lines
 
 
@@ -705,11 +719,24 @@ def _describe_starting_weights(run: RunResult) -> str:
     )
 
 
-def _describe_evaluation_software(run: RunResult) -> str:
-    """The package versions a run's evaluation was made with."""
-    if run.evaluation_software is None:
+def _differing_software(runs: list[RunResult]) -> list[str]:
+    """The names whose versions are not the same in every recorded evaluation of these runs (absent counts)."""
+    records = [run.evaluation_software for run in runs if run.evaluation_software is not None]
+    names = sorted({name for record in records for name in record})
+    return [name for name in names if len({record.get(name) for record in records}) > 1]
+
+
+def _describe_evaluation_software(run: RunResult, names: list[str]) -> str:
+    """The versions of ``names`` a run's evaluation was made with."""
+    if not run.metrics:
         return MISSING
-    return ", ".join(f"{name} {version or 'not recorded'}" for name, version in run.evaluation_software.items())
+    if run.evaluation_software is None:
+        return "not recorded"
+    return ", ".join(f"{name} {run.evaluation_software.get(name, 'absent')}" for name in names) or "–"
+
+
+def _short_hash(value) -> str:
+    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()[:12]
 
 
 def _describe_training_data(group: GroupResult) -> str:
@@ -780,12 +807,13 @@ def _comparison_section(
                 first = next(iter(matches.values()))
                 seeds_cell = " " + ", ".join(map(str, first.seeds)) + (" (partial)" if first.partial else "") + " |"
             lines.append(f"| {run} |" + seeds_cell + " " + " | ".join(cells) + " |")
-    if not all(comparison.same_software for comparison in comparisons):
+    if any(comparison.software != SOFTWARE_SAME for comparison in comparisons):
         lines += [
             "",
-            "A verdict marked *scored with different software* compares evaluations made with different versions "
-            "of the packages that compute that metric (see \"What differs between runs\"). The difference may "
-            "come from the software; evaluate both runs again with one installation before drawing a conclusion.",
+            "A verdict marked *scored with different software* compares evaluations made with different software, "
+            "and one marked *not recorded* evaluations whose software is unknown (see \"What differs between "
+            "runs\"). The difference may then come from the software; evaluate both runs again with one "
+            "installation before drawing a conclusion.",
         ]
     if not_compared:
         lines += ["", "Not compared, because their requested training has not finished:", "", *not_compared]

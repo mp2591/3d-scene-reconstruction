@@ -70,7 +70,7 @@ def measure_rendering_speed(
             of failing, which makes rendering several times slower, so the
             measured speed would be wrong.
     """
-    was_training = model.training
+    modes = {module: module.training for module in model.modules()}  # a part may be frozen in eval mode
     model.eval()
     try:
         device = source_views.images.device
@@ -81,8 +81,9 @@ def measure_rendering_speed(
         _wait_for_gpu(device)
         encode_seconds = time.perf_counter() - start
 
-        # The driver's free memory is read after every frame (a fraction of a
-        # millisecond), because another program may release memory midway.
+        # The driver's free memory is read after every frame is queued (a
+        # fraction of a millisecond), because another program may release
+        # memory midway.
         _start_counting_memory(device)
         least_free = None
         for _ in range(num_warmup_frames):
@@ -95,9 +96,12 @@ def measure_rendering_speed(
             least_free = _least(least_free, free_gpu_memory(device))
         _wait_for_gpu(device)
         seconds_per_frame = (time.perf_counter() - start) / num_frames
+        # Once more when all queued work has run: the readings above can be taken while it is still queued.
+        least_free = _least(least_free, free_gpu_memory(device))
         memory = _check_memory_fits(device, renderer, least_free, min_free_gpu_memory)
     finally:
-        model.train(was_training)
+        for module, training in modes.items():
+            module.train(training)
     return {
         "encode_seconds": encode_seconds,
         "seconds_per_frame": seconds_per_frame,

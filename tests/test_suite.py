@@ -314,59 +314,60 @@ def test_a_finished_run_whose_training_settings_changed_is_not_skipped_silently(
         run_suite(load_suite(_write_suite(tmp_path, changed)))
 
 
-def _evaluated_elsewhere(suite, run: str, **versions) -> None:
-    """Change the package versions a run's evaluation.json records, as if it was evaluated on another machine."""
+def _evaluated_elsewhere(suite, run: str, change) -> None:
+    """Change the software record of a run's evaluation.json, as if it was evaluated on another machine."""
     evaluation_file = RunFiles(suite.runs[run].run_dir).evaluation
     evaluation = json.loads(evaluation_file.read_text(encoding="utf-8"))
-    if versions:
-        evaluation["environment"].update(versions)
-    else:
-        evaluation["environment"] = None  # damaged
+    change(evaluation)
     evaluation_file.write_text(json.dumps(evaluation), encoding="utf-8")
 
 
+def _paired_rows(suite) -> dict[str, dict]:
+    with open(suite.directory / "paired_comparison.csv", encoding="utf-8") as file:
+        return {row["metric"]: row for row in csv.DictReader(file)}
+
+
 def test_report_keeps_evaluations_from_other_software_and_says_which(tmp_path: Path):
-    """Review F46, F53 and F54: a saved evaluation stays current, so the report can be made on another machine."""
+    """Review F46, F54, F66 and F67: a saved evaluation stays current, so the report can be made on another machine."""
     suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
     run_suite(suite)
-    _evaluated_elsewhere(suite, "wide", **{"scikit-image": "0.0.1"})  # computes SSIM
+    # SciPy is not named anywhere in the project: SSIM uses it through scikit-image.
+    _evaluated_elsewhere(suite, "wide", lambda evaluation: evaluation["software"]["packages"].update(scipy="0.0.1"))
 
     write_report(suite.name, suite.directory, suite.grouped_runs(), {}, suite.stages)
 
     report = (suite.directory / "summary.md").read_text(encoding="utf-8")
     assert "## Quality with" in report and "evaluation:" not in report  # nothing left out
-    assert "the runs were evaluated with different software versions" in report
-    assert "scikit-image 0.0.1" in report
+    assert "the runs were evaluated with different software" in report
+    assert "| evaluation software that differs | scipy " in report and "scipy 0.0.1 |" in report
     with open(suite.directory / "summary.csv", encoding="utf-8") as file:
-        assert {row["run"]: row["evaluated_with_scikit-image"] for row in csv.DictReader(file)}["wide"] == "0.0.1"
-    with open(suite.directory / "paired_comparison.csv", encoding="utf-8") as file:
-        rows = {row["metric"]: row for row in csv.DictReader(file)}
-    assert rows["ssim"]["same_software"] == "False" and rows["ssim"]["verdict"].endswith("scored with different software")
-    assert rows["psnr"]["same_software"] == "True"  # PSNR does not use scikit-image
+        hashes = {row["run"]: row["evaluation_software"] for row in csv.DictReader(file)}
+    assert len(hashes["wide"]) == 12 and hashes["wide"] != hashes["narrow"]
+    for row in _paired_rows(suite).values():  # every metric of the pair: the report cannot tell which depends on SciPy
+        assert row["software"] == "different" and row["verdict"].endswith("scored with different software")
 
 
-def test_report_ignores_software_the_metrics_do_not_use(tmp_path: Path):
-    """Review F53: the smoke suite scores PSNR and SSIM only, so the LPIPS package does not matter."""
+@pytest.mark.parametrize(
+    "damage",
+    [
+        lambda evaluation: evaluation.pop("software"),
+        lambda evaluation: evaluation.update(software=None),
+        lambda evaluation: evaluation["software"]["packages"].update(torch=["2.8"]),
+    ],
+    ids=["missing", "null", "malformed_version"],
+)
+def test_an_evaluation_without_a_readable_software_record_makes_the_comparison_unknown(tmp_path: Path, damage):
+    """Review F59, F65 and F68: never taken for the same software, and the report is still written."""
     suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
     run_suite(suite)
-    _evaluated_elsewhere(suite, "wide", lpips="0.0.1")
+    _evaluated_elsewhere(suite, "wide", damage)
 
     write_report(suite.name, suite.directory, suite.grouped_runs(), {}, suite.stages)
 
     report = (suite.directory / "summary.md").read_text(encoding="utf-8")
-    assert "different software" not in report and "lpips" not in report.lower()
-
-
-def test_report_survives_an_evaluation_with_damaged_software_versions(tmp_path: Path):
-    """Review F59."""
-    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
-    run_suite(suite)
-    _evaluated_elsewhere(suite, "wide")
-
-    write_report(suite.name, suite.directory, suite.grouped_runs(), {}, suite.stages)
-
-    report = (suite.directory / "summary.md").read_text(encoding="utf-8")
-    assert "## Quality with" in report and "torch not recorded" in report
+    assert "## Quality with" in report and "the software of some evaluations is not recorded" in report
+    for row in _paired_rows(suite).values():
+        assert row["software"] == "unknown" and row["verdict"].endswith("the software of a score is not recorded")
 
 
 def test_report_leaves_out_results_that_no_longer_match(tmp_path: Path):

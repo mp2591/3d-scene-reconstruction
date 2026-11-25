@@ -204,23 +204,36 @@ def test_seeds_of_one_run_that_started_from_different_weights_are_labelled():
 # ---------------------------------------------------------------- evaluation software (review F46)
 
 
-def _evaluated_with(group: GroupResult, lpips: str) -> GroupResult:
-    group.replicates[0].evaluation_software = {"torch": "2.14.1", "timm": "1.0.31", "lpips": lpips}
+def _evaluated_with(name: str, lpips: str | None) -> GroupResult:
+    """An evaluated run whose software record has this lpips version (None: no record)."""
+    group = _group(name, {1: {"psnr": 20.0}})
+    software = {"python": "3.10.6", "cuda": "13.0", "device": "GPU", "torch": "2.14.1", "lpips": lpips}
+    group.replicates[0].evaluation_software = software if lpips else None
     return group
 
 
-def test_the_report_warns_when_runs_were_evaluated_with_different_software():
-    runs = [_evaluated_with(_group("first", {}), "0.1.4"), _evaluated_with(_group("second", {}), "0.2.0")]
+def test_the_report_lists_what_differs_between_the_runs_software():
+    runs = [_evaluated_with("first", "0.1.4"), _evaluated_with("second", "0.2.0")]
 
     text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
 
-    assert "the runs were evaluated with different software versions" in text
-    assert "| software that evaluated the run | torch 2.14.1, timm 1.0.31, lpips 0.1.4 | torch 2.14.1, timm 1.0.31, lpips 0.2.0 |" in text
+    assert "the runs were evaluated with different software" in text
+    assert "| evaluation software that differs | lpips 0.1.4 | lpips 0.2.0 |" in text  # only what differs
 
 
 def test_runs_evaluated_with_the_same_software_get_no_software_row():
-    runs = [_evaluated_with(_group("first", {}), "0.1.4"), _evaluated_with(_group("second", {}), "0.1.4")]
+    runs = [_evaluated_with("first", "0.1.4"), _evaluated_with("second", "0.1.4")]
 
     text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
 
     assert "Nothing: all runs use identical settings." in text and "software" not in text
+
+
+def test_a_missing_software_record_is_never_taken_for_the_same_software():
+    """Review F65."""
+    runs = [_evaluated_with("first", None), _evaluated_with("second", None)]
+
+    text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
+
+    assert "the software of some evaluations is not recorded" in text
+    assert "| evaluation software that differs | not recorded | not recorded |" in text
