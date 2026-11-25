@@ -29,6 +29,7 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 from scene_recon.build import (
+    apply_float32_matmul_precision,
     build_dataset,
     build_loss,
     build_metrics,
@@ -73,6 +74,7 @@ class Trainer:
         """
         self.config = config
         self.device = resolve_device(config.experiment.device)
+        apply_float32_matmul_precision(config)
         seed_everything(config.experiment.seed)
 
         self.model = build_model(config).to(self.device)

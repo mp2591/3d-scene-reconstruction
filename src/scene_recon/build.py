@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import random
 from typing import Any, Callable, Mapping, Sequence
 
@@ -25,6 +26,29 @@ def resolve_device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(name)
+
+
+def apply_float32_matmul_precision(config: Config) -> None:
+    """Set how torch computes float32 matrix products, from ``experiment.float32_matmul_precision``.
+
+    The setting applies to the whole process, so every stage sets it again for its own run.
+    """
+    torch.set_float32_matmul_precision(config.experiment.float32_matmul_precision)
+
+
+@contextlib.contextmanager
+def configured_float32_matmul_precision(config: Config):
+    """Inside the block, compute float32 matrix products at the config's precision; restore the process's after it.
+
+    For building a run's model in the middle of other work, such as a suite
+    report checking an evaluation, with the arithmetic of that run.
+    """
+    previous = torch.get_float32_matmul_precision()
+    apply_float32_matmul_precision(config)
+    try:
+        yield
+    finally:
+        torch.set_float32_matmul_precision(previous)
 
 
 def seed_everything(seed: int) -> None:

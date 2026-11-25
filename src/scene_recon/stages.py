@@ -27,6 +27,7 @@ from typing import Any, Sequence
 import torch
 
 from scene_recon.build import (
+    apply_float32_matmul_precision,
     build_dataset,
     build_loss,
     build_metrics,
@@ -91,6 +92,7 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
         FileNotFoundError: If a model with trainable parameters has no checkpoint.
         RuntimeError: If a metric comes out as NaN or infinite; nothing is written then.
     """
+    apply_float32_matmul_precision(config)
     files = RunFiles(config.run_dir)
     weights_record: dict[str, Any]
     if checkpoint_path is None and not files.checkpoint.exists() and not _has_trainable_parameters(config):
@@ -167,6 +169,7 @@ def run_profiling(config: Config, checkpoint_path: Path | None = None) -> dict[s
     Returns:
         The content written to ``profile.json``.
     """
+    apply_float32_matmul_precision(config)
     files = RunFiles(config.run_dir)
     device = resolve_device(config.experiment.device)
     checkpoint_path = checkpoint_path or (files.checkpoint if files.checkpoint.exists() else None)
@@ -231,6 +234,7 @@ def check_model(
         image_sizes = {split: dataset_image_size(build_dataset(config, split)) for split in splits}
     else:
         image_sizes = {split: tuple(image_size) for split in splits}
+    apply_float32_matmul_precision(config)  # the contract is checked with the arithmetic of the real run
     device = resolve_device(config.experiment.device)
     model = build_model(config).to(device)
     _check_contract_where_used(model, config, image_sizes, stages, device)
@@ -284,6 +288,7 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
     if "profile" in stages:
         check_profiling_settings(config, test_scenes)
 
+    apply_float32_matmul_precision(config)  # the contract is checked with the arithmetic of the real run
     device = resolve_device(config.experiment.device)
     model = build_model(config).to(device)
     _check_contract_where_used(model, config, image_sizes, stages, device)

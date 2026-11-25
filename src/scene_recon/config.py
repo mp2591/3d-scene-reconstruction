@@ -54,6 +54,13 @@ class ExperimentSettings:
     device: str
     """``"auto"`` (CUDA if available, otherwise CPU) or any torch device string."""
 
+    float32_matmul_precision: str
+    """How float32 matrix products are computed, passed to ``torch.set_float32_matmul_precision``:
+    ``"highest"`` (full float32), ``"high"`` (TensorFloat-32 where the GPU has it) or ``"medium"``."""
+
+
+FLOAT32_MATMUL_PRECISIONS = ("highest", "high", "medium")
+
 
 @dataclass(frozen=True)
 class RendererSettings:
@@ -489,6 +496,13 @@ _VALUE_RULES: dict[str, int] = {
 def _check_values(settings: dict[str, Any]) -> None:
     """Check that the settings' values make sense, and report every problem at once."""
     problems = []
+
+    precision = settings["experiment"].float32_matmul_precision
+    if precision not in FLOAT32_MATMUL_PRECISIONS:
+        problems.append(
+            f"experiment.float32_matmul_precision must be one of {', '.join(FLOAT32_MATMUL_PRECISIONS)}, "
+            f"got {precision!r}."
+        )
 
     for setting, minimum in _VALUE_RULES.items():
         section, name = setting.split(".")

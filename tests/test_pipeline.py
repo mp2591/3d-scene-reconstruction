@@ -16,7 +16,8 @@ from scene_recon.config import Config, parse_config
 from scene_recon.models.base import ReconstructionModel
 from scene_recon.profiling import count_parameters
 from scene_recon.registry import MODELS, ConfigError
-from scene_recon.stages import check_model, check_run_can_start
+from scene_recon.provenance import evaluation_settings, profiling_settings, training_identity
+from scene_recon.stages import check_model, check_run_can_start, run_evaluation, run_profiling, run_training
 from scene_recon.structures import FieldOutput
 from scene_recon.training import Trainer
 
@@ -338,3 +339,33 @@ def test_unused_later_protocols_do_not_affect_profiling(tmp_path):
     check_run_can_start(config, ["profile"])
     with pytest.raises(ConfigError, match="uses every view"):
         check_run_can_start(config, ["evaluate"])
+
+
+def _with_precision(config: Config, precision: str) -> Config:
+    experiment = {**config.raw["experiment"], "float32_matmul_precision": precision}
+    return parse_config({**config.raw, "experiment": experiment})
+
+
+@pytest.mark.parametrize("precision", ["highest", "medium"])
+def test_every_stage_computes_float32_products_at_the_configured_precision(
+    smoke_config: Config, monkeypatch, precision
+):
+    config = _with_precision(smoke_config, precision)
+    requested = []
+    # Recorded instead of set, so the setting of the whole process stays as the other tests expect it.
+    monkeypatch.setattr(torch, "set_float32_matmul_precision", requested.append)
+
+    run_training(config)
+    run_evaluation(config)
+    run_profiling(config)
+
+    assert requested == [precision] * 3
+
+
+def test_the_float32_matmul_precision_is_part_of_what_a_result_was_measured_with(smoke_config: Config):
+    other = _with_precision(smoke_config, "highest")
+
+    assert evaluation_settings(other) != evaluation_settings(smoke_config)
+    assert profiling_settings(other) != profiling_settings(smoke_config)
+    # A trained run is always used at the precision it was trained with.
+    assert training_identity(other.raw) != training_identity(smoke_config.raw)

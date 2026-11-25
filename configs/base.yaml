@@ -10,6 +10,15 @@ experiment:
   output_dir: runs
   seed: 0
   device: auto              # "auto" = CUDA if available, else CPU. Or "cuda:1", "cpu", ...
+  # How float32 matrix products are computed (torch.set_float32_matmul_precision).
+  # "high" uses TensorFloat-32 on NVIDIA GPUs that have it (A100, RTX 30 and 40
+  # series, H100 and GH200): 10 instead of 23 mantissa bits in the products,
+  # sums still in float32, the usual choice for training. On an H100 such
+  # products run several times faster than in full float32. Convolutions use
+  # TensorFloat-32 in PyTorch already. "highest" = full float32; "medium" =
+  # bfloat16. Part of how a run was trained and measured, so it is the same
+  # for every run of a suite and cannot change for a trained run.
+  float32_matmul_precision: high
 
 loss:
   name: mse                 # Photometric MSE on the coarse and the fine render.

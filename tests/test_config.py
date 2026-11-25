@@ -276,3 +276,8 @@ def test_unknown_metric_option_is_reported_when_the_metric_is_built():
 
     with pytest.raises(ConfigError, match="scaled_psnr"):
         build_metrics(config.evaluation.metrics)
+
+
+def test_an_unknown_float32_matmul_precision_is_rejected():
+    with pytest.raises(ConfigError, match="float32_matmul_precision must be one of highest, high, medium"):
+        load_config(CONFIG_DIR / "smoke_test.yaml", overrides=["experiment.float32_matmul_precision=fast"])

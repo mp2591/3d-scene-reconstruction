@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from scene_recon.build import build_dataset, build_seeded_model, resolve_device
+from scene_recon.build import build_dataset, build_seeded_model, configured_float32_matmul_precision, resolve_device
 from scene_recon.checkpoints import (
     COMPATIBILITY_VERSION,
     TrainingProgress,
@@ -214,11 +214,16 @@ def checkpoint_record(checkpoint_path: Path, progress: TrainingProgress) -> dict
 
 
 def evaluation_settings(config: Config) -> dict[str, Any]:
-    """The settings and test data, besides the weights, that determine evaluation results."""
+    """The settings and test data, besides the weights, that determine evaluation results.
+
+    A trained run is evaluated at the float32 precision it was trained with (it is
+    part of its training identity); it is recorded here for models evaluated as built.
+    """
     return _canonical(
         {
             "compatibility_version": COMPATIBILITY_VERSION,
             "evaluation": config.raw["evaluation"],
+            "float32_matmul_precision": config.experiment.float32_matmul_precision,
             "renderer": config.raw["renderer"],
             "test_data": config.raw["data"]["test"],
             "test_data_fingerprint": build_dataset(config, "test").fingerprint(),
@@ -238,6 +243,7 @@ def profiling_settings(config: Config) -> dict[str, Any]:
         {
             "compatibility_version": COMPATIBILITY_VERSION,
             "profiling": config.raw["profiling"],
+            "float32_matmul_precision": config.experiment.float32_matmul_precision,
             "renderer": config.raw["renderer"],
             "model": config.raw["model"],
             "source_views": config.evaluation.source_view_sets[0],
@@ -286,7 +292,9 @@ def evaluation_status(config: Config) -> OutputStatus:
         # Made from a model without trainable parameters, as built (see run_evaluation).
         if files.checkpoint.is_file():
             return OutputStatus("stale", "made from the model as built, but the run now has a checkpoint", content)
-        if content.get("untrained_model") != untrained_model_record(config, build_seeded_model(config)):
+        with configured_float32_matmul_precision(config):  # the model is built as its evaluation built it
+            model = build_seeded_model(config)
+        if content.get("untrained_model") != untrained_model_record(config, model):
             return OutputStatus("stale", "made from a model built with other settings or weights", content)
         return OutputStatus("current", "", content)
     if not files.checkpoint.is_file():
