@@ -237,6 +237,7 @@ def check_pretrained_weights(value: Any, owner: str) -> None:
         return
     valid = (
         type(value) is dict
+        and all(type(key) is str for key in value)
         and value.keys() == {"source", "sha256"}
         and type(value["source"]) is str
         and type(value["sha256"]) is str
@@ -265,8 +266,8 @@ def pretrained_weights_of(model: nn.Module) -> dict[str, dict[str, str]]:
     for name, module in model.named_modules():
         value = getattr(module, "pretrained_weights", None)
         check_pretrained_weights(value, f"The model's part '{name}'")
-        if value is not None:
-            weights[name] = value
+        if value is not None:  # a copy, so later changes to the part's record do not change it
+            weights[name] = {"source": value["source"], "sha256": value["sha256"]}
     return weights
 
 
@@ -280,7 +281,9 @@ def weights_sha256(module: nn.Module) -> str:
     digest = hashlib.sha256()
     state = module.state_dict()
     for name in sorted(state):
-        values = state[name].detach().cpu().contiguous()
+        values = state[name].detach().cpu()
         digest.update(f"{name}\t{values.dtype}\t{tuple(values.shape)}\n".encode())
-        digest.update(values.flatten().view(torch.uint8).numpy().tobytes())
+        # A fresh copy is laid out densely; some tensors count as contiguous without being so.
+        dense = values.flatten().clone(memory_format=torch.contiguous_format)
+        digest.update(dense.view(torch.uint8).numpy().tobytes())
     return digest.hexdigest()

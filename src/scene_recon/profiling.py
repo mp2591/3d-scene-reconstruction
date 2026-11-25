@@ -35,7 +35,8 @@ def measure_rendering_speed(
     source_views: SceneViews,
     target_view: SceneViews,
     num_frames: int,
-    num_warmup_frames: int = 2,
+    num_warmup_frames: int,
+    min_free_gpu_memory: float,
 ) -> dict[str, float]:
     """Time full-frame rendering of one scene.
 
@@ -52,13 +53,16 @@ def measure_rendering_speed(
         num_frames: Number of timed frames to average over.
         num_warmup_frames: Untimed frames rendered first, so that one-off
             costs (memory allocation, CUDA kernel selection) are not counted.
+        min_free_gpu_memory: Share of the GPU's memory that must stay free
+            after every frame (``profiling.min_free_gpu_memory``).
 
     Returns:
-        ``encode_seconds``, ``seconds_per_frame``, ``frames_per_second``, and
-        two GPU memory peaks while rendering frames, in GB (``None`` on the
-        CPU): ``peak_memory_allocated_gb``, held by tensors, and
-        ``peak_memory_reserved_gb``, held by PyTorch from the driver, which
-        includes memory kept for reuse.
+        ``encode_seconds``, ``seconds_per_frame``, ``frames_per_second``, and,
+        in GB (``None`` on the CPU): ``peak_memory_allocated_gb``, the most
+        memory held by tensors while rendering; ``peak_memory_reserved_gb``,
+        the most PyTorch held from the driver, including memory kept for
+        reuse; and ``least_free_memory_gb``, the least the driver had left
+        after a frame.
 
     Raises:
         RuntimeError: If rendering filled the GPU's memory. Some drivers (on
@@ -68,33 +72,39 @@ def measure_rendering_speed(
     """
     was_training = model.training
     model.eval()
-    device = source_views.images.device
+    try:
+        device = source_views.images.device
+        scene_encoding = model.encode_scene(source_views)  # warm-up for the encoder
+        _wait_for_gpu(device)
+        start = time.perf_counter()
+        scene_encoding = model.encode_scene(source_views)
+        _wait_for_gpu(device)
+        encode_seconds = time.perf_counter() - start
 
-    scene_encoding = model.encode_scene(source_views)  # warm-up for the encoder
-    _wait_for_gpu(device)
-    start = time.perf_counter()
-    scene_encoding = model.encode_scene(source_views)
-    _wait_for_gpu(device)
-    encode_seconds = time.perf_counter() - start
-
-    _start_counting_memory(device)
-    for _ in range(num_warmup_frames):
-        renderer.render_images(model, scene_encoding, target_view)
-    _wait_for_gpu(device)
-    start = time.perf_counter()
-    for _ in range(num_frames):
-        renderer.render_images(model, scene_encoding, target_view)
-    _wait_for_gpu(device)
-    seconds_per_frame = (time.perf_counter() - start) / num_frames
-    memory = _check_memory_fits(device, renderer)
-
-    model.train(was_training)
+        # The driver's free memory is read after every frame (a fraction of a
+        # millisecond), because another program may release memory midway.
+        _start_counting_memory(device)
+        least_free = None
+        for _ in range(num_warmup_frames):
+            renderer.render_images(model, scene_encoding, target_view)
+            least_free = _least(least_free, free_gpu_memory(device))
+        _wait_for_gpu(device)
+        start = time.perf_counter()
+        for _ in range(num_frames):
+            renderer.render_images(model, scene_encoding, target_view)
+            least_free = _least(least_free, free_gpu_memory(device))
+        _wait_for_gpu(device)
+        seconds_per_frame = (time.perf_counter() - start) / num_frames
+        memory = _check_memory_fits(device, renderer, least_free, min_free_gpu_memory)
+    finally:
+        model.train(was_training)
     return {
         "encode_seconds": encode_seconds,
         "seconds_per_frame": seconds_per_frame,
         "frames_per_second": 1.0 / seconds_per_frame,
         "peak_memory_allocated_gb": memory["allocated"] / 1e9 if memory else None,
         "peak_memory_reserved_gb": memory["reserved"] / 1e9 if memory else None,
+        "least_free_memory_gb": memory["least_free"] / 1e9 if memory else None,
     }
 
 
@@ -105,28 +115,33 @@ def _start_counting_memory(device: torch.device) -> None:
         torch.cuda.reset_peak_memory_stats(device)
 
 
-MIN_FREE_GPU_MEMORY = 0.02
-"""Share of the GPU's memory that must still be free after the timed frames.
-
-Measured on an RTX 4090 (22.5 GB) under Windows, at 128x128 with two source
-views: at 2048 rays per chunk PyTorch reserved 5.8 GB and 15.1 GB stayed
-free; at 8192 it reserved 22.9 GB (tensors used only 13.9 GB of it), nothing
-stayed free, the driver moved the rest to main memory and the frame rate fell
-from 0.93 to 0.39. Memory used by other programs counts too, so the check
-uses what the driver reports as free, not only what PyTorch reserved.
-"""
+def _least(least: int | None, value: int | None) -> int | None:
+    """The smaller of two memory readings; ``None`` stands for no reading (on the CPU, or before the first)."""
+    if least is None:
+        return value
+    if value is None:
+        return least
+    return min(least, value)
 
 
-def _check_memory_fits(device: torch.device, renderer: VolumeRenderer) -> dict[str, int] | None:
-    """The GPU memory of the rendered frames (see ``gpu_memory``), after checking that it fitted on the GPU."""
+def _check_memory_fits(
+    device: torch.device, renderer: VolumeRenderer, least_free: int, min_free_gpu_memory: float
+) -> dict[str, int] | None:
+    """The GPU memory of the rendered frames, after checking that they fitted on the GPU.
+
+    Returns:
+        ``gpu_memory(device)`` with ``least_free``, the least free memory
+        after a frame, in bytes; ``None`` on the CPU.
+    """
     if device.type != "cuda":
         return None
-    memory = gpu_memory(device)
-    if memory["reserved"] > memory["total"] or memory["free"] < MIN_FREE_GPU_MEMORY * memory["total"]:
+    memory = {**gpu_memory(device), "least_free": least_free}
+    if memory["reserved"] > memory["total"] or least_free < min_free_gpu_memory * memory["total"]:
         raise RuntimeError(
-            f"Rendering filled the memory of {device}: PyTorch reserved {memory['reserved'] / 1e9:.1f} GB of "
-            f"{memory['total'] / 1e9:.1f} GB, and {memory['free'] / 1e9:.1f} GB stayed free. Part of it may have "
-            "been moved to main memory, so the measured speed would be wrong. Lower renderer.ray_chunk_size "
+            f"Rendering filled the memory of {device}: PyTorch reserved up to {memory['reserved'] / 1e9:.1f} GB "
+            f"of {memory['total'] / 1e9:.1f} GB, and at one point only {least_free / 1e9:.1f} GB was free "
+            f"(profiling.min_free_gpu_memory asks for {min_free_gpu_memory:.0%}). Part of it may have been "
+            "moved to main memory, so the measured speed would be wrong. Lower renderer.ray_chunk_size "
             f"(now {renderer.settings.ray_chunk_size}) for every run of the suite, or close other programs "
             "that use the GPU."
         )
@@ -134,22 +149,23 @@ def _check_memory_fits(device: torch.device, renderer: VolumeRenderer) -> dict[s
 
 
 def gpu_memory(device: torch.device) -> dict[str, int]:
-    """In bytes: the most memory PyTorch held on a GPU since it was last reset, and what is left now.
+    """In bytes: the most memory PyTorch held on a GPU since it was last reset, and the GPU's memory.
 
     * ``allocated``: the peak held by tensors;
     * ``reserved``: the peak PyTorch held from the driver, including memory
       kept for reuse;
-    * ``free``: what the driver reports as free now, after the other
-      programs on the GPU and the memory PyTorch still holds;
     * ``total``: the GPU's memory.
     """
-    free, total = torch.cuda.mem_get_info(device)
     return {
         "allocated": torch.cuda.max_memory_allocated(device),
         "reserved": torch.cuda.max_memory_reserved(device),
-        "free": free,
-        "total": total,
+        "total": torch.cuda.mem_get_info(device)[1],
     }
+
+
+def free_gpu_memory(device: torch.device) -> int | None:
+    """What the driver reports as free on a GPU now, in bytes, after other programs and PyTorch; ``None`` on the CPU."""
+    return torch.cuda.mem_get_info(device)[0] if device.type == "cuda" else None
 
 
 def _wait_for_gpu(device: torch.device) -> None:

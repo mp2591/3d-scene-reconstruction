@@ -80,3 +80,8 @@ evaluation:
 profiling:
   num_frames: 20            # Timed frames; the reported speed is their average.
   num_warmup_frames: 2      # Untimed frames first, so start-up costs are not counted.
+  # Share of the GPU's memory that must stay free after every frame, or the
+  # speed is refused: a full GPU can spill into main memory on Windows. On the
+  # RTX 4090 (22.5 GB), two source views at 2048 rays per chunk left 15.1 GB
+  # free; at 8192 nothing stayed free and the frame rate fell from 0.93 to 0.39.
+  min_free_gpu_memory: 0.02

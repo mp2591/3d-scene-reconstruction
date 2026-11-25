@@ -188,6 +188,7 @@ def run_profiling(config: Config, checkpoint_path: Path | None = None) -> dict[s
         target_view=views.select_views([num_source_views]),
         num_frames=config.profiling.num_frames,
         num_warmup_frames=config.profiling.num_warmup_frames,
+        min_free_gpu_memory=config.profiling.min_free_gpu_memory,
     )
     height, width = views.image_size
     report = {
@@ -290,7 +291,6 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
             "evaluating it as built would measure untrained weights. Add the 'train' stage, or train the run first."
         )
     if "train" in stages:
-        pretrained_weights_of(model)  # raises if a part's record could not be stored in the checkpoint
         build_optimizer_and_scheduler(model, config.optimization)
 
 
@@ -372,6 +372,8 @@ def _check_contract_where_used(
     the sizes differ, a failure names the splits of the size that failed:
     some encoders accept only some sizes, such as multiples of their stride.
     """
+    if "train" in stages:
+        pretrained_weights_of(model)  # raises if a part's record could not be stored in a checkpoint
     uses = _how_splits_are_used(config, stages)
     sizes = sorted({image_sizes[split] for split in uses})
     for size in sizes:

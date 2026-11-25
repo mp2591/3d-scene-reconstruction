@@ -158,6 +158,14 @@ class ProfilingSettings:
     num_warmup_frames: int
     """Untimed renders done first, so one-off start-up costs are not counted."""
 
+    min_free_gpu_memory: float
+    """Share of the GPU's memory that must stay free after every frame, or the speed is refused.
+
+    Some drivers (on Windows) move GPU memory to the computer's main memory
+    when the GPU is full instead of failing, and rendering gets several times
+    slower. Memory used by other programs counts too.
+    """
+
 
 @dataclass(frozen=True)
 class Config:
@@ -472,6 +480,7 @@ _VALUE_RULES: dict[str, int] = {
     "evaluation.num_preview_scenes": 0,
     "profiling.num_frames": 1,
     "profiling.num_warmup_frames": 0,
+    "profiling.min_free_gpu_memory": 0,
 }
 
 

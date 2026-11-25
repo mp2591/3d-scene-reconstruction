@@ -211,11 +211,14 @@ each seed is listed.
 
 A saved evaluation stays valid when the software is updated, so that the
 report can also be made on another machine. Every evaluation records the
-versions of PyTorch, `timm` and `lpips` it was made with, the packages whose
-code computes the scores. If the runs' evaluations were made with different
-versions, the report says so and lists them: small differences in quality
-may then come from the software. Evaluate every run again with one
-installation (`scene-recon evaluate`) for an exact comparison.
+versions of the packages it was made with. The report looks at those whose
+code computes the scores: PyTorch and `timm` for the models, scikit-image
+for SSIM, and `lpips` with torchvision for LPIPS. If the runs' evaluations
+were made with different versions, the report says so and lists them, in
+`summary.md` and in `summary.csv`, and a paired comparison of an affected
+metric says *scored with different software* instead of a plain verdict
+(`same_software` in `paired_comparison.csv`). Evaluate every run again with
+one installation (`scene-recon evaluate`) for an exact comparison.
 
 `summary.csv` has one row per run and seed. Quality columns are named
 `<metric>_<n>v`: `psnr_1v` is the PSNR with one input view. Load it with

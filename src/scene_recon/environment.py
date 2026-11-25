@@ -24,6 +24,8 @@ def environment() -> dict[str, Any]:
         "torch": str(torch.__version__),  # a str subclass that restricted loading would reject
         "timm": package_version("timm"),  # implements the ConvNeXt V2 encoder
         "lpips": package_version("lpips"),  # implements the LPIPS metric
+        "torchvision": package_version("torchvision"),  # its VGG network runs inside LPIPS
+        "scikit-image": package_version("scikit-image"),  # implements the SSIM metric
         "cuda": torch.version.cuda,
         "platform": platform.platform(),
         "gpus": [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())],

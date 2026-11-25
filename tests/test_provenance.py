@@ -278,6 +278,18 @@ def test_a_checkpoint_from_older_code_is_refused_everywhere(srn_config: Config, 
         run_profiling(srn_config)
 
 
+def test_a_checkpoint_of_the_retired_version_2_is_refused(smoke_config: Config):
+    """Review F64: version 2 was written by intermediate commits whose code trained differently."""
+    from scene_recon.stages import check_run_can_start
+
+    assert COMPATIBILITY_VERSION > 2
+    Trainer(smoke_config).train()
+    _rewrite_checkpoint_version(RunFiles(smoke_config.run_dir).checkpoint, 2)
+
+    with pytest.raises(ConfigError, match="compatibility version 2"):
+        check_run_can_start(smoke_config, ["train"])
+
+
 def test_a_checkpoint_from_newer_code_is_refused(smoke_config: Config):
     Trainer(smoke_config).train()
     _rewrite_checkpoint_version(RunFiles(smoke_config.run_dir).checkpoint, COMPATIBILITY_VERSION + 1)
@@ -322,16 +334,18 @@ def test_checkpoints_record_the_pretrained_weights_the_run_started_from(smoke_co
 def test_a_weights_record_a_checkpoint_could_not_hold_is_refused_before_training(
     smoke_config: Config, monkeypatch, part: str
 ):
-    """Review F44: suite preflight finds it in any part of the model, instead of the first checkpoint save."""
+    """Review F44 and F58: suite preflight and check-model find it in any part of the model."""
     from scene_recon.models.testing.tiny_decoder import TinyPooledMLPDecoder
     from scene_recon.models.testing.tiny_encoder import TinyConvEncoder
-    from scene_recon.stages import check_run_can_start
+    from scene_recon.stages import check_model, check_run_can_start
 
     owner = {"encoder": TinyConvEncoder, "decoder": TinyPooledMLPDecoder}[part]
     monkeypatch.setattr(owner, "pretrained_weights", {"source": Path("weights/part.pth"), "sha256": "1" * 64}, raising=False)
 
     with pytest.raises(ConfigError, match="has pretrained_weights"):
         check_run_can_start(smoke_config, ["train"])
+    with pytest.raises(ConfigError, match="has pretrained_weights"):
+        check_model(smoke_config, stages=["train"])
     assert not RunFiles(smoke_config.run_dir).checkpoint.exists()
 
 
@@ -344,6 +358,19 @@ def test_a_model_that_starts_from_random_values_records_no_pretrained_weights(sm
 
 
 # ---------------------------------------------------------------- software versions (review F13)
+
+
+def test_every_evaluation_records_the_packages_that_compute_its_metrics():
+    """Review F53: otherwise the report could not tell that two runs were scored with different versions."""
+    from scene_recon.environment import environment
+    from scene_recon.registry import METRICS
+    from scene_recon.report import metric_software
+
+    recorded = environment()
+
+    for metric in METRICS.names():
+        assert set(metric_software(metric)) <= recorded.keys(), metric
+    assert "scikit-image" in metric_software("ssim") and "lpips" in metric_software("lpips")
 
 
 def test_the_timm_version_is_recorded_and_decides_whether_a_profile_is_current(smoke_config: Config, monkeypatch):

@@ -79,10 +79,12 @@ optimization:
     encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
 ```
 
-Only pretrained parameters belong in `encoder`: `encoder_parameter_groups`
-(in `scene_recon.models.base`) keeps the layers the encoder adds on top of
-them, its `adapter`, in a group of their own at the base learning rate (see
-"Optional: choosing the encoder and decoder from config" below).
+`encoder_parameter_groups` (in `scene_recon.models.base`) puts the layers an
+encoder adds on top of its backbone, its `adapter`, in a group of their own,
+and the rest in `encoder` (see "Optional: choosing the encoder and decoder
+from config" below). The override above is meant for a pretrained backbone;
+the adapter starts from random values, so it keeps the base learning rate.
+An encoder trained from scratch, such as a U-Net, needs no override.
 
 For layer-wise learning-rate decay, return one group per encoder stage, named
 `encoder.stage0`, `encoder.stage1`, and so on, each with its own `lr_scale`.
@@ -242,7 +244,9 @@ class PixelAlignedNeRF(ReconstructionModel):
     def __init__(self, encoder: dict, decoder: dict) -> None:
         super().__init__()
         self.encoder = build_encoder(encoder, "pixel_aligned_nerf")
-        self.decoder = DECODERS.build(decoder, num_features=self.encoder.num_features)
+        # Random numbers of its own, so the decoder starts the same whichever encoder came first.
+        with seeded_random_numbers(part_seed("decoder")):
+            self.decoder = DECODERS.build(decoder, num_features=self.encoder.num_features)
 ```
 
 `build_encoder` (in `scene_recon.models.base`) builds the encoder from

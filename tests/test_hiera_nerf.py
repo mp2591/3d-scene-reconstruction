@@ -1,5 +1,6 @@
 """Tests of the Hiera-T encoder and the HieraNeRF model."""
 
+import enum
 from pathlib import Path
 
 import pytest
@@ -423,6 +424,13 @@ def test_every_model_names_an_encoder_missing_an_attribute(model: dict, attribut
 _A_HASH = "0" * 64
 
 
+class _Key(str, enum.Enum):
+    """Equal to the plain strings, but a checkpoint read with weights_only=True cannot hold them (review F57)."""
+
+    SOURCE = "source"
+    SHA256 = "sha256"
+
+
 @pytest.mark.parametrize(
     "attribute, value",
     [
@@ -431,8 +439,10 @@ _A_HASH = "0" * 64
         ("pretrained_weights", {"source": Path("weights/encoder.pth"), "sha256": _A_HASH}),
         ("pretrained_weights", {"source": "weights/encoder.pth", "sha256": "not a hash"}),
         ("pretrained_weights", {"source": "weights/encoder.pth", "sha256": _A_HASH, "step": 0}),
+        ("pretrained_weights", {_Key.SOURCE: "weights/encoder.pth", _Key.SHA256: _A_HASH}),
     ],
-    ids=["adapter_not_a_module", "weights_not_a_dict", "source_not_a_string", "hash_malformed", "extra_entry"],
+    ids=["adapter_not_a_module", "weights_not_a_dict", "source_not_a_string", "hash_malformed", "extra_entry",
+         "keys_not_plain_strings"],
 )
 def test_an_encoder_whose_adapter_or_weights_record_is_malformed_is_refused(
     attribute: str, value, monkeypatch: pytest.MonkeyPatch
@@ -452,6 +462,17 @@ def test_a_malformed_weights_record_outside_the_encoder_is_refused_too():
         pretrained_weights_of(nn.Sequential(nn.Identity(), part))
 
 
+def test_the_collected_weights_record_is_a_copy():
+    """Review F57: a part changing its record later does not change what the run recorded."""
+    part = nn.Linear(2, 2)
+    part.pretrained_weights = {"source": "weights/part.pth", "sha256": _A_HASH}
+    recorded = pretrained_weights_of(nn.Sequential(part))
+
+    part.pretrained_weights["sha256"] = "1" * 64
+
+    assert recorded == {"0": {"source": "weights/part.pth", "sha256": _A_HASH}}
+
+
 def test_the_weights_hash_works_for_every_data_type_and_ignores_creation_order():
     """Review F48."""
     first, second = nn.Linear(2, 2), nn.Linear(2, 2)
@@ -464,6 +485,12 @@ def test_the_weights_hash_works_for_every_data_type_and_ignores_creation_order()
 
     one_way.to(torch.bfloat16)  # other_way holds the same layers
     assert weights_sha256(one_way) == weights_sha256(other_way) != in_float32
+
+    strided = nn.Module()  # review F60: one element, counted as contiguous, but with a stride of 2
+    strided.register_buffer("values", torch.arange(8, dtype=torch.float32)[::2][:1])
+    dense = nn.Module()
+    dense.register_buffer("values", torch.zeros(1))
+    assert weights_sha256(strided) == weights_sha256(dense)  # both hold one 0.0
 
 
 def test_the_hiera_encoder_records_the_weights_it_loaded(tmp_path: Path):

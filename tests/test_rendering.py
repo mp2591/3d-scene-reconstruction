@@ -223,30 +223,26 @@ def test_a_speed_measured_while_the_gpu_memory_overflowed_is_refused(monkeypatch
 
     renderer = VolumeRenderer(_settings(16, 8))
     gpu = torch.device("cuda:0")
-
     gb = 10**9
 
-    def gpu_with(**memory):
-        monkeypatch.setattr(profiling, "gpu_memory", lambda device: {"allocated": 3 * gb, "total": 24 * gb, **memory})
+    def check(reserved: int, least_free: int):
+        monkeypatch.setattr(profiling, "gpu_memory", lambda device: {"allocated": 3 * gb, "reserved": reserved, "total": 24 * gb})
+        return profiling._check_memory_fits(gpu, renderer, least_free, min_free_gpu_memory=0.02)
 
-    gpu_with(reserved=25 * gb, free=0)  # what the RTX 4090 showed at 8192 rays: reserved beyond the total
     with pytest.raises(RuntimeError, match="Lower renderer.ray_chunk_size"):
-        profiling._check_memory_fits(gpu, renderer)
-    gpu_with(reserved=25 * gb, free=2 * gb)  # reserved beyond the total, even if some was released since
+        check(reserved=25 * gb, least_free=0)  # what the RTX 4090 showed at 8192 rays: reserved beyond the total
     with pytest.raises(RuntimeError, match="Lower renderer.ray_chunk_size"):
-        profiling._check_memory_fits(gpu, renderer)
-    gpu_with(reserved=6 * gb, free=gb // 10)  # other programs filled the rest (review F45)
+        check(reserved=25 * gb, least_free=2 * gb)  # reserved beyond the total, even if some was free at times
     with pytest.raises(RuntimeError, match="close other programs"):
-        profiling._check_memory_fits(gpu, renderer)
+        check(reserved=6 * gb, least_free=gb // 10)  # other programs filled the rest (review F45)
 
-    gpu_with(reserved=6 * gb, free=15 * gb)
-    assert profiling._check_memory_fits(gpu, renderer)["reserved"] == 6 * gb
-    assert profiling._check_memory_fits(torch.device("cpu"), renderer) is None
+    assert check(reserved=6 * gb, least_free=15 * gb)["least_free"] == 15 * gb
+    assert profiling._check_memory_fits(torch.device("cpu"), renderer, None, min_free_gpu_memory=0.02) is None
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
 def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_config: Config, monkeypatch):
-    """Review F45: through measure_rendering_speed itself, on a real GPU."""
+    """Review F45, F55, F56 and F63: through measure_rendering_speed itself, on a real GPU."""
     from scene_recon import profiling
     from scene_recon.build import build_dataset
 
@@ -254,17 +250,30 @@ def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_c
     views = build_dataset(smoke_config, "test").load_scene(0, [0, 1]).to("cuda")
     renderer = VolumeRenderer(smoke_config.renderer)
 
-    def measure() -> dict:
+    def measure(num_frames: int = 1) -> dict:
         return profiling.measure_rendering_speed(
-            model, renderer, views.select_views([0]), views.select_views([1]), num_frames=1, num_warmup_frames=0
+            model,
+            renderer,
+            views.select_views([0]),
+            views.select_views([1]),
+            num_frames=num_frames,
+            num_warmup_frames=0,
+            min_free_gpu_memory=0.02,
         )
 
-    left_over = torch.empty(2 * 10**9, dtype=torch.uint8, device="cuda")
-    del left_over  # PyTorch keeps its 2 GB for reuse, as after training in the same process
+    # Memory PyTorch keeps for reuse after earlier work, such as training in the same process,
+    # is released first: the peaks count rendering alone.
+    left_over_bytes = min(10**9, torch.cuda.mem_get_info()[0] // 4)
+    left_over = torch.empty(left_over_bytes, dtype=torch.uint8, device="cuda")
+    del left_over
     speed = measure()
-    assert 0 < speed["peak_memory_allocated_gb"] <= speed["peak_memory_reserved_gb"] < 1  # rendering alone
+    assert 0 < speed["peak_memory_allocated_gb"] <= speed["peak_memory_reserved_gb"] < left_over_bytes / 1e9
+    assert speed["least_free_memory_gb"] > 0
 
-    real_gpu_memory = profiling.gpu_memory
-    monkeypatch.setattr(profiling, "gpu_memory", lambda device: {**real_gpu_memory(device), "free": 0})
-    with pytest.raises(RuntimeError, match="Lower renderer.ray_chunk_size"):
-        measure()
+    # Another program filled the GPU during the first frame and released it before the second.
+    readings = iter([0, 8 * 10**9])
+    monkeypatch.setattr(profiling, "free_gpu_memory", lambda device: next(readings))
+    model.train()
+    with pytest.raises(RuntimeError, match="at one point only 0.0 GB was free"):
+        measure(num_frames=2)
+    assert model.training  # restored, although the measurement was refused
