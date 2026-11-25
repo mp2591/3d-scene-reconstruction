@@ -7,6 +7,7 @@ always be traced back to the code and machine that produced it.
 from __future__ import annotations
 
 import functools
+import importlib.metadata
 import platform
 import subprocess
 from pathlib import Path
@@ -21,6 +22,8 @@ def environment() -> dict[str, Any]:
     return {
         "python": platform.python_version(),
         "torch": str(torch.__version__),  # a str subclass that restricted loading would reject
+        "timm": package_version("timm"),  # implements the ConvNeXt V2 encoder
+        "lpips": package_version("lpips"),  # implements the LPIPS metric
         "cuda": torch.version.cuda,
         "platform": platform.platform(),
         "gpus": [torch.cuda.get_device_name(index) for index in range(torch.cuda.device_count())],
@@ -29,12 +32,23 @@ def environment() -> dict[str, Any]:
 
 
 def device_description(device: torch.device) -> dict[str, Any]:
-    """What a speed measurement depends on: the device, its model, the software and the CPU threads."""
+    """What a speed measurement depends on: the device, its model, the software and the CPU threads.
+
+    The software is PyTorch and ``timm``, whose code runs the ConvNeXt V2 encoder.
+    """
     if device.type == "cuda":
         name = torch.cuda.get_device_name(device) if torch.cuda.is_available() else "CUDA not available"
     else:
         name = f"{platform.machine()} CPU, {torch.get_num_threads()} threads"
-    return {"device": str(device), "name": name, "torch": str(torch.__version__)}
+    return {"device": str(device), "name": name, "torch": str(torch.__version__), "timm": package_version("timm")}
+
+
+def package_version(name: str) -> str | None:
+    """The installed version of a Python package, or ``None`` if it is not installed."""
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
 
 
 def _source_revision() -> dict[str, Any]:

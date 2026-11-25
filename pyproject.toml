@@ -17,7 +17,7 @@ dependencies = [
     "tensorboard",
     "matplotlib",
     "scipy",
-    "timm",
+    "timm>=1.0,<2",   # 1.0.31 tested; its version is recorded with every result
 ]
 
 [project.optional-dependencies]

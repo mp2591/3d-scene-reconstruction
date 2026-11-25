@@ -324,3 +324,23 @@ def test_a_model_that_starts_from_random_values_records_no_pretrained_weights(sm
     Trainer(smoke_config).train()
 
     assert read_checkpoint_starting_weights(RunFiles(smoke_config.run_dir).checkpoint) == {}
+
+
+# ---------------------------------------------------------------- software versions (review F13)
+
+
+def test_the_timm_version_is_recorded_and_decides_whether_a_profile_is_current(smoke_config: Config, monkeypatch):
+    import timm
+
+    from scene_recon import environment as environment_module
+
+    assert environment_module.environment()["timm"] == timm.__version__
+    run_profiling(smoke_config)
+    assert profile_status(smoke_config).is_current
+
+    real_version = environment_module.package_version
+    monkeypatch.setattr(
+        environment_module, "package_version", lambda name: "0.0.1" if name == "timm" else real_version(name)
+    )
+
+    assert profile_status(smoke_config).state == "stale"
