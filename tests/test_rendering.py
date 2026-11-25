@@ -240,14 +240,42 @@ def test_a_speed_measured_while_the_gpu_memory_overflowed_is_refused(monkeypatch
     assert profiling._check_memory_fits(torch.device("cpu"), renderer, None, min_free_gpu_memory=0.02) is None
 
 
-@pytest.mark.skipif(
-    not torch.cuda.is_available() or torch.cuda.mem_get_info()[0] < 2 * 10**9, reason="needs a CUDA GPU with 2 GB free"
-)
-def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_config: Config, monkeypatch):
-    """Review F45, F55, F56, F63, F69, F70 and F73: through measure_rendering_speed itself, on a real GPU."""
+def test_the_speed_measurement_restores_a_part_shared_by_two_parents(smoke_config: Config):
+    """Review F80: a part in evaluation mode under two training parents stays in evaluation mode."""
     from scene_recon import profiling
     from scene_recon.build import build_dataset
 
+    model = build_model(smoke_config)
+    views = build_dataset(smoke_config, "test").load_scene(0, [0, 1])
+    first_parent, second_parent = list(model.children())[:2]
+    shared = torch.nn.BatchNorm1d(1)  # running statistics change if it is put back into training mode
+    first_parent.add_module("shared_for_test", shared)
+    second_parent.add_module("shared_for_test", shared)
+    model.train()
+    shared.eval()
+
+    profiling.measure_rendering_speed(
+        model,
+        VolumeRenderer(smoke_config.renderer),
+        views.select_views([0]),
+        views.select_views([1]),
+        num_frames=1,
+        num_warmup_frames=0,
+        min_free_gpu_memory=0.02,
+    )
+
+    assert first_parent.training and second_parent.training and not shared.training
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA GPU")
+def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_config: Config, monkeypatch):
+    """Review F45, F55, F56, F63, F69, F70, F73 and F82: through measure_rendering_speed itself, on a real GPU."""
+    from scene_recon import profiling
+    from scene_recon.build import build_dataset
+
+    free_bytes = torch.cuda.mem_get_info()[0]  # read now: other programs may have taken memory since collection
+    if free_bytes < 2 * 10**9:
+        pytest.skip("needs a CUDA GPU with 2 GB free")
     model = build_model(smoke_config).to("cuda")
     views = build_dataset(smoke_config, "test").load_scene(0, [0, 1]).to("cuda")
     renderer = VolumeRenderer(smoke_config.renderer)
@@ -265,7 +293,7 @@ def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_c
 
     # Memory PyTorch keeps for reuse after earlier work, such as training in the same process,
     # is released first: the peaks count rendering alone.
-    left_over_bytes = 10**9  # far more than rendering the smoke test's small frames reserves
+    left_over_bytes = min(10**9, free_bytes // 4)  # far more than rendering the smoke test's small frames reserves
     left_over = torch.empty(left_over_bytes, dtype=torch.uint8, device="cuda")
     del left_over
     speed = measure()

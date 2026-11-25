@@ -54,7 +54,7 @@ def measure_rendering_speed(
         num_warmup_frames: Untimed frames rendered first, so that one-off
             costs (memory allocation, CUDA kernel selection) are not counted.
         min_free_gpu_memory: Share of the GPU's memory that must stay free
-            after every frame (``profiling.min_free_gpu_memory``).
+            at every reading (``profiling.min_free_gpu_memory``).
 
     Returns:
         ``encode_seconds``, ``seconds_per_frame``, ``frames_per_second``, and,
@@ -62,7 +62,7 @@ def measure_rendering_speed(
         memory held by tensors while rendering; ``peak_memory_reserved_gb``,
         the most PyTorch held from the driver, including memory kept for
         reuse; and ``least_free_memory_gb``, the least the driver had left
-        after a frame.
+        at a reading: after each frame was queued, and once all had run.
 
     Raises:
         RuntimeError: If rendering filled the GPU's memory. Some drivers (on
@@ -81,9 +81,11 @@ def measure_rendering_speed(
         _wait_for_gpu(device)
         encode_seconds = time.perf_counter() - start
 
-        # The driver's free memory is read after every frame is queued (a
-        # fraction of a millisecond), because another program may release
-        # memory midway.
+        # The driver's free memory is read after each frame is queued (a
+        # fraction of a millisecond) and once all frames have run. PyTorch
+        # takes memory when work is queued, so these readings see what it
+        # holds; memory another program takes and releases between two
+        # readings is missed.
         _start_counting_memory(device)
         least_free = None
         for _ in range(num_warmup_frames):
@@ -96,12 +98,11 @@ def measure_rendering_speed(
             least_free = _least(least_free, free_gpu_memory(device))
         _wait_for_gpu(device)
         seconds_per_frame = (time.perf_counter() - start) / num_frames
-        # Once more when all queued work has run: the readings above can be taken while it is still queued.
         least_free = _least(least_free, free_gpu_memory(device))
         memory = _check_memory_fits(device, renderer, least_free, min_free_gpu_memory)
     finally:
         for module, training in modes.items():
-            module.train(training)
+            module.training = training  # not .train(), which also sets every part below it
     return {
         "encode_seconds": encode_seconds,
         "seconds_per_frame": seconds_per_frame,
@@ -135,7 +136,7 @@ def _check_memory_fits(
 
     Returns:
         ``gpu_memory(device)`` with ``least_free``, the least free memory
-        after a frame, in bytes; ``None`` on the CPU.
+        at a reading, in bytes; ``None`` on the CPU.
     """
     if device.type != "cuda":
         return None

@@ -159,11 +159,13 @@ class ProfilingSettings:
     """Untimed renders done first, so one-off start-up costs are not counted."""
 
     min_free_gpu_memory: float
-    """Share of the GPU's memory that must stay free after every frame, or the speed is refused.
+    """Share of the GPU's memory that must stay free while rendering, or the speed is refused.
 
     Some drivers (on Windows) move GPU memory to the computer's main memory
     when the GPU is full instead of failing, and rendering gets several times
-    slower. Memory used by other programs counts too.
+    slower. Memory used by other programs counts too. The free memory is read
+    after each frame is queued and once all frames have run; memory another
+    program takes and releases between two readings is missed.
     """
 
 

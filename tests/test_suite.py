@@ -348,16 +348,18 @@ def test_report_keeps_evaluations_from_other_software_and_says_which(tmp_path: P
 
 
 @pytest.mark.parametrize(
-    "damage",
+    ("damage", "problem"),
     [
-        lambda evaluation: evaluation.pop("software"),
-        lambda evaluation: evaluation.update(software=None),
-        lambda evaluation: evaluation["software"]["packages"].update(torch=["2.8"]),
+        (lambda evaluation: evaluation.pop("software"), "not recorded"),
+        (lambda evaluation: evaluation.update(software=None), "not recorded"),
+        (lambda evaluation: evaluation["software"]["packages"].update(torch=["2.8"]), "damaged"),
+        (lambda evaluation: evaluation["software"].update(device=None), "device model unknown"),
+        (lambda evaluation: evaluation["software"].update(packages=None), "package list unreadable"),
     ],
-    ids=["missing", "null", "malformed_version"],
+    ids=["missing", "null", "malformed_version", "unnamed_device", "unreadable_packages"],
 )
-def test_an_evaluation_without_a_readable_software_record_makes_the_comparison_unknown(tmp_path: Path, damage):
-    """Review F59, F65 and F68: never taken for the same software, and the report is still written."""
+def test_an_evaluation_without_a_readable_software_record_makes_the_comparison_unknown(tmp_path: Path, damage, problem):
+    """Review F59, F65, F68, F76 and F77: never taken for the same software; the report says why, and is written."""
     suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
     run_suite(suite)
     _evaluated_elsewhere(suite, "wide", damage)
@@ -365,9 +367,10 @@ def test_an_evaluation_without_a_readable_software_record_makes_the_comparison_u
     write_report(suite.name, suite.directory, suite.grouped_runs(), {}, suite.stages)
 
     report = (suite.directory / "summary.md").read_text(encoding="utf-8")
-    assert "## Quality with" in report and "the software of some evaluations is not recorded" in report
+    assert "## Quality with" in report and "the software of some evaluations cannot be compared" in report
+    assert f"*{problem}*: " in report and f"| {problem} |" in report
     for row in _paired_rows(suite).values():
-        assert row["software"] == "unknown" and row["verdict"].endswith("the software of a score is not recorded")
+        assert row["software"] == "unknown" and row["verdict"].endswith("the software of a score is unknown")
 
 
 def test_report_leaves_out_results_that_no_longer_match(tmp_path: Path):

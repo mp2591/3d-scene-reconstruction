@@ -91,7 +91,9 @@ The runs must also be **measured identically**: the `evaluation`,
 `renderer.ray_chunk_size` (rendering speed depends on it) must be the same
 for every run, or the suite does not start. Set them in `common`. Runs
 measured differently could not be compared. Profiling also stops with an
-error if rendering filled the GPU's memory: some drivers (on Windows) then
+error if rendering filled the GPU's memory (less than
+`profiling.min_free_gpu_memory` of it free when read, after each frame is
+queued and once all have run): some drivers (on Windows) then
 move memory to the computer's main memory instead of failing, and the
 measured speed would be several times too low. Each `profile.json` records
 the peak GPU memory of rendering.
@@ -211,21 +213,30 @@ each seed is listed.
 
 A saved evaluation stays valid when the software is updated, so that the
 report can also be made on another machine. Every evaluation saves what it
-was made with: the Python version, the CUDA version, the name of the device
-(floating-point results can differ slightly between GPU models) and every
+was made with: the Python version, the CUDA version PyTorch was built with,
+the type and model of the device (floating-point results can differ slightly
+between GPU models; on the CPU, the number of threads too) and every
 installed package with its version, so that a package a new model or metric
-uses is covered without anyone naming it. The source revision is not part of
-it: a change that alters results raises the compatibility version instead.
+uses is covered without anyone naming it.
 
-The report compares these records whole. If two runs' records differ, it
-warns and lists only what differs; if a record is missing or damaged, it
-says the software is not recorded. Their paired comparisons then give no
-plain verdict: *scored with different software* or *not recorded*
-(`software` in `paired_comparison.csv`: `same`, `different` or `unknown`).
-`summary.csv` has a short hash of each run's record. The report cannot tell
-which package a score depends on, so it may flag an update that does not
-matter for it; the list lets you judge. Evaluate every run again with one
-installation (`scene-recon evaluate`) for an exact comparison.
+The report compares these records whole: two evaluations count as made with
+the same software when all of these are identical, and only then. What the
+record leaves out, it cannot see: two builds of a package that carry the
+same version number, the GPU driver, the operating system, and the source
+revision (a change that alters results raises the compatibility version
+instead). If two runs' records differ, it warns and lists only what differs.
+If a record cannot be compared, it says why: *not recorded* (made before
+evaluations recorded their software), *device model unknown* (only NVIDIA
+GPUs, and CPUs whose model the operating system reports, are named),
+*package list unreadable* (an installed package's metadata could not be
+read; the evaluation's log names it) or *damaged*. Such a record is never
+taken for the same software. The paired comparisons of those runs then give
+no plain verdict: *scored with different software* or *unknown* (`software`
+in `paired_comparison.csv`: `same`, `different` or `unknown`). `summary.csv`
+has a short hash of each run's record. The report cannot tell which package
+a score depends on, so it may flag an update that does not matter for it;
+the list lets you judge. Evaluate every run again with one installation
+(`scene-recon evaluate`) for an exact comparison.
 
 `summary.csv` has one row per run and seed. Quality columns are named
 `<metric>_<n>v`: `psnr_1v` is the PSNR with one input view. Load it with

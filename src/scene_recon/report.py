@@ -31,12 +31,13 @@ but it is left out of best values, figures and paired comparisons.
 
 A saved evaluation stays current when the software changes, so that the
 report can be made on another machine. Every evaluation saves what it was
-made with: Python, CUDA, the device and every installed package (see
-``environment.evaluation_software``). The report compares these records
-whole: if two runs' records differ, or one is missing, it says so, lists
-what differs, and gives no plain verdict in their paired comparison. It
-cannot tell which package a score depends on, so it may also flag a
-difference that does not matter; the list lets the reader judge.
+made with: Python, CUDA, the device's type and model, and every installed
+package with its version (see ``environment.evaluation_software``, which
+also lists what the record leaves out). The report compares these records
+whole: if two runs' records differ, or one cannot be compared, it says so,
+lists what differs or why, and gives no plain verdict in their paired
+comparison. It cannot tell which package a score depends on, so it may
+also flag a difference that does not matter; the list lets the reader judge.
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ import scene_recon.metrics  # noqa: F401  (registers the metrics, whose display 
 from scene_recon.checkpoints import read_checkpoint_starting_weights, read_checkpoint_training_data, read_progress
 from scene_recon.comparison import PairedDifference, Summary, average_over_seeds, paired_difference, summarize
 from scene_recon.config import Config
+from scene_recon.environment import PACKAGE_NAME
 from scene_recon.evaluation import load_preview_images
 from scene_recon.fairness import MISSING, differing_settings, format_value, trained_on_identical_data
 from scene_recon.plots import (
@@ -111,11 +113,14 @@ class RunResult:
     starting_weights: dict | None = None
     """The pretrained weights recorded in the run's checkpoint (see ``pretrained_weights_of``), if it has one."""
 
-    evaluation_software: dict[str, str] | None = None
-    """What its current evaluation was made with, as name -> version (packages, ``python``, ``cuda``, ``device``).
+    evaluation_software: dict | None = None
+    """What its current evaluation was made with (see ``environment.evaluation_software``), checked.
 
-    ``None`` if it has no current evaluation, or its record is missing or damaged.
+    ``None`` if it has no current evaluation, or its record cannot be compared (see ``software_problem``).
     """
+
+    software_problem: str | None = None
+    """Why the record of its current evaluation cannot be compared: a key of ``SOFTWARE_PROBLEMS``."""
 
     requested_steps: int = 0
     """``training.num_steps`` of the run's config."""
@@ -280,14 +285,55 @@ def _compare_software(runs: list[RunResult]) -> str:
     return SOFTWARE_SAME if all(record == records[0] for record in records) else SOFTWARE_DIFFERENT
 
 
-def _read_software(record) -> dict[str, str] | None:
-    """An evaluation's saved software as one name -> version mapping, or ``None`` if it is missing or damaged."""
-    if not isinstance(record, dict) or not isinstance(record.get("packages"), dict):
-        return None
-    software = {**record["packages"], **{name: record.get(name) for name in ("python", "cuda", "device")}}
-    if not all(isinstance(name, str) and isinstance(version, str) and version for name, version in software.items()):
-        return None
-    return software
+SOFTWARE_PROBLEMS = {
+    "not recorded": "made before evaluations recorded their software; evaluate it again (`scene-recon evaluate`)",
+    "device model unknown": (
+        "the model of the device it ran on cannot be named (only NVIDIA GPUs, and CPUs whose model the "
+        "operating system reports, are named)"
+    ),
+    "package list unreadable": (
+        "the metadata of an installed package could not be read; the evaluation's log names the package, "
+        "and reinstalling it fixes this"
+    ),
+    "damaged": "its record in evaluation.json is damaged or from an older version; evaluate it again",
+}
+"""Why an evaluation's software cannot be compared, and what to do about it."""
+
+_RUNTIME_LABELS = {"python": "Python", "cuda": "CUDA", "device_type": "Device type", "device": "Device"}
+"""A record's fields besides its packages, with capitalised labels, which a package name (lower case) cannot take."""
+
+_RUNTIME_FIELDS = tuple(_RUNTIME_LABELS)
+
+
+def _read_software(record) -> tuple[dict | None, str | None]:
+    """An evaluation's saved software, checked, or ``None`` and why it cannot be compared (``SOFTWARE_PROBLEMS``)."""
+    if record is None:
+        return None, "not recorded"
+    if not isinstance(record, dict) or set(record) != {*_RUNTIME_FIELDS, "packages"}:
+        return None, "damaged"
+    if record["device"] is None:
+        return None, "device model unknown"
+    if record["packages"] is None:
+        return None, "package list unreadable"
+    packages = record["packages"]
+    valid = (
+        all(_is_text(record[name]) for name in _RUNTIME_FIELDS)
+        and isinstance(packages, dict)
+        and bool(packages)
+        and all(isinstance(name, str) and PACKAGE_NAME.fullmatch(name) and _is_text(v) for name, v in packages.items())
+    )
+    if not valid:
+        return None, "damaged"
+    return {**{name: record[name] for name in _RUNTIME_FIELDS}, "packages": dict(sorted(packages.items()))}, None
+
+
+def _is_text(value) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _software_for_display(record: dict) -> dict[str, str]:
+    """A checked record as one label -> version mapping; a package called ``device`` stays apart from ``Device``."""
+    return {**{label: record[name] for name, label in _RUNTIME_LABELS.items()}, **record["packages"]}
 
 
 def _collect(key: str, config: Config, failed: bool, training_requested: bool) -> RunResult:
@@ -314,7 +360,7 @@ def _collect(key: str, config: Config, failed: bool, training_requested: bool) -
 
     evaluation = evaluation_status(config)
     if evaluation.is_current:
-        result.evaluation_software = _read_software(evaluation.content.get("software"))
+        result.evaluation_software, result.software_problem = _read_software(evaluation.content.get("software"))
         for protocol in evaluation.content["protocols"]:
             count = len(protocol["source_views"])
             result.metrics[count] = protocol["mean"]
@@ -374,7 +420,7 @@ class _Comparison:
         if self.software == SOFTWARE_DIFFERENT:
             return f"{verdict}, but scored with different software"
         if self.software == SOFTWARE_UNKNOWN:
-            return f"{verdict}, but the software of a score is not recorded"
+            return f"{verdict}, but the software of a score is unknown"
         return verdict
 
 
@@ -619,7 +665,8 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
     weights_by_source = _pretrained_weights_by_source(results)
     weights_differ = [source for source, hashes in weights_by_source.items() if len(hashes) > 1]
     evaluated = [run for group in results for run in group.replicates if run.metrics]
-    software = _compare_software(evaluated) if len(evaluated) > 1 else SOFTWARE_SAME
+    # Also for a single evaluation: one that cannot be compared is flagged while the others are pending.
+    software = _compare_software(evaluated) if evaluated else SOFTWARE_SAME
     software_differs = software != SOFTWARE_SAME
 
     if not differences and not recorded_data_differs and not weights_differ and not software_differs:
@@ -660,10 +707,13 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
             "score. For an exact comparison, evaluate every run again with one installation (`scene-recon evaluate`)."
         )
     elif software == SOFTWARE_UNKNOWN:
+        found = {run.software_problem for run in evaluated}
+        problems = [problem for problem in SOFTWARE_PROBLEMS if problem in found]
         lines.append(
-            "**Warning: the software of some evaluations is not recorded** (see the row \"evaluation software "
+            "**Warning: the software of some evaluations cannot be compared** (see the row \"evaluation software "
             "that differs\" of the table), so the report cannot tell whether all runs were scored with the same "
-            "software. Evaluate those runs again (`scene-recon evaluate`)."
+            "software. "
+            + " ".join(f"*{problem}*: {SOFTWARE_PROBLEMS[problem]}." for problem in problems)
         )
     if not differences and not recorded_data_differs and not weights_by_source and not software_differs:
         return lines
@@ -720,19 +770,24 @@ def _describe_starting_weights(run: RunResult) -> str:
 
 
 def _differing_software(runs: list[RunResult]) -> list[str]:
-    """The names whose versions are not the same in every recorded evaluation of these runs (absent counts)."""
-    records = [run.evaluation_software for run in runs if run.evaluation_software is not None]
-    names = sorted({name for record in records for name in record})
-    return [name for name in names if len({record.get(name) for record in records}) > 1]
+    """The labels whose versions are not the same in every readable evaluation record of these runs (absent counts).
+
+    Runtime fields come first, then packages in alphabetical order.
+    """
+    records = [_software_for_display(run.evaluation_software) for run in runs if run.evaluation_software is not None]
+    runtime = list(_RUNTIME_LABELS.values())
+    packages = sorted({name for record in records for name in record} - set(runtime))
+    return [name for name in runtime + packages if len({record.get(name) for record in records}) > 1]
 
 
 def _describe_evaluation_software(run: RunResult, names: list[str]) -> str:
-    """The versions of ``names`` a run's evaluation was made with."""
+    """The versions of ``names`` a run's evaluation was made with, or why its record cannot be compared."""
     if not run.metrics:
         return MISSING
     if run.evaluation_software is None:
-        return "not recorded"
-    return ", ".join(f"{name} {run.evaluation_software.get(name, 'absent')}" for name in names) or "–"
+        return run.software_problem
+    software = _software_for_display(run.evaluation_software)
+    return ", ".join(f"{name} {software.get(name, 'absent')}" for name in names) or "–"
 
 
 def _short_hash(value) -> str:
@@ -811,7 +866,7 @@ def _comparison_section(
         lines += [
             "",
             "A verdict marked *scored with different software* compares evaluations made with different software, "
-            "and one marked *not recorded* evaluations whose software is unknown (see \"What differs between "
+            "and one marked *unknown* evaluations whose software cannot be compared (see \"What differs between "
             "runs\"). The difference may then come from the software; evaluate both runs again with one "
             "installation before drawing a conclusion.",
         ]

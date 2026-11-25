@@ -367,7 +367,56 @@ def test_the_evaluation_software_record_lists_every_installed_package():
     software = evaluation_software(torch.device("cpu"))
 
     assert {"torch", "numpy", "scipy", "scikit-image", "timm"} <= software["packages"].keys()
-    assert software["python"] and software["cuda"] and "CPU" in software["device"]
+    assert software["python"] and software["cuda"] and software["device_type"] == "cpu"
+    assert software["device"].endswith(f", {torch.get_num_threads()} threads")  # the CPU's model comes first
+
+
+class _BrokenDistribution:
+    """An installed package whose metadata cannot be read."""
+
+    _path = "site-packages/broken-1.0.dist-info"
+
+    def __init__(self, error: Exception | None = None, name: str | None = "broken"):
+        self.error, self.name = error, name
+
+    @property
+    def metadata(self):
+        if self.error:
+            raise self.error
+        return {"Name": self.name}
+
+    version = "1.0"
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        _BrokenDistribution(UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")),
+        _BrokenDistribution(OSError("unreadable")),
+        _BrokenDistribution(name=None),
+        _BrokenDistribution(name="not a name"),
+    ],
+    ids=["not_utf8", "unreadable", "no_name", "invalid_name"],
+)
+def test_an_unreadable_package_makes_the_package_list_unknown(monkeypatch, caplog, broken):
+    """Review F77: the evaluation is still written, its package list marked unknown, and the package named."""
+    from scene_recon import environment as environment_module
+
+    monkeypatch.setattr(environment_module.importlib.metadata, "distributions", lambda: [broken])
+
+    assert environment_module.installed_packages() is None
+    assert "broken-1.0.dist-info cannot be read" in caplog.text
+
+
+def test_a_device_whose_model_cannot_be_named_is_recorded_as_unknown(monkeypatch):
+    """Review F76: never a label several devices could share."""
+    from scene_recon import environment as environment_module
+
+    assert environment_module.device_model(torch.device("mps")) is None
+    monkeypatch.setattr(environment_module, "cpu_model", lambda: None)
+    assert environment_module.evaluation_software(torch.device("cpu"))["device"] is None
+    monkeypatch.setattr(environment_module, "cpu_model", lambda: "Some CPU")
+    assert environment_module.device_model(torch.device("cpu")) == f"Some CPU, {torch.get_num_threads()} threads"
 
 
 def test_the_timm_version_is_recorded_and_decides_whether_a_profile_is_current(smoke_config: Config, monkeypatch):

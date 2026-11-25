@@ -5,9 +5,11 @@ import pytest
 
 from scene_recon.comparison import Summary
 from scene_recon.report import (
+    SOFTWARE_DIFFERENT,
     GroupResult,
     RunResult,
     _best_value,
+    _compare_software,
     _comparison_section,
     _differences_section,
     _format_count,
@@ -15,6 +17,8 @@ from scene_recon.report import (
     _format_summary,
     _mean_curves,
     _paired_comparisons,
+    _read_software,
+    _short_hash,
 )
 from scene_recon.run_files import RunFiles
 
@@ -204,12 +208,28 @@ def test_seeds_of_one_run_that_started_from_different_weights_are_labelled():
 # ---------------------------------------------------------------- evaluation software (review F46)
 
 
-def _evaluated_with(name: str, lpips: str | None) -> GroupResult:
+def _software_record(**packages: str) -> dict:
+    """A software record as ``environment.evaluation_software`` saves it."""
+    return {
+        "python": "3.10.6",
+        "cuda": "13.0",
+        "device_type": "cuda",
+        "device": "NVIDIA GeForce RTX 4090",
+        "packages": {"torch": "2.14.1", **packages},
+    }
+
+
+def _evaluated_with(name: str, lpips: str | None, **packages: str) -> GroupResult:
     """An evaluated run whose software record has this lpips version (None: no record)."""
     group = _group(name, {1: {"psnr": 20.0}})
-    software = {"python": "3.10.6", "cuda": "13.0", "device": "GPU", "torch": "2.14.1", "lpips": lpips}
-    group.replicates[0].evaluation_software = software if lpips else None
+    run = group.replicates[0]
+    record = _software_record(lpips=lpips, **packages) if lpips else None
+    run.evaluation_software, run.software_problem = _read_software(record)
     return group
+
+
+def _evaluations(groups: list[GroupResult]) -> list[RunResult]:
+    return [run for group in groups for run in group.replicates]
 
 
 def test_the_report_lists_what_differs_between_the_runs_software():
@@ -219,6 +239,67 @@ def test_the_report_lists_what_differs_between_the_runs_software():
 
     assert "the runs were evaluated with different software" in text
     assert "| evaluation software that differs | lpips 0.1.4 | lpips 0.2.0 |" in text  # only what differs
+
+
+@pytest.mark.parametrize("name", ["device", "python", "cuda", "device-type"])
+def test_a_package_named_like_a_record_field_is_compared_as_a_package(name: str):
+    """Review F74: a package called ``device`` neither hides nor replaces the device."""
+    runs = [_evaluated_with("first", "0.1.4"), _evaluated_with("second", "0.1.4", **{name: "0.1"})]
+    first, second = _evaluations(runs)
+
+    text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
+
+    assert _compare_software([first, second]) == SOFTWARE_DIFFERENT
+    assert _short_hash(first.evaluation_software) != _short_hash(second.evaluation_software)
+    assert f"| evaluation software that differs | {name} absent | {name} 0.1 |" in text
+    assert second.evaluation_software["device"] == "NVIDIA GeForce RTX 4090"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda record: record["packages"].update({"": "1"}),  # review F78
+        lambda record: record["packages"].update({"Torch": "1"}),  # not a normalised name
+        lambda record: record["packages"].update(torch=""),
+        lambda record: record["packages"].update(torch=["2.8"]),
+        lambda record: record.update(packages={}),
+        lambda record: record.update(python=3.1),
+        lambda record: record.pop("device_type"),  # also a record from before the device type was saved
+        lambda record: record.update(extra="1"),
+    ],
+    ids=[
+        "empty_name", "unnormalised_name", "empty_version", "list_version", "no_packages", "number", "missing", "extra"
+    ],
+)
+def test_a_damaged_software_record_cannot_be_compared(change):
+    record = _software_record(lpips="0.1.4")
+    change(record)
+
+    assert _read_software(record) == (None, "damaged")
+
+
+def test_the_report_says_why_a_software_record_cannot_be_compared():
+    """Review F76 and F77: an unnamed device or an unreadable package list is unknown, never the same."""
+    assert _read_software(None) == (None, "not recorded")
+    assert _read_software({**_software_record(), "device": None}) == (None, "device model unknown")
+    assert _read_software({**_software_record(), "packages": None}) == (None, "package list unreadable")
+    assert _read_software(_software_record())[0] == _software_record()
+
+    runs = [_evaluated_with("first", "0.1.4"), _group("second", {1: {"psnr": 20.0}})]
+    runs[1].replicates[0].software_problem = "device model unknown"
+    text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
+
+    assert "*device model unknown*: the model of the device it ran on cannot be named" in text
+    assert "| evaluation software that differs | – | device model unknown |" in text  # one record: nothing differs
+
+
+def test_a_single_evaluation_whose_software_cannot_be_compared_is_flagged():
+    """Review F79: also while the other runs have no results yet."""
+    runs = [_evaluated_with("first", None), _group("second", {})]
+
+    text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
+
+    assert "the software of some evaluations cannot be compared" in text and "*not recorded*" in text
 
 
 def test_runs_evaluated_with_the_same_software_get_no_software_row():
@@ -235,5 +316,5 @@ def test_a_missing_software_record_is_never_taken_for_the_same_software():
 
     text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
 
-    assert "the software of some evaluations is not recorded" in text
+    assert "the software of some evaluations cannot be compared" in text
     assert "| evaluation software that differs | not recorded | not recorded |" in text

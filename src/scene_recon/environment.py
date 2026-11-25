@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import functools
 import importlib.metadata
+import logging
 import platform
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import torch
+
+logger = logging.getLogger(__name__)
 
 
 @functools.lru_cache(maxsize=1)
@@ -32,42 +36,104 @@ def environment() -> dict[str, Any]:
     }
 
 
+PACKAGE_NAME = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+"""A normalised Python package name (PEP 503): lower case, so it never takes a capitalised label."""
+
+
 def evaluation_software(device: torch.device) -> dict[str, Any]:
-    """What a score can depend on besides the model and the data, saved with every evaluation.
+    """The software and device of an evaluation, saved with it so that the suite report can compare runs.
+
+    Two evaluations count as made with the same software when these records
+    are identical (see ``scene_recon.report``). That covers exactly the
+    fields below. Not covered: two builds of a package that carry the same
+    version number, the GPU driver, the operating system, and the source
+    revision (a change of the code that alters results raises
+    ``COMPATIBILITY_VERSION`` instead).
 
     Every installed package is listed, not only those known to matter, so a
     package a new model or metric brings along is covered without anyone
-    having to name it. The suite report compares these between runs (see
-    ``scene_recon.report``). The source revision is left out: a change that
-    alters results raises ``COMPATIBILITY_VERSION`` instead.
+    having to name it.
 
     Returns:
         ``python``: its version; ``cuda``: the CUDA version PyTorch was
-        built with (``"none"`` without); ``device``: the name of the device
-        the scores were computed on (floating-point results can differ
-        slightly between GPU models); ``packages``: every installed package
-        and its version, by normalised name (``scikit-image``, ``torch``).
+        built with (``"none"`` without); ``device_type``: ``cuda``, ``cpu``,
+        ...; ``device``: the device's model (see ``device_model``), or
+        ``None`` if it cannot be named; ``packages``: every installed
+        package and its version by normalised name (``scikit-image``,
+        ``torch``), or ``None`` if the metadata of a package cannot be read.
+        The report never takes a record with ``None`` for the same software.
     """
     return {
         "python": platform.python_version(),
         "cuda": torch.version.cuda or "none",
-        "device": device_description(device)["name"],
+        "device_type": device.type,
+        "device": device_model(device),
         "packages": installed_packages(),
     }
 
 
-def installed_packages() -> dict[str, str]:
+def installed_packages() -> dict[str, str] | None:
     """Every installed Python package and its version, by normalised name, sorted.
 
     If a package is installed twice, the copy Python imports (the first on
-    the search path) is listed.
+    the search path) is listed. ``None``, with a warning that names the
+    package's folder, if the metadata of an installed package cannot be
+    read or has no valid name or version.
     """
     packages: dict[str, str] = {}
     for distribution in importlib.metadata.distributions():
-        name = distribution.metadata["Name"]
-        if name:
-            packages.setdefault(re.sub(r"[-_.]+", "-", name).lower(), distribution.version)
+        try:
+            name, version = distribution.metadata["Name"], distribution.version
+        except (OSError, ValueError, KeyError):  # an unreadable file, or not UTF-8
+            name = version = None
+        normalised = re.sub(r"[-_.]+", "-", name).lower() if isinstance(name, str) else ""
+        if not PACKAGE_NAME.fullmatch(normalised) or not version:
+            folder = getattr(distribution, "_path", "an unknown folder")  # where its metadata lies
+            logger.warning(
+                "The metadata of the installed package in %s cannot be read, so the software of this "
+                "evaluation is not recorded. Reinstall or remove that package.",
+                folder,
+            )
+            return None
+        packages.setdefault(normalised, version)
     return dict(sorted(packages.items()))
+
+
+def device_model(device: torch.device) -> str | None:
+    """The model of the device scores are computed on, or ``None`` if it cannot be named.
+
+    The model of an NVIDIA GPU, or of the CPU as the operating system
+    reports it, followed on the CPU by the number of threads PyTorch uses
+    (how a sum is split between threads can change its last digits). Other
+    accelerators are not named.
+    """
+    if device.type == "cuda":
+        return torch.cuda.get_device_name(device) if torch.cuda.is_available() else None
+    if device.type == "cpu":
+        model = cpu_model()
+        return f"{model}, {torch.get_num_threads()} threads" if model else None
+    return None
+
+
+@functools.lru_cache(maxsize=1)
+def cpu_model() -> str | None:
+    """The CPU's model name as the operating system reports it, or ``None`` if it cannot be read."""
+    try:
+        if sys.platform == "win32":
+            import winreg
+
+            key_path = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                name = winreg.QueryValueEx(key, "ProcessorNameString")[0]
+        elif sys.platform == "darwin":
+            command = ["sysctl", "-n", "machdep.cpu.brand_string"]
+            name = subprocess.run(command, capture_output=True, text=True, timeout=10, check=True).stdout
+        else:
+            lines = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="replace").splitlines()
+            name = next((line.split(":", 1)[1] for line in lines if line.startswith("model name")), "")
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return " ".join(str(name).split()) or None
 
 
 def device_description(device: torch.device) -> dict[str, Any]:
