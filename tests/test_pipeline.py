@@ -27,6 +27,34 @@ def _with_overrides(config: Config, section: str, **changes) -> Config:
     return parse_config(raw)
 
 
+def test_an_interrupted_save_never_leaves_the_progress_of_the_older_checkpoint(tmp_path, monkeypatch):
+    """Review F97: interrupted after the checkpoint was replaced, the progress is read from the new checkpoint."""
+    from scene_recon import checkpoints
+
+    model = nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda step: 1.0)
+    path = tmp_path / "checkpoints" / "last.pt"
+
+    def save(step: int) -> None:
+        progress = checkpoints.TrainingProgress(step=step, training_seconds=float(step))
+        checkpoints.save_checkpoint(path, model, optimizer, scheduler, progress, {}, {}, {})
+
+    save(4)
+    real_write = checkpoints.write_atomically
+
+    def interrupted_before_the_progress_file(target, write):
+        if target == checkpoints.progress_file(path):
+            raise KeyboardInterrupt
+        real_write(target, write)
+
+    monkeypatch.setattr(checkpoints, "write_atomically", interrupted_before_the_progress_file)
+    with pytest.raises(KeyboardInterrupt):
+        save(6)
+
+    assert checkpoints.read_progress(path).step == 6
+
+
 def test_training_writes_a_resumable_checkpoint(smoke_config: Config):
     Trainer(smoke_config).train()
 

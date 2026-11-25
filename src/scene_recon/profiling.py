@@ -72,6 +72,7 @@ def measure_rendering_speed(
             measured speed would be wrong.
     """
     modes = {module: module.training for module in model.modules()}  # a part may be frozen in eval mode
+    order = _parents_first(model)  # taken now: in evaluation mode, a part may add temporary parts of its own
     try:
         model.eval()  # inside the try: if a part fails to switch, the parts already switched are restored
         device = source_views.images.device
@@ -102,7 +103,7 @@ def measure_rendering_speed(
         least_free = _least(least_free, free_gpu_memory(device))
         memory = _check_memory_fits(device, renderer, least_free, min_free_gpu_memory)
     finally:
-        _restore_modes(model, modes)
+        _restore_modes(order, modes)
     return {
         "encode_seconds": encode_seconds,
         "seconds_per_frame": seconds_per_frame,
@@ -113,17 +114,18 @@ def measure_rendering_speed(
     }
 
 
-def _restore_modes(model: nn.Module, modes: dict[nn.Module, bool]) -> None:
-    """Put every part of the model back into the training or evaluation mode it had.
+def _restore_modes(order: list[nn.Module], modes: dict[nn.Module, bool]) -> None:
+    """Put every part of a model back into the training or evaluation mode it had.
 
     Each part is switched through its own ``train()``, so that a part whose
     ``train()`` does more than set its flag (an adapter that merges its
     weights for evaluation and splits them for training) is left in a
     consistent state. ``train()`` also switches every part below, so parents
-    go first: a part is switched only after every part that contains it,
-    including a part shared by two parents.
+    go first: ``order`` lists each part after every part that contains it
+    (``_parents_first``), including a part shared by two parents. Both
+    ``order`` and ``modes`` are taken before the model leaves its modes.
     """
-    for module in _parents_first(model):
+    for module in order:
         if module.training != modes[module]:
             module.train(modes[module])
     for module, training in modes.items():

@@ -434,6 +434,36 @@ def test_a_failing_list_of_installed_packages_makes_the_package_list_unknown(
     assert "healthy" not in caplog.text and "Reinstall or remove" not in caplog.text
 
 
+class _HiddenFolder(_BrokenDistribution):
+    """A package whose metadata can be read, but not the folder it lies in."""
+
+    @property
+    def _path(self):
+        raise OSError("the folder cannot be named")
+
+
+def test_a_package_is_listed_even_if_its_folder_cannot_be_named(monkeypatch, caplog):
+    """Review F100: the folder is looked up only for a warning, and the lookup never fails."""
+    from scene_recon import environment as environment_module
+
+    monkeypatch.setattr(environment_module.importlib.metadata, "distributions", lambda: [_HiddenFolder()])
+    assert environment_module.installed_packages() == {"broken": "1.0"}
+
+    monkeypatch.setattr(environment_module.importlib.metadata, "distributions", lambda: [_HiddenFolder(name=None)])
+    assert environment_module.installed_packages() is None
+    assert "installed package in an unknown folder cannot be read" in caplog.text
+
+
+def test_a_package_finder_that_lists_nothing_does_not_cut_the_list_short(monkeypatch, caplog):
+    """Review F101: None from a broken finder makes the package list unknown, never shorter."""
+    from scene_recon import environment as environment_module
+
+    monkeypatch.setattr(environment_module.importlib.metadata, "distributions", lambda: [_BrokenDistribution(), None])
+
+    assert environment_module.installed_packages() is None
+    assert "installed packages cannot be listed (TypeError" in caplog.text
+
+
 def test_an_evaluation_is_written_when_package_metadata_cannot_be_read(smoke_config: Config, monkeypatch):
     """Review F77 and F85: the scores are kept; only the package list is unknown."""
     from scene_recon import environment as environment_module

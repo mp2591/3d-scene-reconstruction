@@ -98,6 +98,10 @@ def save_checkpoint(
         "random_state": _global_random_state(),
         "environment": environment(),
     }
+    # The old progress file goes first: if saving is interrupted after the
+    # checkpoint is replaced, read_progress reads the new checkpoint itself
+    # instead of the progress of the old one.
+    progress_file(path).unlink(missing_ok=True)
     write_atomically(path, lambda temporary_path: torch.save(state, temporary_path))
     write_atomically(
         progress_file(path), lambda temporary_path: temporary_path.write_text(json.dumps(asdict(progress)), encoding="utf-8")
@@ -150,7 +154,7 @@ def read_progress(checkpoint_path: Path) -> TrainingProgress | None:
             return progress
         logger.warning("%s is damaged; the training progress is read from %s instead.", sidecar, checkpoint_path.name)
 
-    state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    state = torch.load(checkpoint_path, map_location="cpu", weights_only=True, mmap=True)
     return TrainingProgress(step=state["step"], training_seconds=state["training_seconds"])
 
 

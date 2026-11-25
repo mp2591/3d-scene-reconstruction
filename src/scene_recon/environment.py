@@ -101,13 +101,14 @@ def installed_packages() -> dict[str, str] | None:
         return None
     while True:
         try:
-            distribution = next(distributions, None)
+            distribution = next(distributions, _NO_MORE_PACKAGES)
+            if distribution is None:
+                raise TypeError("a package finder listed None instead of a package")
         except Exception as error:  # finding the next package failed: no package is to blame
             _warn_packages_cannot_be_listed(error)
             return None
-        if distribution is None:
+        if distribution is _NO_MORE_PACKAGES:
             return dict(sorted(packages.items()))
-        folder = getattr(distribution, "_path", "an unknown folder")  # where its metadata lies
         try:
             name, version = distribution.metadata["Name"], distribution.version
             normalised = re.sub(r"[-_.]+", "-", name).lower() if isinstance(name, str) else name
@@ -117,12 +118,24 @@ def installed_packages() -> dict[str, str] | None:
             logger.warning(
                 "The metadata of the installed package in %s cannot be read (%s: %s), so the software of this "
                 "evaluation is not recorded. Reinstall or remove that package.",
-                folder,
+                _metadata_folder(distribution),
                 type(error).__name__,
                 error,
             )
             return None
         packages.setdefault(normalised, version)
+
+
+_NO_MORE_PACKAGES = object()
+"""Marks the end of the list of installed packages (a broken package finder may list ``None``)."""
+
+
+def _metadata_folder(distribution: Any) -> str:
+    """Where an installed package's metadata lies, for a warning; never raises."""
+    try:
+        return str(getattr(distribution, "_path", "an unknown folder"))
+    except Exception:
+        return "an unknown folder"
 
 
 def _warn_packages_cannot_be_listed(error: Exception) -> None:

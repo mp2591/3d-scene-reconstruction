@@ -233,7 +233,8 @@ If a record cannot be compared, it says why: *not recorded* (made before
 evaluations recorded their software), *device model unknown* (only NVIDIA
 GPUs, and CPUs whose model the operating system reports, are named),
 *package list unreadable* (an installed package's metadata could not be
-read; the evaluation's log names it) or *damaged*. Such a record is never
+read, or the packages could not be listed; the evaluation's log says which
+package or folder) or *damaged*. Such a record is never
 taken for the same software. The paired comparisons of those runs then give
 no plain verdict: *scored with different software* or *unknown* (`software`
 in `paired_comparison.csv`: `same`, `different` or `unknown`). `summary.csv`

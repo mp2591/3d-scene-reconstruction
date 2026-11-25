@@ -323,6 +323,32 @@ def test_a_training_part_under_a_parent_in_evaluation_mode_is_split_again(
     assert adapter.training and not adapter.merged
 
 
+class _FusesForEvaluation(torch.nn.Module):
+    """Like a convolution fused with its batch normalisation for evaluation: the fused part exists only then."""
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        if mode:
+            self._modules.pop("fused", None)
+        else:
+            self.fused = torch.nn.Identity()
+        return self
+
+
+def test_a_part_added_in_evaluation_mode_does_not_stop_the_restore(smoke_config: Config):
+    """Review F95: the parts and their modes are taken before the switch; the temporary part was never saved."""
+    model = build_model(smoke_config)
+    fusing = _FusesForEvaluation()
+    model.add_module("fuses_for_test", fusing)
+    model.train()
+    modes = {module: module.training for module in model.modules()}
+
+    _measure_speed(model, smoke_config)
+
+    assert "fused" not in fusing._modules
+    assert {module: module.training for module in model.modules()} == modes
+
+
 class _FailsToSwitch(torch.nn.Module):
     """A part that raises when it is switched to evaluation mode."""
 
