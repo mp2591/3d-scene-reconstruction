@@ -512,6 +512,24 @@ def test_the_new_fusion_layer_learns_at_the_base_rate_in_every_model(model: dict
     assert not adapter_ids & {id(p) for p in groups["encoder"]["params"]}
 
 
+def _mlp_decoder_start(encoder: dict, seed: int) -> dict[str, Tensor]:
+    torch.manual_seed(seed)
+    model = MODELS.build({"name": "pixel_aligned_nerf", "encoder": encoder, "decoder": {"name": "pixelnerf_mlp", "hidden_width": 8}})
+    return model.decoder.state_dict()
+
+
+def test_the_mlp_decoder_starts_the_same_whichever_encoder_is_built_before_it():
+    """Review F8: in the encoder ablation the runs differ only in their encoder, also before the first step."""
+    convnext = {"name": "convnextv2", "model_name": "convnextv2_atto", "pretrained": False, "num_features": 8}
+    after_convnext, after_hiera = _mlp_decoder_start(convnext, seed=0), _mlp_decoder_start(_SMALL_HIERA, seed=0)
+
+    assert after_convnext.keys() == after_hiera.keys()
+    assert all(torch.equal(after_convnext[name], after_hiera[name]) for name in after_convnext)
+    # The decoder's start still follows the seed.
+    other_seed = _mlp_decoder_start(convnext, seed=1)
+    assert not all(torch.equal(after_convnext[name], other_seed[name]) for name in after_convnext)
+
+
 def test_points_no_photo_sees_still_get_a_finite_prediction(hiera_config: Config):
     model = build_model(hiera_config).eval()
     camera_to_world = torch.eye(4).expand(1, 2, 4, 4).clone()

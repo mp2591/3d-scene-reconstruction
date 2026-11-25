@@ -1,8 +1,16 @@
+# ConvNeXt V2-T with the pixelNeRF-style MLP decoder.
+#
+# The weights come from self-supervised pretraining only (FCMAE, a masked
+# autoencoder, on ImageNet-1k), like the Hiera-T weights of hiera_mlp.yaml
+# (MAE on ImageNet-1k), so the encoder comparison is not also a comparison of
+# pretraining. convnextv2_tiny.fcmae_ft_in22k_in1k, the same network
+# fine-tuned with labels on ImageNet-22k and -1k, would be a separate run.
+
 model:
   name: pixel_aligned_nerf
   encoder:
     name: convnextv2
-    model_name: convnextv2_tiny.fcmae_ft_in22k_in1k
+    model_name: convnextv2_tiny.fcmae
     pretrained: true
     num_features: 256
     input_normalization: imagenet

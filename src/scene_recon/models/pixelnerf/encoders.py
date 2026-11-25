@@ -26,7 +26,7 @@ class ConvNeXtV2Encoder(nn.Module):
 
     def __init__(
         self,
-        model_name: str = "convnextv2_tiny.fcmae_ft_in22k_in1k",
+        model_name: str = "convnextv2_tiny.fcmae",
         pretrained: bool = True,
         num_features: int = 256,
         input_normalization: str = "imagenet",
@@ -34,6 +34,8 @@ class ConvNeXtV2Encoder(nn.Module):
         """
         Args:
             model_name: The ``timm`` name of the ConvNeXt V2 variant and its weights.
+                ``convnextv2_tiny.fcmae`` is pretrained without labels (FCMAE on
+                ImageNet-1k), like the Hiera-T weights.
             pretrained: Start from pretrained weights. Use False for quick tests.
             num_features: Channels of the output feature map.
             input_normalization: How images are normalised first. ConvNeXt V2 expects

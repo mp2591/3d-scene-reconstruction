@@ -340,7 +340,7 @@ model:
   name: pixel_aligned_nerf
   encoder:
     name: convnextv2
-    model_name: convnextv2_tiny.fcmae_ft_in22k_in1k
+    model_name: convnextv2_tiny.fcmae
     pretrained: true
     num_features: 256
     input_normalization: imagenet

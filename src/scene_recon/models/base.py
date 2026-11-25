@@ -14,11 +14,13 @@ split at all, is up to the model. See ``docs/writing_a_model.md``.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
 
+import torch
 from torch import Tensor, nn
 
 from scene_recon.registry import ENCODERS, ConfigError
@@ -161,6 +163,25 @@ def encoder_parameter_groups(encoder: nn.Module) -> list[ParameterGroup]:
         ParameterGroup(name="encoder", parameters=[p for p in encoder.parameters() if id(p) not in adapter_ids]),
         ParameterGroup(name="adapter", parameters=list(encoder.adapter.parameters())),
     ]
+
+
+def draw_seed() -> int:
+    """A seed for ``seeded_random_numbers``, drawn from PyTorch's global CPU generator (seeded by ``experiment.seed``)."""
+    return int(torch.randint(0, 2**62, ()).item())
+
+
+@contextlib.contextmanager
+def seeded_random_numbers(seed: int) -> Iterator[None]:
+    """Inside the block, PyTorch's CPU random numbers come from ``seed``; afterwards they go on as before it.
+
+    Lets one part of a model start from the same random values in every model
+    that shares it, however many random numbers the parts built before it
+    used. ``PixelAlignedNeRF`` builds its decoder this way. Models are built
+    on the CPU, so the GPU generators are left alone.
+    """
+    with torch.random.fork_rng(devices=[]):
+        torch.default_generator.manual_seed(seed)
+        yield
 
 
 def describe_pretrained_weights(source: str, module: nn.Module) -> dict[str, str]:

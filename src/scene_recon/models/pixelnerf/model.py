@@ -13,7 +13,14 @@ from scene_recon.geometry import (
     sample_features_at_pixels,
     world_to_camera,
 )
-from scene_recon.models.base import ParameterGroup, ReconstructionModel, build_encoder, encoder_parameter_groups
+from scene_recon.models.base import (
+    ParameterGroup,
+    ReconstructionModel,
+    build_encoder,
+    draw_seed,
+    encoder_parameter_groups,
+    seeded_random_numbers,
+)
 from scene_recon.registry import DECODERS, MODELS
 from scene_recon.structures import Cameras, FieldOutput, SceneViews
 
@@ -50,8 +57,14 @@ class PixelAlignedNeRF(ReconstructionModel):
 
     def __init__(self, encoder: Mapping[str, Any], decoder: Mapping[str, Any]) -> None:
         super().__init__()
+        # The decoder's seed is drawn before the encoder is built, so the
+        # decoder's random start does not depend on how many random numbers
+        # the encoder used: two runs that differ only in their encoder start
+        # with the same decoder (if their encoders have equal num_features).
+        decoder_seed = draw_seed()
         self.encoder = build_encoder(encoder, "pixel_aligned_nerf")
-        self.decoder = DECODERS.build(decoder, num_features=self.encoder.num_features)
+        with seeded_random_numbers(decoder_seed):
+            self.decoder = DECODERS.build(decoder, num_features=self.encoder.num_features)
 
     def encode_scene(self, source_views: SceneViews) -> _SceneEncoding:
         batch_size, num_views = source_views.num_scenes, source_views.num_views
