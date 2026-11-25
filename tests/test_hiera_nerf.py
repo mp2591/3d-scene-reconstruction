@@ -10,6 +10,7 @@ from torch import Tensor, nn
 from scene_recon.build import build_model
 from scene_recon.config import Config, load_config
 from scene_recon.geometry import sample_features_at_pixels
+from scene_recon.models.base import weights_sha256
 from scene_recon.models.contract import check_model_contract
 from scene_recon.models.hiera.attention import HieraRayTransformer
 from scene_recon.models.hiera.bridge import HieraSceneEncoding
@@ -386,15 +387,6 @@ def test_encoders_reject_image_sides_their_strides_do_not_divide(build_encoder, 
     encoder(torch.rand(1, 3, 2 * multiple, 2 * multiple))  # a size they divide is fine
 
 
-class _EncoderWithoutOffset(nn.Module):
-    """An encoder plug-in that forgot ``feature_offset``."""
-
-    num_features = 4
-
-    def forward(self, images: Tensor) -> Tensor:
-        return images.new_zeros(len(images), 4, images.shape[-2] // 4, images.shape[-1] // 4)
-
-
 _MODELS_WITH_AN_ENCODER = [
     {"name": "pixel_aligned_nerf", "decoder": {"name": "pixelnerf_mlp", "hidden_width": 8}},
     {"name": "tiny_pixel_aligned_nerf", "decoder": {"name": "tiny_pooled_mlp", "hidden_width": 8}},
@@ -402,26 +394,42 @@ _MODELS_WITH_AN_ENCODER = [
 ]
 
 
+def _encoder_without(attribute: str) -> type:
+    """An encoder plug-in with every attribute that build_encoder checks, except one."""
+    attributes = {"num_features": 4, "feature_offset": 0.0, "adapter": None, "pretrained_weights": None}
+    del attributes[attribute]
+
+    def forward(self, images: Tensor) -> Tensor:
+        return images.new_zeros(len(images), 4, images.shape[-2] // 4, images.shape[-1] // 4)
+
+    return type(f"EncoderWithout_{attribute}", (nn.Module,), {**attributes, "forward": forward})
+
+
+@pytest.mark.parametrize("attribute", ["num_features", "feature_offset", "adapter", "pretrained_weights"])
 @pytest.mark.parametrize("model", _MODELS_WITH_AN_ENCODER, ids=lambda model: model["name"])
-def test_every_model_names_an_encoder_missing_feature_offset(model: dict, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setitem(ENCODERS._classes, "without_offset", _EncoderWithoutOffset)
+def test_every_model_names_an_encoder_missing_an_attribute(model: dict, attribute: str, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setitem(ENCODERS._classes, "incomplete", _encoder_without(attribute))
 
-    with pytest.raises(ConfigError, match="'without_offset' has no attribute 'feature_offset'"):
-        MODELS.build({**model, "encoder": {"name": "without_offset"}})
-
-
-class _EncoderWithoutAdapter(_EncoderWithoutOffset):
-    """An encoder plug-in that does not say which of its layers start from random values."""
-
-    feature_offset = 0.0
+    with pytest.raises(ConfigError, match=f"'incomplete' has no attribute '{attribute}'"):
+        MODELS.build({**model, "encoder": {"name": "incomplete"}})
 
 
-@pytest.mark.parametrize("model", _MODELS_WITH_AN_ENCODER, ids=lambda model: model["name"])
-def test_every_model_names_an_encoder_missing_adapter(model: dict, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setitem(ENCODERS._classes, "without_adapter", _EncoderWithoutAdapter)
+def test_the_hiera_encoder_records_the_weights_it_loaded(tmp_path: Path):
+    """Review B(b): the hash identifies the loaded backbone, whatever the random start of the adapter."""
+    state = dict(HieraBackbone().state_dict())
+    path = tmp_path / "hiera.pth"
+    torch.save(state, path)
+    first, second = HieraEncoder(weights=str(path), num_features=16), HieraEncoder(weights=str(path), num_features=16)
 
-    with pytest.raises(ConfigError, match="'without_adapter' has no attribute 'adapter'"):
-        MODELS.build({**model, "encoder": {"name": "without_adapter"}})
+    assert first.pretrained_weights == {"source": str(path), "sha256": weights_sha256(first.backbone)}
+    assert second.pretrained_weights == first.pretrained_weights
+    assert not torch.equal(first.adapter.weight, second.adapter.weight)
+
+    name = next(iter(state))
+    torch.save({**state, name: state[name] + 1.0}, path)  # another version of the file
+    assert HieraEncoder(weights=str(path), num_features=16).pretrained_weights["sha256"] != first.pretrained_weights["sha256"]
+    assert HieraEncoder(weights=None, num_features=16).pretrained_weights is None
+    assert ConvNeXtV2Encoder(model_name="convnextv2_atto", pretrained=False, num_features=8).pretrained_weights is None
 
 
 # ------------------------------------------------------------------ decoder

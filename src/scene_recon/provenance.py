@@ -59,6 +59,7 @@ from scene_recon.checkpoints import (
 from scene_recon.config import Config, flatten_settings, setting_in_sections
 from scene_recon.data.base import SceneDataset
 from scene_recon.environment import device_description
+from scene_recon.models.base import weights_sha256
 from scene_recon.registry import ConfigError
 from scene_recon.run_files import RunFiles, read_json
 
@@ -192,19 +193,9 @@ def _file_digest(path: str, size: int, modified_ns: int) -> str:
     return digest.hexdigest()
 
 
-def model_weights_digest(model: Any) -> str:
-    """SHA-256 of a model's saved state (parameters and persistent buffers): which weights it holds."""
-    digest = hashlib.sha256()
-    for name, tensor in model.state_dict().items():
-        values = tensor.detach().cpu().contiguous()
-        digest.update(f"{name}\t{values.dtype}\t{tuple(values.shape)}\n".encode())
-        digest.update(values.numpy().tobytes() if values.numel() else b"")
-    return digest.hexdigest()
-
-
 def untrained_model_record(config: Config, model: Any) -> dict[str, Any]:
     """What identifies a model evaluated as built: its config and its weights."""
-    return _canonical({"config": config.raw["model"], "weights_sha256": model_weights_digest(model)})
+    return _canonical({"config": config.raw["model"], "weights_sha256": weights_sha256(model)})
 
 
 def checkpoint_record(checkpoint_path: Path, progress: TrainingProgress) -> dict[str, Any]:

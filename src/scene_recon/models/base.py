@@ -14,6 +14,7 @@ split at all, is up to the model. See ``docs/writing_a_model.md``.
 
 from __future__ import annotations
 
+import hashlib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -106,7 +107,7 @@ class ReconstructionModel(nn.Module, ABC):
         return [ParameterGroup(name="model", parameters=list(self.parameters()))]
 
 
-ENCODER_ATTRIBUTES = ("num_features", "feature_offset", "adapter")
+ENCODER_ATTRIBUTES = ("num_features", "feature_offset", "adapter", "pretrained_weights")
 """What a pixel-aligned model reads from its image encoder:
 
 * ``num_features``: the channels of its feature map;
@@ -115,7 +116,10 @@ ENCODER_ATTRIBUTES = ("num_features", "feature_offset", "adapter")
 * ``adapter``: the module holding the layers the encoder adds on top of
   pretrained weights, which start from random values (such as a 1x1
   convolution that fuses several stages), or ``None`` if it adds none.
-  ``encoder_parameter_groups`` trains them in a group of their own.
+  ``encoder_parameter_groups`` trains them in a group of their own;
+* ``pretrained_weights``: the weights it starts from, as
+  ``describe_pretrained_weights`` gives them, or ``None`` if it starts from
+  random values. Checkpoints record them (see ``pretrained_weights_of``).
 """
 
 
@@ -157,3 +161,47 @@ def encoder_parameter_groups(encoder: nn.Module) -> list[ParameterGroup]:
         ParameterGroup(name="encoder", parameters=[p for p in encoder.parameters() if id(p) not in adapter_ids]),
         ParameterGroup(name="adapter", parameters=list(encoder.adapter.parameters())),
     ]
+
+
+def describe_pretrained_weights(source: str, module: nn.Module) -> dict[str, str]:
+    """What an encoder records as its ``pretrained_weights``.
+
+    Call it right after loading the weights, so the hash is of the weights as
+    loaded, before any training.
+
+    Args:
+        source: Where the weights came from, as the config names them: a file
+            path, or a ``timm`` model name.
+        module: The part that holds the loaded weights, without the
+            ``adapter`` (whose random start differs from seed to seed).
+
+    Returns:
+        ``{"source": source, "sha256": ...}``. Two runs that start from the
+        same weights have the same hash, however the file was obtained.
+    """
+    return {"source": source, "sha256": weights_sha256(module)}
+
+
+def pretrained_weights_of(model: nn.Module) -> dict[str, dict[str, str]]:
+    """The pretrained weights a model starts from, by the name of the part that holds them.
+
+    Collected from every part with a ``pretrained_weights`` attribute that is
+    not ``None`` (every encoder made by ``build_encoder`` has the attribute),
+    e.g. ``{"encoder": {"source": "weights/hiera_tiny_224_mae_in1k.pth",
+    "sha256": "..."}}``. Empty if the whole model starts from random values.
+    """
+    return {
+        name: module.pretrained_weights
+        for name, module in model.named_modules()
+        if getattr(module, "pretrained_weights", None) is not None
+    }
+
+
+def weights_sha256(module: nn.Module) -> str:
+    """SHA-256 of a module's saved state (parameters and persistent buffers): which weights it holds."""
+    digest = hashlib.sha256()
+    for name, tensor in module.state_dict().items():
+        values = tensor.detach().cpu().contiguous()
+        digest.update(f"{name}\t{values.dtype}\t{tuple(values.shape)}\n".encode())
+        digest.update(values.numpy().tobytes() if values.numel() else b"")
+    return digest.hexdigest()

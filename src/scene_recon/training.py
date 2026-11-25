@@ -36,11 +36,17 @@ from scene_recon.build import (
     resolve_device,
     seed_everything,
 )
-from scene_recon.checkpoints import TrainingProgress, load_checkpoint, save_checkpoint
+from scene_recon.checkpoints import (
+    TrainingProgress,
+    load_checkpoint,
+    read_checkpoint_starting_weights,
+    save_checkpoint,
+)
 from scene_recon.config import Config, save_config
 from scene_recon.data import SceneDataset, TrainingSchedule, training_batches
 from scene_recon.evaluation import Evaluator, check_protocol_feasible
 from scene_recon.metrics import mse_to_psnr
+from scene_recon.models.base import pretrained_weights_of
 from scene_recon.optim import build_optimizer_and_scheduler
 from scene_recon.provenance import check_checkpoint_matches_config, check_training_data_unchanged
 from scene_recon.registry import ConfigError
@@ -70,6 +76,8 @@ class Trainer:
         seed_everything(config.experiment.seed)
 
         self.model = build_model(config).to(self.device)
+        # Recorded in every checkpoint: which pretrained weights this run started from.
+        self.starting_weights = pretrained_weights_of(self.model)
         self.renderer = VolumeRenderer(config.renderer)
         self.loss_function = build_loss(config)
         self.optimizer, self.scheduler = build_optimizer_and_scheduler(self.model, config.optimization)
@@ -97,6 +105,9 @@ class Trainer:
             check_checkpoint_matches_config(self.checkpoint_path, config)
             check_training_data_unchanged(self.checkpoint_path, self.train_scenes)
             self.progress = load_checkpoint(self.checkpoint_path, self.model, self.optimizer, self.scheduler)
+            # The run started from the weights its first checkpoint recorded, not
+            # from whatever the pretrained file holds today.
+            self.starting_weights = read_checkpoint_starting_weights(self.checkpoint_path)
             logger.info("Resumed from %s at step %d", self.checkpoint_path, self.progress.step)
         elif self.checkpoint_path.exists():
             raise ConfigError(
@@ -220,6 +231,7 @@ class Trainer:
             self.progress,
             self.config.raw,
             training_data=self.train_scenes.fingerprint(),
+            starting_weights=self.starting_weights,
         )
 
 

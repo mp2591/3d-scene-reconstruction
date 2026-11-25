@@ -196,6 +196,13 @@ checkpoints recorded, not only from the config; if the checkpoints record
 different training data, the report says so prominently and shows each
 run's data.
 
+The same holds for pretrained weights. Every checkpoint records the weights
+its run started from: where they came from (a file path or a `timm` name)
+and a SHA-256 hash of the weights as loaded. The table shows them for each
+run, and if runs that name the same file started from different weights (the
+file was replaced, or a teammate downloaded another version), the report
+says so prominently.
+
 `summary.csv` has one row per run and seed. Quality columns are named
 `<metric>_<n>v`: `psnr_1v` is the PSNR with one input view. Load it with
 pandas or a spreadsheet for analysis the report does not cover.

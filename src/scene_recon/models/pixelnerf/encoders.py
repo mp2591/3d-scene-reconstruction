@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from scene_recon.models.base import describe_pretrained_weights
 from scene_recon.models.normalization import InputNormalization
 from scene_recon.registry import ENCODERS
 
@@ -47,6 +48,7 @@ class ConvNeXtV2Encoder(nn.Module):
         self.backbone = timm.create_model(
             model_name, pretrained=pretrained, features_only=True, out_indices=(0, 1, 2, 3)
         )
+        self.pretrained_weights = describe_pretrained_weights(f"timm {model_name}", self.backbone) if pretrained else None
         total_channels = sum(self.backbone.feature_info.channels())
         self.adapter = nn.Conv2d(total_channels, num_features, kernel_size=1)
         # The stages line up with each other and with feature_offset only when

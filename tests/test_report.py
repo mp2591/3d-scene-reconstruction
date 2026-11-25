@@ -9,6 +9,7 @@ from scene_recon.report import (
     RunResult,
     _best_value,
     _comparison_section,
+    _differences_section,
     _format_count,
     _format_duration,
     _format_summary,
@@ -149,3 +150,30 @@ def test_the_first_run_stays_the_reference_even_without_results():
     assert _paired_comparisons(results) == []
     section = "\n".join(_comparison_section(results, [], ["psnr"], multiple_seeds=False))
     assert "Paired comparison with baseline" in section and "Not available yet" in section
+
+
+# ---------------------------------------------------------------- starting weights (review B(b))
+
+
+def _started_from(group: GroupResult, sha256: str) -> GroupResult:
+    group.replicates[0].starting_weights = {"encoder": {"source": "weights/hiera.pth", "sha256": sha256}}
+    return group
+
+
+def test_the_report_warns_when_runs_started_from_different_versions_of_the_same_weights():
+    runs = [_started_from(_group("hiera_mlp", {}), "1" * 64), _started_from(_group("hiera_nerf", {}), "2" * 64)]
+
+    text = "\n".join(_differences_section(runs, {}, multiple_seeds=False))
+
+    assert "runs that start from `weights/hiera.pth` started from different weights" in text
+    assert "| pretrained weights recorded in the checkpoint | `encoder: hiera.pth 111111111111` |" in text
+
+
+def test_the_report_lists_the_pretrained_weights_without_a_warning_when_they_agree():
+    runs = [_started_from(_group("hiera_mlp", {}), "1" * 64), _started_from(_group("hiera_nerf", {}), "1" * 64)]
+    differences = {"model.name": {"hiera_mlp": "pixel_aligned_nerf", "hiera_nerf": "hiera_nerf"}}
+
+    text = "\n".join(_differences_section(runs, differences, multiple_seeds=False))
+
+    assert "started from different weights" not in text
+    assert "| pretrained weights recorded in the checkpoint | `encoder: hiera.pth 111111111111` | `encoder: hiera.pth" in text

@@ -45,7 +45,7 @@ from typing import Mapping, Sequence
 import numpy as np
 
 import scene_recon.metrics  # noqa: F401  (registers the metrics, whose display settings are read below)
-from scene_recon.checkpoints import read_checkpoint_training_data, read_progress
+from scene_recon.checkpoints import read_checkpoint_starting_weights, read_checkpoint_training_data, read_progress
 from scene_recon.comparison import PairedDifference, Summary, average_over_seeds, paired_difference, summarize
 from scene_recon.config import Config
 from scene_recon.evaluation import load_preview_images
@@ -97,6 +97,9 @@ class RunResult:
 
     training_data: dict | None = None
     """The training-data fingerprint recorded in the run's checkpoint, if it has one."""
+
+    starting_weights: dict | None = None
+    """The pretrained weights recorded in the run's checkpoint (see ``pretrained_weights_of``), if it has one."""
 
     requested_steps: int = 0
     """``training.num_steps`` of the run's config."""
@@ -263,6 +266,7 @@ def _collect(key: str, config: Config, failed: bool, training_requested: bool) -
     finished_training = progress is not None and progress.step >= config.training.num_steps
     if progress is not None:
         result.training_data = read_checkpoint_training_data(files.checkpoint)
+        result.starting_weights = read_checkpoint_starting_weights(files.checkpoint)
         result.training_step = progress.step
         result.training_hours = progress.training_seconds / 3600
         result.status = (
@@ -544,8 +548,10 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
     recorded = [run.training_data for group in results for run in group.replicates]
     all_recorded = all(fingerprint is not None for fingerprint in recorded)
     recorded_data_differs = len({_canonical_json(fp) for fp in recorded if fp is not None}) > 1
+    weights_by_source = _pretrained_weights_by_source(results)
+    weights_differ = [source for source, hashes in weights_by_source.items() if len(hashes) > 1]
 
-    if not differences and not recorded_data_differs:
+    if not differences and not recorded_data_differs and not weights_differ:
         lines.append("Nothing: all runs use identical settings.")
     else:
         lines.append(
@@ -570,7 +576,12 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
                 "All runs are configured to train on identical data, step for step; this is confirmed from "
                 "their checkpoints once every run has been trained."
             )
-    if not differences and not recorded_data_differs:
+    for source in weights_differ:
+        lines.append(
+            f"**Warning: runs that start from `{source}` started from different weights** (see the row "
+            "\"pretrained weights\" of the table): the file was replaced between runs, or exists in several versions."
+        )
+    if not differences and not recorded_data_differs and not weights_differ:
         return lines
 
     lines += [
@@ -584,7 +595,38 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
     if recorded_data_differs:
         cells = [_describe_training_data(group) for group in results]
         lines.append("| training data recorded in the checkpoint | " + " | ".join(cells) + " |")
+    if weights_by_source:
+        cells = [_describe_starting_weights(group) for group in results]
+        lines.append("| pretrained weights recorded in the checkpoint | " + " | ".join(cells) + " |")
     return lines
+
+
+def _pretrained_weights_by_source(results: list[GroupResult]) -> dict[str, set[str]]:
+    """Every pretrained-weights source the runs' checkpoints record, with the hashes recorded for it."""
+    hashes: dict[str, set[str]] = {}
+    for group in results:
+        for run in group.replicates:
+            for weights in (run.starting_weights or {}).values():
+                hashes.setdefault(weights["source"], set()).add(weights["sha256"])
+    return hashes
+
+
+def _describe_starting_weights(group: GroupResult) -> str:
+    """A short, readable identifier of the pretrained weights a run's checkpoints started from."""
+    descriptions = []
+    for run in group.replicates:
+        if run.starting_weights is None:
+            text = MISSING
+        elif not run.starting_weights:
+            text = "none (random start)"
+        else:
+            text = ", ".join(
+                f"`{part}: {Path(weights['source']).name} {weights['sha256'][:12]}`"
+                for part, weights in run.starting_weights.items()
+            )
+        if text not in descriptions:
+            descriptions.append(text)
+    return ", ".join(descriptions)
 
 
 def _describe_training_data(group: GroupResult) -> str:

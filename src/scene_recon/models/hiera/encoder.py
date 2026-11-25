@@ -31,6 +31,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
+from scene_recon.models.base import describe_pretrained_weights
 from scene_recon.models.normalization import InputNormalization
 from scene_recon.registry import ENCODERS, ConfigError
 
@@ -317,8 +318,10 @@ class HieraEncoder(nn.Module):
             drop_path_rate=drop_path_rate,
             pretrain_image_size=pretrain_image_size,
         )
+        self.pretrained_weights = None
         if weights is not None:
             load_hiera_weights(self.backbone, weights)
+            self.pretrained_weights = describe_pretrained_weights(weights, self.backbone)
         self.adapter = nn.Conv2d(sum(self.backbone.stage_channels), num_features, kernel_size=1)
 
     def forward(self, images: Tensor) -> Tensor:

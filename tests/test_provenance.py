@@ -297,3 +297,30 @@ def test_results_from_older_code_are_out_of_date(smoke_config: Config, monkeypat
 
     for status in (evaluation_status(smoke_config), profile_status(smoke_config)):
         assert status.state == "stale" and "older version of the code" in status.reason
+
+
+# ---------------------------------------------------------------- starting weights (review B(b))
+
+
+def test_checkpoints_record_the_pretrained_weights_the_run_started_from(smoke_config: Config, monkeypatch):
+    from scene_recon.checkpoints import read_checkpoint_starting_weights
+    from scene_recon.models.testing.tiny_encoder import TinyConvEncoder
+
+    checkpoint = RunFiles(smoke_config.run_dir).checkpoint
+    first = {"source": "weights/encoder.pth", "sha256": "1" * 64}
+    monkeypatch.setattr(TinyConvEncoder, "pretrained_weights", first)
+    Trainer(smoke_config).train()
+    assert read_checkpoint_starting_weights(checkpoint) == {"encoder": first}
+
+    # The weights file is replaced before the run is resumed; the run still started from the first one.
+    monkeypatch.setattr(TinyConvEncoder, "pretrained_weights", {"source": "weights/encoder.pth", "sha256": "2" * 64})
+    Trainer(_changed(smoke_config, "training", num_steps=smoke_config.training.num_steps + 2), resume=True).train()
+    assert read_checkpoint_starting_weights(checkpoint) == {"encoder": first}
+
+
+def test_a_model_that_starts_from_random_values_records_no_pretrained_weights(smoke_config: Config):
+    from scene_recon.checkpoints import read_checkpoint_starting_weights
+
+    Trainer(smoke_config).train()
+
+    assert read_checkpoint_starting_weights(RunFiles(smoke_config.run_dir).checkpoint) == {}

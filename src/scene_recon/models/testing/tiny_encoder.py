@@ -23,6 +23,9 @@ class TinyConvEncoder(nn.Module):
     adapter = None
     """No layers are added on top of pretrained weights: the whole encoder is trained from scratch."""
 
+    pretrained_weights = None
+    """It starts from random values."""
+
     def __init__(self, num_features: int = 16, input_normalization: str = "none") -> None:
         """
         Args:

@@ -9,12 +9,12 @@ from torch import Tensor, nn
 from scene_recon.build import build_model, build_seeded_model
 from scene_recon.config import Config, RendererSettings, parse_config
 from scene_recon.data.synthetic import SyntheticSpheresDataset
-from scene_recon.models.base import ParameterGroup, ReconstructionModel
+from scene_recon.models.base import ParameterGroup, ReconstructionModel, weights_sha256
 from scene_recon.models.contract import ModelContractError, check_model_contract
 from scene_recon.models.normalization import InputNormalization
 from scene_recon.registry import MODELS, ConfigError
 from scene_recon.rendering import VolumeRenderer
-from scene_recon.provenance import evaluation_status, model_weights_digest
+from scene_recon.provenance import evaluation_status
 from scene_recon.stages import check_run_can_start, run_evaluation
 from scene_recon.structures import FieldOutput, SceneViews
 from scene_recon.training import Trainer
@@ -325,7 +325,7 @@ def test_a_model_with_random_fixed_values_is_evaluated_reproducibly(smoke_config
 
 
 def test_a_seeded_model_starts_from_the_weights_training_starts_from(smoke_config: Config):
-    assert model_weights_digest(build_seeded_model(smoke_config)) == model_weights_digest(Trainer(smoke_config).model)
+    assert weights_sha256(build_seeded_model(smoke_config)) == weights_sha256(Trainer(smoke_config).model)
 
 
 def test_building_a_seeded_model_leaves_the_global_random_state_alone(smoke_config: Config):

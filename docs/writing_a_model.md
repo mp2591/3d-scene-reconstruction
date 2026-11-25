@@ -237,7 +237,8 @@ class PixelAlignedNeRF(ReconstructionModel):
 
 `build_encoder` (in `scene_recon.models.base`) builds the encoder from
 `ENCODERS` and stops with a config error that names the encoder if it lacks
-an attribute the model reads (`num_features`, `feature_offset`, `adapter`).
+an attribute the model reads (`num_features`, `feature_offset`, `adapter`,
+`pretrained_weights`).
 
 `adapter` is the module that holds the layers an encoder adds on top of its
 pretrained weights, which start from random values, such as the 1x1
@@ -252,6 +253,19 @@ optimization:
   group_overrides:
     encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}   # pretrained weights only
 ```
+
+`pretrained_weights` says which weights the encoder starts from, so that
+every checkpoint and the suite report can show it. Set it right after loading
+them, from the part that holds them (not the adapter), or to `None` for an
+encoder that starts from random values:
+
+```python
+self.backbone = timm.create_model(model_name, pretrained=pretrained, features_only=True)
+self.pretrained_weights = describe_pretrained_weights(f"timm {model_name}", self.backbone) if pretrained else None
+```
+
+It is a hash of the loaded weights, so it is the same however the file was
+obtained, and different if the file was replaced by another version.
 
 Two rules keep every setting visible in the config. Each constructor
 argument with a default is written out in the model's file in
@@ -292,8 +306,8 @@ decoder), and
 [`models/testing/tiny_model.py`](../src/scene_recon/models/testing/tiny_model.py)
 a complete, small one. Any encoder that returns one feature map per image and
 has the attributes `num_features` (its channels), `feature_offset` (where
-its feature grid sits; [next section](#where-an-encoders-feature-grid-sits))
-and `adapter` works with that model, including the Hiera encoder of
+its feature grid sits; [next section](#where-an-encoders-feature-grid-sits)),
+`adapter` and `pretrained_weights` works with that model, including the Hiera encoder of
 [`models/hiera/`](../src/scene_recon/models/hiera/).
 
 One thing to plan for if you use it: the top-level model's code is shared by

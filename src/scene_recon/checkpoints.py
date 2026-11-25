@@ -58,13 +58,16 @@ def save_checkpoint(
     progress: TrainingProgress,
     raw_config: dict[str, Any],
     training_data: dict[str, Any],
+    starting_weights: dict[str, Any],
 ) -> None:
     """Write everything needed to resume training or to evaluate the model.
 
     The checkpoint also stores the complete config it was trained with, the
     fingerprint of its training data (``SceneDataset.fingerprint``) and the
     ``COMPATIBILITY_VERSION``, which ``scene_recon.provenance`` checks before
-    the checkpoint is used again, and the software environment.
+    the checkpoint is used again; the pretrained weights the run started from
+    (``pretrained_weights_of`` the model before its first step), which the
+    suite report shows; and the software environment.
 
     Next to the checkpoint, a small JSON file records the training progress,
     so that tools can see how far a run has come without loading the weights.
@@ -77,6 +80,7 @@ def save_checkpoint(
         "training_seconds": progress.training_seconds,
         "config": raw_config,
         "training_data": training_data,
+        "starting_weights": starting_weights,
         "compatibility_version": COMPATIBILITY_VERSION,
         "random_state": _global_random_state(),
         "environment": environment(),
@@ -138,6 +142,11 @@ def read_checkpoint_config(path: Path) -> dict[str, Any]:
 def read_checkpoint_training_data(path: Path) -> dict[str, Any] | None:
     """The fingerprint of the data a checkpoint was trained on, or ``None`` for older checkpoints."""
     return torch.load(path, map_location="cpu", weights_only=True, mmap=True).get("training_data")
+
+
+def read_checkpoint_starting_weights(path: Path) -> dict[str, Any] | None:
+    """The pretrained weights a checkpoint's run started from (``None`` if not recorded, as in older checkpoints)."""
+    return torch.load(path, map_location="cpu", weights_only=True, mmap=True).get("starting_weights")
 
 
 def read_checkpoint_compatibility_version(path: Path) -> int:
