@@ -9,7 +9,7 @@
 #   2. Keep the outputs outside OneDrive, which would upload every checkpoint
 #      (several hundred MB, rewritten every 5,000 steps): every command below
 #      sets experiment.output_dir to C:/scene-recon-runs. Any folder outside
-#      OneDrive will do; use the same one for every command of this suite.
+#      OneDrive will do; use the same one for both stages of the real run.
 #   3. If a trial of this file wrote into that folder, delete its
 #      proposal_comparison/ directory first, or the real run resumes from the
 #      trial's checkpoints.
@@ -44,7 +44,8 @@
 # after the first stage is kept: it depends on the network and the device, not
 # on the trained weights.
 #
-# Try the whole file quickly before the real run (delete the folder afterwards):
+# Try the whole file quickly before the real run, in a folder of its own that
+# can be deleted afterwards:
 #
 #   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set training.num_steps=200 training.validate_every=100 evaluation.num_scenes=5 experiment.output_dir=C:/scene-recon-trial
 #

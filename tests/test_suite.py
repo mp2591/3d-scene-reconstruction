@@ -10,7 +10,8 @@ import pytest
 import yaml
 
 from scene_recon import suite as suite_module
-from scene_recon.provenance import training_identity
+from scene_recon.config import flatten_settings, setting_in_sections
+from scene_recon.provenance import CONTINUATION_SETTINGS, training_identity
 from scene_recon.registry import ConfigError
 from scene_recon.report import write_report
 from scene_recon.run_files import RunFiles
@@ -751,7 +752,7 @@ def test_the_proposal_comparison_loads_as_shipped():
 
 
 def test_the_learning_rate_pilot_never_scores_on_the_test_split_and_treats_every_model_alike():
-    """Review F111: a pilot run is matched to a comparison run by its training, not by its name."""
+    """Reviews F111-F113: a pilot run is matched to a comparison run by its training, not by its name."""
     pilot = load_suite(CONFIG_DIR / "suites" / "encoder_lr_pilot.yaml")
     comparison = load_suite(CONFIG_DIR / "suites" / "proposal_comparison.yaml")
     test_split = next(iter(comparison.runs.values())).data["test"]["split_dir"]
@@ -760,15 +761,14 @@ def test_the_learning_rate_pilot_never_scores_on_the_test_split_and_treats_every
     def training_without_encoder_rate(config):
         # Everything that shapes the trained weights: the model, the seed, the data, the optimiser, ...
         identity = training_identity(config.raw)
-        del identity[encoder_rate]
+        identity.pop(encoder_rate, None)  # a comparison run may leave its encoder at the base rate
         return identity
 
-    # Only a run whose encoder has a learning rate of its own (a pretrained encoder) is tuned.
     # A run has one config per seed of the comparison; a pilot run must train like one of them.
     tuned = {
         name: [training_without_encoder_rate(config) for config in seeds.values()]
         for name, seeds in comparison.grouped_runs().items()
-        if "encoder" in next(iter(seeds.values())).optimization.group_overrides
+        if _starts_from_pretrained_weights(next(iter(seeds.values())).model["encoder"])
     }
     assert tuned, "the comparison has no pretrained encoder to tune"
     rates: dict[str, list[float]] = {name: [] for name in tuned}
@@ -777,8 +777,40 @@ def test_the_learning_rate_pilot_never_scores_on_the_test_split_and_treats_every
         training = training_without_encoder_rate(config)
         matches = [run for run, trainings in tuned.items() if training in trainings]
         assert len(matches) == 1, f"{name} trains like {len(matches)} runs of the comparison, not exactly one"
-        rates[matches[0]].append(training_identity(config.raw)[encoder_rate])
+        rate = training_identity(config.raw)[encoder_rate]
+        # summary.csv names each score by its run, so the name must tell the truth.
+        assert name == f"{matches[0]}_lr{_rate_label(rate)}", f"{name} trains {matches[0]} at {rate}"
+        rates[matches[0]].append(rate)
 
+    # The same budget and measurement for every model: steps, validation and evaluation are
+    # not part of the training identity (they may change later), so they are compared here.
+    measured = [_measurement_and_budget(config) for config in pilot.runs.values()]
+    assert all(settings == measured[0] for settings in measured), "the pilot runs differ in steps or measurement"
     assert len({config.experiment.seed for config in pilot.runs.values()}) == 1, "the pilot runs use different seeds"
-    # Every tuned run gets each candidate rate exactly once: the same budget for every model.
+    # Every tuned run gets each candidate rate exactly once.
     assert {run: sorted(found) for run, found in rates.items()} == {run: [1e-5, 3e-5, 1e-4] for run in tuned}
+
+
+def _starts_from_pretrained_weights(encoder: dict) -> bool:
+    """Whether an encoder section starts from pretrained weights, read the way each encoder's class reads it."""
+    readers = {
+        "convnextv2": lambda section: section.get("pretrained", True),  # timm weights; the class defaults to True
+        "hiera": lambda section: section["weights"] is not None,  # a weights file; None means random weights
+    }
+    assert encoder["name"] in readers, f"add how the encoder '{encoder['name']}' names its pretrained weights"
+    return readers[encoder["name"]](encoder)
+
+
+def _rate_label(rate: float) -> str:
+    """How a pilot run's name writes its rate: 1e-05 -> '1e-5'."""
+    mantissa, exponent = f"{rate:.0e}".split("e")
+    return f"{mantissa}e{int(exponent)}"
+
+
+def _measurement_and_budget(config) -> dict:
+    """The settings outside the training identity, except the run's own name."""
+    return {
+        name: value
+        for name, value in flatten_settings(config.raw).items()
+        if setting_in_sections(name, CONTINUATION_SETTINGS) and name != "experiment.run_name"
+    }
