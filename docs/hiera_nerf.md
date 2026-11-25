@@ -96,9 +96,10 @@ For each 3D point and each source photo:
 - the **direction** from the photo's camera to the point is taken in the
   shared world frame, with its difference to and cosine with the new viewing
   direction;
-- the point's **depth** in the photo, normalised by the scene bounds
-  (near, far), and whether the photo **sees** the point at all (in front of
-  the camera and inside the image).
+- the point's **depth** in the photo: its distance from the camera, scaled
+  so that the scene bounds near and far (distances along the ray) are 0 and
+  1, and whether the photo **sees** the point at all (in front of the camera
+  and inside the image).
 
 These are combined by a small MLP into one embedding per photo. The point
 itself gets an embedding of its world position (sines and cosines), scaled

@@ -432,6 +432,18 @@ def test_the_hiera_encoder_records_the_weights_it_loaded(tmp_path: Path):
     assert ConvNeXtV2Encoder(model_name="convnextv2_atto", pretrained=False, num_features=8).pretrained_weights is None
 
 
+def test_the_depth_feature_measures_distance_along_the_ray_like_near_and_far():
+    """Review F4: on a slanted ray, the points at the near and far bounds get exactly 0 and 1."""
+    from scene_recon.models.hiera.bridge import normalized_distance
+
+    direction = torch.tensor([0.6, 0.0, 0.8])  # a unit-length ray away from the image centre
+    points = torch.stack([1.0 * direction, 1.5 * direction, 2.0 * direction])
+
+    depth = normalized_distance(points, near=torch.tensor(1.0), far=torch.tensor(2.0))
+
+    assert torch.allclose(depth, torch.tensor([0.0, 0.5, 1.0]))
+
+
 # ------------------------------------------------------------------ decoder
 
 

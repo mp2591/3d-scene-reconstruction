@@ -31,7 +31,8 @@ do it only when trained weights really are affected, and add a line below.
 1. Checkpoints written before this number existed.
 2. 2026-11-24: Hiera and tiny_conv features are read at their true pixel
    centres (commit 5925102); ConvNeXt V2's 1x1 fusion layer is renamed
-   ``project`` -> ``adapter``.
+   ``project`` -> ``adapter``; the Hiera bridge's depth feature measures
+   distance along the ray.
 """
 
 

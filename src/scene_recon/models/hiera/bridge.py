@@ -33,6 +33,20 @@ camera to the point (3), its difference to the new viewing direction (3), their
 cosine (1), and the point's normalised depth in the photo (1)."""
 
 
+def normalized_distance(points_camera: Tensor, near: Tensor, far: Tensor) -> Tensor:
+    """Distance from the camera to each point, scaled so that ``near`` is 0 and ``far`` is 1.
+
+    ``near`` and ``far`` are distances along the ray (see ``SceneViews``),
+    so the point's distance is measured the same way, not along the camera's
+    axis: a point at the far bound gets 1 wherever it is in the image.
+
+    Args:
+        points_camera: Points in a camera's frame, shape (..., 3).
+        near, far: Bounds that broadcast against ``points_camera[..., 0]``.
+    """
+    return (points_camera.norm(dim=-1) - near) / (far - near).clamp(min=1e-6)
+
+
 @dataclass
 class HieraSceneEncoding:
     """What the model keeps about the source photos between queries."""
@@ -149,7 +163,7 @@ class HieraNeRFBridge(nn.Module):
         camera_centers = poses[..., :3, 3]  # (B, V, 3)
         to_point = F.normalize(flat_points[:, None] - camera_centers[:, :, None], dim=-1)  # (B, V, P, 3)
         target = target_directions[:, None]  # (B, 1, P, 3)
-        normalized_depth = (depth - near[..., None]) / (far - near)[..., None].clamp(min=1e-6)
+        normalized_depth = normalized_distance(points_camera, near[..., None], far[..., None])
         geometry = torch.cat(
             [to_point, to_point - target, (to_point * target).sum(-1, keepdim=True), normalized_depth[..., None]],
             dim=-1,
