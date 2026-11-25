@@ -17,22 +17,31 @@ from torch.optim.lr_scheduler import LRScheduler
 from scene_recon.environment import environment
 from scene_recon.run_files import write_atomically
 
-COMPATIBILITY_VERSION = 2
+COMPATIBILITY_VERSION = 3
 """Which version of the code a checkpoint's trained weights belong to.
 
-Raise it by one whenever a code change means that weights trained before
-it would now be used differently, so they would give wrong results: for
-example, an encoder reading its features at other pixels, a renamed layer,
-or a network getting a different input. A checkpoint with another number is
-refused, and results made from it count as out of date (see
-``scene_recon.provenance``). Raising it retires every existing checkpoint, so
-do it only when trained weights really are affected, and add a line below.
+Raise it by one whenever a code change means that a checkpoint written
+before it no longer is what its config now describes:
+
+* its weights would now be used differently, so they would give wrong
+  results: for example, an encoder reading its features at other pixels, a
+  renamed layer, or a network getting a different input;
+* or the same config would now train differently: for example, some layers
+  getting another learning rate, or a network another random start.
+
+A checkpoint with another number is refused, and results made from it count
+as out of date (see ``scene_recon.provenance``). Raising it retires every
+existing checkpoint, so do it only when trained weights really are affected,
+and add a line below.
 
 1. Checkpoints written before this number existed.
-2. 2026-11-24: Hiera and tiny_conv features are read at their true pixel
+2. Used only by intermediate commits of one review (2026-11-24), which each
+   changed something listed under 3; no shared run was trained with it.
+3. 2026-11-24: Hiera and tiny_conv features are read at their true pixel
    centres (commit 5925102); ConvNeXt V2's 1x1 fusion layer is renamed
-   ``project`` -> ``adapter``; the Hiera bridge's depth feature measures
-   distance along the ray.
+   ``project`` -> ``adapter``, and every encoder's adapter trains at the base
+   learning rate; pixel_aligned_nerf's decoder starts from random numbers of
+   its own; the Hiera bridge's depth feature measures distance along the ray.
 """
 
 
