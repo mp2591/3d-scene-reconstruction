@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from scene_recon import suite as suite_module
+from scene_recon.provenance import training_identity
 from scene_recon.registry import ConfigError
 from scene_recon.report import write_report
 from scene_recon.run_files import RunFiles
@@ -750,15 +751,31 @@ def test_the_proposal_comparison_loads_as_shipped():
 
 
 def test_the_learning_rate_pilot_never_scores_on_the_test_split_and_treats_every_model_alike():
+    """Review F111: a pilot run is matched to a comparison run by its training, not by its name."""
     pilot = load_suite(CONFIG_DIR / "suites" / "encoder_lr_pilot.yaml")
     comparison = load_suite(CONFIG_DIR / "suites" / "proposal_comparison.yaml")
     test_split = next(iter(comparison.runs.values())).data["test"]["split_dir"]
+    encoder_rate = "optimization.group_overrides.encoder.learning_rate"
 
-    rates: dict[str, set[float]] = {}
+    def training_without_encoder_rate(config):
+        # Everything that shapes the trained weights: the model, the seed, the data, the optimiser, ...
+        identity = training_identity(config.raw)
+        del identity[encoder_rate]
+        return identity
+
+    # Only a run whose encoder has a learning rate of its own (a pretrained encoder) is tuned.
+    tuned = {name: config for name, config in comparison.runs.items() if "encoder" in config.optimization.group_overrides}
+    assert tuned, "the comparison has no pretrained encoder to tune"
+    rates: dict[str, list[float]] = {name: [] for name in tuned}
     for name, config in pilot.runs.items():
-        assert config.data["test"]["split_dir"] == config.data["val"]["split_dir"] != test_split
-        model = name.rsplit("_lr", 1)[0]
-        rates.setdefault(model, set()).add(config.raw["optimization"]["group_overrides"]["encoder"]["learning_rate"])
+        assert config.data["test"]["split_dir"] == config.data["val"]["split_dir"] != test_split, name
+        matches = [
+            run
+            for run, comparison_config in tuned.items()
+            if training_without_encoder_rate(comparison_config) == training_without_encoder_rate(config)
+        ]
+        assert len(matches) == 1, f"{name} trains like {len(matches)} runs of the comparison, not exactly one"
+        rates[matches[0]].append(training_identity(config.raw)[encoder_rate])
 
-    assert set(rates) == set(comparison.grouped_runs())  # every model of the comparison is in the pilot
-    assert all(candidates == {1e-5, 3e-5, 1e-4} for candidates in rates.values())
+    # Every tuned run gets each candidate rate exactly once: the same budget for every model.
+    assert {run: sorted(found) for run, found in rates.items()} == {run: [1e-5, 3e-5, 1e-4] for run in tuned}

@@ -68,6 +68,8 @@ scene-recon train --config configs/smoke_test.yaml --set training.num_steps=50 m
 
 Keys are dotted paths. Values are parsed as YAML, so numbers, booleans, lists
 (`evaluation.metrics=[psnr,ssim]`) and `null` work as they do in a file.
+`--set` may be given more than once; every one counts, and when two set the
+same key, the later one wins.
 
 ## Several runs in one file
 

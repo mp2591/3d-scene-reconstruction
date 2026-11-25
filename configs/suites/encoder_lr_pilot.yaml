@@ -5,17 +5,19 @@
 # candidates, steps and data. Only the encoder's rate is tried; everything
 # else learns at the base rate of base.yaml (1e-4), as in pixelNeRF.
 #
-#   scene-recon run-suite --config configs/suites/encoder_lr_pilot.yaml \
-#       --set experiment.output_dir=<a folder outside OneDrive>
+#   scene-recon run-suite --config configs/suites/encoder_lr_pilot.yaml --set experiment.output_dir=C:/scene-recon-runs
 #
-# About 16 hours on the RTX 4090: 13 of training (9 runs of 20,000 steps) and
-# 3 of evaluation.
+# (one line, so it can be pasted into PowerShell; any folder outside OneDrive
+# will do). About 16 hours on the RTX 4090: 13 of training (9 runs of 20,000
+# steps) and 3 of evaluation.
 #
-# How to choose, decided before running: for each model, take the rate with
-# the highest PSNR averaged over the 1- and 2-view protocols (summary.md). If
-# a lower rate is within 0.1 dB of it, take the lower one: it changes the
-# pretrained weights less. Write the chosen rates into proposal_comparison.yaml.
-# A baseline with a pretrained encoder, added later, gets the same three runs.
+# How to choose, decided before running: for each model, average psnr_1v and
+# psnr_2v of summary.csv (unrounded; summary.md rounds them), find the best
+# average, and take the lowest rate whose average is within 0.1 dB of it: a
+# lower rate changes the pretrained weights less. Write the chosen rates into
+# proposal_comparison.yaml. A baseline with a pretrained encoder, added
+# later, gets the same three runs. The comparison is then one of models each
+# tuned on the validation split with the same budget.
 #
 # 20,000 steps are 5% of the real run, so a rate that starts slowly may still
 # win over 400,000 steps. The pilot ranks the rates; it does not predict the

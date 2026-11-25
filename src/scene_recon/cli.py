@@ -61,7 +61,12 @@ def _build_parser() -> argparse.ArgumentParser:
     shared = argparse.ArgumentParser(add_help=False)
     shared.add_argument("--config", required=True, help="Path to a YAML config file.")
     shared.add_argument(
-        "--set", nargs="*", default=[], metavar="KEY=VALUE", help="Override config values, e.g. training.batch_size=8."
+        "--set",
+        nargs="*",
+        action="extend",  # every --set counts: adding one never drops the overrides of another
+        default=[],
+        metavar="KEY=VALUE",
+        help="Override config values, e.g. training.batch_size=8. May be given more than once; later values win.",
     )
 
     # Options shared by the commands that work on a trained model.

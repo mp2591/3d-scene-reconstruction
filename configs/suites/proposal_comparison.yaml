@@ -7,38 +7,44 @@
 #      with configs/suites/encoder_lr_pilot.yaml, and write the chosen rates
 #      into the runs below (1.0e-5 until then).
 #   2. Keep the outputs outside OneDrive, which would upload every checkpoint
-#      (several hundred MB, rewritten every 5,000 steps): add
-#      --set experiment.output_dir=<a folder outside OneDrive> to every command.
-#   3. Delete the outputs of any trial of this file, or the real run resumes
-#      from the trial's checkpoints.
+#      (several hundred MB, rewritten every 5,000 steps): every command below
+#      sets experiment.output_dir to C:/scene-recon-runs. Any folder outside
+#      OneDrive will do; use the same one for every command of this suite.
+#   3. If a trial of this file wrote into that folder, delete its
+#      proposal_comparison/ directory first, or the real run resumes from the
+#      trial's checkpoints.
 #
-# Fixed once a run has trained (changing one means training the run again
-# under a new name): the seed, the training data and batch settings, every
-# learning rate and its schedule, the renderer's sample counts, and the model.
-# Free to change later without retraining: training.num_steps (raise it to
-# continue training), evaluation, validation and profiling.
+# Fixed once a run has trained: every setting that is not listed in
+# CONTINUATION_SETTINGS in src/scene_recon/provenance.py, for example the
+# seed, the training data and batch settings, the loss, the optimiser and
+# every learning rate, the renderer's sample counts and the model. Changing
+# one means training the run again under a new name. Free to change later:
+# training.num_steps (raise it to continue training), evaluation, validation
+# and profiling.
+#
+# Each command is one line, so it can be pasted into PowerShell as it is.
 #
 # Run it:
 #
-#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml
+#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set experiment.output_dir=C:/scene-recon-runs
 #
-# On the RTX 4090 the three runs below take about 3.6 days of training
+# On the RTX 4090 the three runs below take about 3.7 days of training
 # (0.24, 0.24 and 0.31 s per step, 400,000 steps each) and about 13 hours of
-# evaluation. To see results sooner, train in two stages. First:
+# evaluation. To see results sooner, train in two stages. First (about 22
+# hours of training, then 2 hours of evaluation on the first 100 test scenes):
 #
-#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml \
-#       --set training.num_steps=100000 evaluation.num_scenes=100
+#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set training.num_steps=100000 evaluation.num_scenes=100 experiment.output_dir=C:/scene-recon-runs
 #
-# (about 22 hours of training, then 2 hours of evaluation on 100 test scenes),
-# then the first command again: every run continues from step 100,000 and is
-# evaluated in full. The learning rate depends on optimization.decay_steps,
-# not on num_steps, so the result is the same as training 400,000 steps at once.
+# Use the first stage's scores to check progress, not to change settings.
+# Then the first command again: every run continues from step 100,000 with
+# the same training data and learning rate at every step as one 400,000-step
+# run (the learning rate depends on optimization.decay_steps, not on
+# num_steps), and is evaluated again in full. On a GPU the weights can still
+# differ in their last digits, as between any two GPU runs.
 #
 # Try the whole file quickly before the real run (delete the folder afterwards):
 #
-#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml \
-#       --set training.num_steps=200 training.validate_every=100 \
-#             evaluation.num_scenes=5 experiment.output_dir=<a scratch folder>
+#   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set training.num_steps=200 training.validate_every=100 evaluation.num_scenes=5 experiment.output_dir=C:/scene-recon-trial
 #
 # The two baselines are commented out until the team adds their model files
 # (configs/models/*.yaml) and the networks they describe; uncomment each one
@@ -56,10 +62,11 @@ seeds: [0]
 common:
   base: [../base.yaml, ../data/srn_cars.yaml]
   evaluation:
-    # Every test scene (704), but 10 of each scene's 250 views, evenly spread:
+    # Every test scene (704), but 10 of each scene's views, evenly spread:
     # about 13 hours for the three runs below instead of about two weeks. The
     # report's confidence intervals are over scenes. pixelNeRF's benchmark
-    # renders every view; null does that (it re-evaluates, without retraining).
+    # renders every view that is not a source view (250 with one source view,
+    # 249 with two); null does that (it evaluates again, without retraining).
     num_target_views: 10
 
 # The first run is the reference: every other run is compared with it scene by scene.
@@ -70,7 +77,9 @@ runs:
   #   base: ../models/pixelnerf_resnet34.yaml
 
   # (2) Encoder ablations: the modern backbones with the same pixelNeRF-style
-  #     decoder (pixelnerf_mlp), so that only the encoder differs.
+  #     decoder (pixelnerf_mlp). The network differs only in the encoder; each
+  #     encoder trains at the learning rate the pilot chose for it, with the
+  #     same tuning budget for both.
   convnextv2_mlp:
     base: ../models/convnextv2_mlp.yaml   # ConvNeXt V2-T, pretrained weights via timm
     optimization:

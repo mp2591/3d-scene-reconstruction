@@ -176,7 +176,7 @@ every single-run command works on a suite run too, for example to re-evaluate
 one run with a different checkpoint:
 
 ```bash
-scene-recon evaluate --config runs/proposal_comparison/hiera_mlp/config.yaml --checkpoint my.pt
+scene-recon evaluate --config runs/proposal_comparison/hiera_mlp/seed_0/config.yaml --checkpoint my.pt
 ```
 
 The report starts with **what differs between runs**: a table of every

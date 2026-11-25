@@ -27,6 +27,16 @@ def _with_overrides(config: Config, section: str, **changes) -> Config:
     return parse_config(raw)
 
 
+def test_every_set_option_on_the_command_line_counts():
+    """Review F104: adding `--set experiment.output_dir=...` must not drop the overrides of an earlier --set."""
+    arguments = ["run-suite", "--config", "suite.yaml", "--set", "training.num_steps=200", "evaluation.num_scenes=5"]
+
+    args = cli._build_parser().parse_args([*arguments, "--set", "experiment.output_dir=out"])
+
+    assert args.set == ["training.num_steps=200", "evaluation.num_scenes=5", "experiment.output_dir=out"]
+    assert cli._build_parser().parse_args(["run-suite", "--config", "suite.yaml"]).set == []
+
+
 def test_an_interrupted_save_never_leaves_the_progress_of_the_older_checkpoint(tmp_path, monkeypatch):
     """Review F97: interrupted after the checkpoint was replaced, the progress is read from the new checkpoint."""
     from scene_recon import checkpoints
