@@ -556,8 +556,8 @@ def _differences_section(results: list[GroupResult], differences: dict[str, dict
     else:
         lines.append(
             "Every setting not listed here is identical for all runs. The measurement settings "
-            "(evaluation, validation, profiling, and the validation and test data) are always identical; "
-            "the suite does not start otherwise."
+            "(evaluation, validation, profiling, the validation and test data, and renderer.ray_chunk_size) "
+            "are always identical; the suite does not start otherwise."
         )
     if recorded_data_differs:
         lines.append(

@@ -18,7 +18,13 @@ renderer:
   num_coarse_samples: 64    # Evenly spread samples per ray.
   num_fine_samples: 32      # Extra samples placed where the coarse pass found content. 0 = no fine pass.
   background_color: [1.0, 1.0, 1.0]   # ShapeNet-SRN renders have a white background.
-  ray_chunk_size: 8192      # Rays rendered at once for full images. Lower it if evaluation runs out of memory.
+  # Rays rendered at once for full images (evaluation, profiling). The same
+  # for every run of a suite, because rendering speed depends on it. Memory
+  # grows with it and with the number of source views: on an RTX 4090 at
+  # 128x128, 2048 rays with 3 source views needed about 5.3 GB for each of
+  # convnextv2_mlp, hiera_mlp and hiera_nerf, and 8192 overflowed the GPU.
+  # Frame rates between 1024 and 4096 differed by less than 4%.
+  ray_chunk_size: 2048
 
 optimization:
   optimizer: adam           # adam | adamw

@@ -215,3 +215,19 @@ def test_rendered_images_do_not_depend_on_the_ray_chunk_size(smoke_config: Confi
     )
 
     assert torch.allclose(small_chunks, one_chunk, atol=1e-6)
+
+
+def test_a_speed_measured_while_the_gpu_memory_overflowed_is_refused(monkeypatch):
+    """Review B(c): some drivers move GPU memory to main memory instead of failing, and rendering crawls."""
+    from scene_recon import profiling
+
+    renderer = VolumeRenderer(_settings(16, 8))
+    gpu = torch.device("cuda:0")
+
+    monkeypatch.setattr(profiling, "gpu_memory_bytes", lambda device: (30 * 10**9, 24 * 10**9))
+    with pytest.raises(RuntimeError, match="Lower renderer.ray_chunk_size"):
+        profiling._check_memory_fits(gpu, renderer)
+
+    monkeypatch.setattr(profiling, "gpu_memory_bytes", lambda device: (5 * 10**9, 24 * 10**9))
+    assert profiling._check_memory_fits(gpu, renderer) == 5.0
+    assert profiling._check_memory_fits(torch.device("cpu"), renderer) is None

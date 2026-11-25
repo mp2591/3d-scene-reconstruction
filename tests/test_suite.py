@@ -152,6 +152,7 @@ def test_stages_always_run_in_pipeline_order(tmp_path: Path):
         {"validation": {"source_views": [1]}},
         {"profiling": {"num_frames": 2}},
         {"data": {"test": {"num_scenes": 3}}},
+        {"renderer": {"ray_chunk_size": 512}},  # rendering speed depends on it (review B(c))
     ],
 )
 def test_runs_must_be_measured_identically(tmp_path: Path, run_change: dict):

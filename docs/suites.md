@@ -87,9 +87,10 @@ they are fixed. A typo in the last run costs seconds, not the days spent
 training the runs before it.
 
 The runs must also be **measured identically**: the `evaluation`,
-`validation` and `profiling` sections and the validation and test data must
-be the same for every run, or the suite does not start. Set them in
-`common`. Runs measured differently could not be compared.
+`validation` and `profiling` sections, the validation and test data, and
+`renderer.ray_chunk_size` (rendering speed depends on it) must be the same
+for every run, or the suite does not start. Set them in `common`. Runs
+measured differently could not be compared.
 
 **2. The runs are executed one after another**, each through the requested
 stages. Work that is already done is skipped:

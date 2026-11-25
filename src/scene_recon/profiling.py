@@ -54,7 +54,15 @@ def measure_rendering_speed(
             costs (memory allocation, CUDA kernel selection) are not counted.
 
     Returns:
-        ``encode_seconds``, ``seconds_per_frame`` and ``frames_per_second``.
+        ``encode_seconds``, ``seconds_per_frame``, ``frames_per_second`` and,
+        on a GPU, ``peak_memory_gb``: the most GPU memory in use while
+        rendering a frame (``None`` on the CPU).
+
+    Raises:
+        RuntimeError: If rendering needed more memory than the GPU has. Some
+            drivers (on Windows) then move memory to the computer's main
+            memory instead of failing, which makes rendering many times
+            slower, so the measured speed would be wrong.
     """
     was_training = model.training
     model.eval()
@@ -67,6 +75,7 @@ def measure_rendering_speed(
     _wait_for_gpu(device)
     encode_seconds = time.perf_counter() - start
 
+    _start_counting_memory(device)
     for _ in range(num_warmup_frames):
         renderer.render_images(model, scene_encoding, target_view)
     _wait_for_gpu(device)
@@ -75,13 +84,39 @@ def measure_rendering_speed(
         renderer.render_images(model, scene_encoding, target_view)
     _wait_for_gpu(device)
     seconds_per_frame = (time.perf_counter() - start) / num_frames
+    peak_memory_gb = _check_memory_fits(device, renderer)
 
     model.train(was_training)
     return {
         "encode_seconds": encode_seconds,
         "seconds_per_frame": seconds_per_frame,
         "frames_per_second": 1.0 / seconds_per_frame,
+        "peak_memory_gb": peak_memory_gb,
     }
+
+
+def _start_counting_memory(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+
+
+def _check_memory_fits(device: torch.device, renderer: VolumeRenderer) -> float | None:
+    """The peak GPU memory of the rendered frames in GB, after checking it fitted on the GPU."""
+    if device.type != "cuda":
+        return None
+    peak, total = gpu_memory_bytes(device)
+    if peak > total:
+        raise RuntimeError(
+            f"Rendering a frame needed {peak / 1e9:.1f} GB, more than the {total / 1e9:.1f} GB of {device}, so "
+            "the measured speed would be wrong. Lower renderer.ray_chunk_size (now "
+            f"{renderer.settings.ray_chunk_size}) for every run of the suite."
+        )
+    return peak / 1e9
+
+
+def gpu_memory_bytes(device: torch.device) -> tuple[int, int]:
+    """The most memory PyTorch had in use on a GPU since it was last reset, and the GPU's total memory."""
+    return torch.cuda.max_memory_allocated(device), torch.cuda.get_device_properties(device).total_memory
 
 
 def _wait_for_gpu(device: torch.device) -> None:

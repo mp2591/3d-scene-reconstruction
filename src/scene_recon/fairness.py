@@ -3,9 +3,11 @@
 Two kinds of settings are treated differently:
 
 * Measurement settings define how a run is scored: the evaluation protocol,
-  validation, profiling, and the validation and test data. If they differed,
-  the runs' numbers would not be comparable at all, so every run of a suite
-  must use the same ones. ``check_identical_measurement`` enforces this.
+  validation, profiling, the validation and test data, and the number of
+  rays rendered at once (``renderer.ray_chunk_size``, on which the measured
+  rendering speed depends). If they differed, the runs' numbers would not be
+  comparable at all, so every run of a suite must use the same ones.
+  ``check_identical_measurement`` enforces this.
 
 * Every other setting may differ between runs; that is what an experiment
   varies (the model, an encoder's learning rate, a renderer ablation...).
@@ -24,7 +26,7 @@ from typing import Any, Mapping
 from scene_recon.config import Config, flatten_settings, setting_in_sections
 from scene_recon.registry import ConfigError
 
-MEASUREMENT_SETTINGS = ("evaluation", "validation", "profiling", "data.val", "data.test")
+MEASUREMENT_SETTINGS = ("evaluation", "validation", "profiling", "data.val", "data.test", "renderer.ray_chunk_size")
 """Config sections that must be identical for every run of a suite."""
 
 TRAINING_DATA_SETTINGS = (

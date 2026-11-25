@@ -164,5 +164,6 @@ Parts of the description that are pipeline settings or not yet in the pipeline:
 - **Per-scene fine-tuning** is not in the pipeline. Rendering new scenes with
   no extra training is what `scene-recon evaluate` does.
 
-Evaluation renders full images in chunks of `renderer.ray_chunk_size` rays;
-lower it if evaluation runs out of GPU memory.
+Evaluation renders full images in chunks of `renderer.ray_chunk_size` rays
+(2048 in `configs/base.yaml`, the same for every run of a suite); lower it
+for all runs if evaluation runs out of GPU memory.
