@@ -156,6 +156,10 @@ implement `__len__`, `num_views` and `load_scene`, register the class with
 loads views; the trainer and evaluator decide which ones are inputs and which
 are targets.
 
+Give all scenes of a split the same image size. The encoders accept only
+sizes their strides divide, and the checks before a run read the size of
+each split's first scene only.
+
 Also override `fingerprint()` to identify the data's content: it is
 recorded with every checkpoint and evaluation, an evaluation made on other
 test data is redone, and a run is not resumed on other training data. The

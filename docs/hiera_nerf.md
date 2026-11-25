@@ -63,6 +63,11 @@ setting is required: an encoder section without `weights` is an error.
 `weights: null` starts from random weights on purpose; it is meant for tests,
 as in `configs/hiera_nerf_smoke_test.yaml`.
 
+The file is also needed to evaluate or profile a trained run, and to resume
+one: the model is built first, loading these weights, and the checkpoint's
+weights then replace them. (The ConvNeXt V2 runs likewise need timm's
+download, cached after the first time.)
+
 ## Encoder: Hiera-T (`hiera`)
 
 | Step | What happens |
@@ -158,6 +163,16 @@ Parts of the description that are pipeline settings or not yet in the pipeline:
   and 2 (`evaluation.source_view_sets` in `configs/base.yaml`; a 3-view
   protocol is still to be chosen). Memory in the decoder grows with the
   number of photos, so lower `training.rays_per_scene` if needed.
+- **Train with more than one source photo.** With a single photo, the colour
+  attention of step 3 has one key, so its weight is always 1 and its scoring
+  layers get no gradient. The template trains with 1 to 3 photos
+  (`training.num_source_views: [1, 2, 3]`), which trains them.
+- **The training PSNR is optimistic.** Training rays are drawn from all
+  loaded views, source views included, as in pixelNeRF
+  ([pipeline.md](pipeline.md#rendering-details)). On a source view's ray,
+  step 3 can read the very pixel it is asked to predict. Validation and
+  evaluation render only views that are not sources, so their numbers are
+  not affected.
 - **Mixed datasets** (indoor video, camera rigs, phone scans, synthetic
   objects): the pipeline has loaders for ShapeNet-SRN and the synthetic spheres
   only. Each new dataset needs a loader in `src/scene_recon/data/`, and

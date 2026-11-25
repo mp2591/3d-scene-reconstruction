@@ -38,6 +38,11 @@ class PixelNeRFDecoder(nn.Module):
     Each view goes through a few ResNet blocks on its own. The views are then
     averaged, so any number of views works, and more blocks follow. This is a
     simplified version of the pixelNeRF decoder.
+
+    Like pixelNeRF's, the average includes views that cannot see the point
+    (behind the camera, or outside the image, where the feature at the
+    border is read). This is kept on purpose, so that the encoder ablation
+    uses pixelNeRF's decoder; it applies to every encoder alike.
     """
 
     def __init__(
