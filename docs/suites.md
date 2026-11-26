@@ -191,13 +191,16 @@ confidence interval (Student's t over scenes). A run is called *better* or
 the reference has no results yet, the report says so rather than comparing
 against another run.
 
-A result only counts for the comparison once the run's requested training
-has finished. If, say, a suite extends training from 4 000 to 6 000 steps and
-one run's extension fails, that run's evaluation of its 4 000-step checkpoint
-is still a valid measurement of that checkpoint, but not of the requested
-experiment. The report shows it in the quality tables marked with \*, with
-its actual step count, and leaves it out of best values, figures and paired
-comparisons, saying why. It counts again once the training finishes. When a
+A result only counts for the comparison once the run's checkpoint has
+exactly the requested number of training steps. If, say, a suite extends
+training from 4 000 to 6 000 steps and one run's extension fails, that run's
+evaluation of its 4 000-step checkpoint is still a valid measurement of that
+checkpoint, but not of the requested experiment; the same holds for a run
+trained past the requested steps. The report shows it in the quality tables
+marked with \*, with its actual step count, and leaves it out of best
+values, quality figures and paired comparisons, saying why. It counts again
+once its steps match. The training curves include it; a mean over seeds
+covers the steps every seed has logged. When a
 suite does not request training (`stages: [evaluate]`), the existing
 checkpoints are what is being compared, so their results always count. A run
 whose evaluation finished but whose profiling failed keeps its comparison.

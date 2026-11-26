@@ -48,6 +48,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from functools import reduce
@@ -644,7 +645,7 @@ def _write_markdown(
             "",
             "\\* Interim: evaluated at another step than the requested number of training steps. Shown for "
             "information only; left out of best values, quality figures and paired comparisons (the training "
-            "curves show everything that was trained):",
+            "curves include it; a mean over seeds covers the steps every seed has logged):",
             "",
             *[f"- **{key}**: {reason}" for key, reason in interim],
         ]
@@ -968,6 +969,10 @@ def _format_count(count: int | None) -> str:
 # ---------------------------------------------------------------- figures
 
 
+_RENDERS_FIGURE = re.compile(r"renders_[1-9][0-9]*_source_views\.png")
+"""The names of the render figures the report writes, one per number of source views."""
+
+
 def _write_figures(results: list[GroupResult], plots_dir: Path, multiple_seeds: bool) -> list[tuple[str, Path]]:
     """Draw every figure there is data for. Returns (title, path) of each figure written."""
     styles = run_styles([group.name for group in results])
@@ -1033,7 +1038,8 @@ def _write_figures(results: list[GroupResult], plots_dir: Path, multiple_seeds: 
     # otherwise stay in the folder, and in any copy of it.
     written = {path for _, path in figures}
     own = [plots_dir / name for name in ("metrics_vs_source_views.png", "quality_vs_speed.png", "training_curves.png")]
-    for stale in [*own, *plots_dir.glob("renders_*_source_views.png")]:
+    own += [path for path in plots_dir.glob("renders_*_source_views.png") if _RENDERS_FIGURE.fullmatch(path.name)]
+    for stale in own:
         if stale not in written:
             stale.unlink(missing_ok=True)
     return figures

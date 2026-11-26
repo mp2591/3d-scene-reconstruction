@@ -108,8 +108,17 @@ print(next(iter(load_suite(sys.argv[1]).runs.values())).training.num_steps)' "$c
 file_steps=$(cat "$budget_file" 2> /dev/null || true)
 if ! [[ $file_steps =~ ^[1-9][0-9]*$ ]]; then file_steps=""; fi  # missing or damaged
 recorded_steps=$file_steps
-# A run's checkpoint is <run folder>/checkpoints/last.pt (src/scene_recon/run_files.py).
-checkpoint=$(find "$output/proposal_comparison" -path '*/checkpoints/last.pt' -print -quit 2> /dev/null || true)
+# The checkpoints of the suite's runs (each seed of each run) that exist, one per line. Read
+# into a variable first, so that a failure stops the script; without the carriage returns that
+# Python writes on Windows.
+checkpoint_list=$(python -c 'import sys
+from scene_recon.run_files import RunFiles
+from scene_recon.suite import load_suite
+for config in load_suite(sys.argv[1], overrides=sys.argv[2:]).runs.values():
+    if RunFiles(config.run_dir).checkpoint.is_file():
+        print(RunFiles(config.run_dir).checkpoint)' "$comparison" "${settings[@]}")
+mapfile -t checkpoints < <(printf '%s' "$checkpoint_list" | tr -d '\r')
+checkpoint=${checkpoints[0]:-}
 if [ -z "$recorded_steps" ] && [ -n "$checkpoint" ]; then
     # The record is lost, but the checkpoint says which schedule its run trained with.
     recorded_steps=$(python -c 'import sys; from pathlib import Path
@@ -137,18 +146,18 @@ budget=(training.num_steps="$steps" optimization.decay_steps="$steps" training.f
 
 # A run trained further than the budget (by hand, see "Time to spare at the end" in
 # docs/running_on_a_gpu_server.md) would be scored, but left out of the comparison.
-python - "$output/proposal_comparison" "$steps" <<'EOF'
+python - "$steps" "${checkpoints[@]}" <<'EOF'
 import sys
 from pathlib import Path
 
 from scene_recon.checkpoints import read_progress
 
-folder, steps = Path(sys.argv[1]), int(sys.argv[2])
+steps, checkpoints = int(sys.argv[1]), [Path(path) for path in sys.argv[2:]]
 longer = {}
-for checkpoint in sorted(folder.glob("*/*/checkpoints/last.pt")):  # <run>/<seed>/checkpoints/last.pt
+for checkpoint in checkpoints:  # <run folder>/checkpoints/last.pt
     progress = read_progress(checkpoint)
     if progress is not None and progress.step > steps:
-        longer[checkpoint.parent.parent.relative_to(folder).as_posix()] = progress.step
+        longer[checkpoint.parent.parent.as_posix()] = progress.step
 if longer:
     runs = ", ".join(f"{run} ({step:,} steps)" for run, step in longer.items())
     sys.exit(

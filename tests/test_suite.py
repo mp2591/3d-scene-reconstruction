@@ -715,10 +715,14 @@ def test_figures_of_an_earlier_report_are_not_left_behind(tmp_path: Path):
     run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["training.num_steps=6"]))
     assert len(list((tmp_path / "runs" / "test_suite" / "plots").iterdir())) > 1
 
+    (tmp_path / "runs" / "test_suite" / "plots" / "renders_annotated_source_views.png").write_bytes(b"a teammate's")
+
     suite = load_suite(_write_suite(tmp_path, TWO_RUNS))  # 4 steps: both runs are past it now, so neither is scored
     run_suite(suite)
 
-    assert {path.name for path in (suite.directory / "plots").iterdir()} == {"training_curves.png"}
+    # The report's own figures it has no data for are gone; a file it did not make stays.
+    plots = {path.name for path in (suite.directory / "plots").iterdir()}
+    assert plots == {"training_curves.png", "renders_annotated_source_views.png"}
 
 
 def test_an_unfinished_candidate_is_listed_as_not_compared(tmp_path: Path, monkeypatch):

@@ -139,10 +139,14 @@ class Saving:
     """Every later fingerprint of the test split: looks at the size and time of change of every file again."""
 
 
-TEST_CHECKS_PER_RUN = 9
-"""How many times one suite command fingerprints the test split per run, at most: 6 when it
-evaluates and profiles a run, 9 when it evaluates it again on more scenes (counted on the code;
-``tests/test_time_estimate.py`` keeps the number honest)."""
+def checks_of_test_data_per_command(num_runs: int) -> int:
+    """How many times one suite command fingerprints the test split, at most.
+
+    Each run's own stages check it up to 3 times, and the report, written
+    again after every run, checks every run up to twice. Counted on the code;
+    ``tests/test_time_estimate.py`` keeps the count honest.
+    """
+    return 3 * num_runs + 2 * num_runs**2
 
 
 def measure_saving(config: Config) -> Saving:
@@ -216,13 +220,13 @@ def plan_hours(
     Each suite command (scored on the first scenes, then on all of them) is
     a process of its own, so each pays for the first fingerprint of the
     training split (checked before anything runs, also when training is
-    finished) and of the test split, and checks the test split again up to
-    ``TEST_CHECKS_PER_RUN`` times per run in all.
+    finished) and of the test split, and checks the test split again (see
+    ``checks_of_test_data_per_command``).
     """
     datasets = _Datasets()
     command = saving.first_seconds if "train" in suite.stages else 0.0
     if {"evaluate", "profile"} & set(suite.stages):
-        later_checks = TEST_CHECKS_PER_RUN * len(suite.runs) - 1
+        later_checks = checks_of_test_data_per_command(len(suite.runs)) - 1
         command += saving.test_first_seconds + later_checks * saving.test_later_seconds
     estimates = []
     for steps in budgets:
@@ -299,7 +303,8 @@ def format_estimates(
     )
     lines.append(
         f"  checking the test data: {saving.test_first_seconds:.1f} s the first time in each command, "
-        f"{saving.test_later_seconds:.1f} s each later time (up to {TEST_CHECKS_PER_RUN} times per run)"
+        f"{saving.test_later_seconds:.1f} s each later time (up to {checks_of_test_data_per_command(len(speeds))} "
+        "times in each command)"
     )
     first = "scored on all test scenes" if first_scenes is None else f"scored on {first_scenes} test scenes"
     columns = ["steps per run", f"trained, {first}", "final report"]

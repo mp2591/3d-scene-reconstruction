@@ -279,15 +279,16 @@ def test_a_checkpoint_from_older_code_is_refused_everywhere(srn_config: Config, 
         run_profiling(srn_config)
 
 
-def test_a_checkpoint_of_the_retired_version_2_is_refused(smoke_config: Config):
-    """Review F64: version 2 was written by intermediate commits whose code trained differently."""
+@pytest.mark.parametrize("version", [2, 3])
+def test_a_checkpoint_of_a_retired_version_is_refused(smoke_config: Config, version: int):
+    """Version 2 (review F64) and 3 (the first object-box rule, review F196) trained differently."""
     from scene_recon.stages import check_run_can_start
 
-    assert COMPATIBILITY_VERSION > 2
+    assert COMPATIBILITY_VERSION > 3
     Trainer(smoke_config).train()
-    _rewrite_checkpoint_version(RunFiles(smoke_config.run_dir).checkpoint, 2)
+    _rewrite_checkpoint_version(RunFiles(smoke_config.run_dir).checkpoint, version)
 
-    with pytest.raises(ConfigError, match="compatibility version 2"):
+    with pytest.raises(ConfigError, match=f"compatibility version {version}"):
         check_run_can_start(smoke_config, ["train"])
 
 

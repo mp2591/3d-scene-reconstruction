@@ -14,7 +14,6 @@ from scene_recon.suite import load_suite
 from scene_recon import provenance
 from scene_recon.suite import run_suite
 from scene_recon.time_estimate import (
-    TEST_CHECKS_PER_RUN,
     Estimate,
     Saving,
     Speed,
@@ -23,6 +22,7 @@ from scene_recon.time_estimate import (
     measure_saving,
     measure_speed,
     plan_hours,
+    checks_of_test_data_per_command,
 )
 
 from conftest import CONFIG_DIR
@@ -35,7 +35,7 @@ ONE_VIEW, TWO_VIEWS = (0,), (0, 6)
 NO_SAVING = Saving(0.0, 0.0, 0.0, 0.0)
 
 
-def _write_suite(tmp_path: Path, stages: list[str] | None = None) -> Path:
+def _write_suite(tmp_path: Path, stages: list[str] | None = None, seeds: list[int] | None = None) -> Path:
     common = {
         "base": str(CONFIG_DIR / "smoke_test.yaml"),
         "experiment": {"output_dir": str(tmp_path / "runs"), "device": "cpu"},
@@ -55,7 +55,7 @@ def _write_suite(tmp_path: Path, stages: list[str] | None = None) -> Path:
         "small": {"model": {"decoder": {"hidden_width": 16}}},
         "large": {"model": {"decoder": {"hidden_width": 24}}},
     }
-    content = {"suite_name": "toy", "stages": stages or ["train", "evaluate"], "seeds": [0], "common": common, "runs": runs}
+    content = {"suite_name": "toy", "stages": stages or ["train", "evaluate"], "seeds": seeds or [0], "common": common, "runs": runs}
     path = tmp_path / "toy.yaml"
     path.write_text(yaml.safe_dump(content, sort_keys=False), encoding="utf-8")
     return path
@@ -100,7 +100,7 @@ def test_saving_time_counts_every_checkpoint_save(tmp_path: Path):
 
     saving = Saving(1000.0, 1.0, 500.0, 2.0)
     # Per command: the training split read once; the test split read once, then checked again.
-    command = 1000 + 500 + (TEST_CHECKS_PER_RUN * 2 - 1) * 2.0
+    command = 1000 + 500 + (checks_of_test_data_per_command(2) - 1) * 2.0
 
     (estimate,) = plan_hours(suite, speeds, saving, [STEPS], first_scenes=None)
     assert estimate.first_scores * 3600 == pytest.approx(command + 2 * (2 + 1))  # at steps 2 and 4, and at the end
@@ -122,12 +122,13 @@ def test_a_command_checks_the_test_data_no_more_often_than_the_estimate_counts(t
         return scenes
 
     monkeypatch.setattr(provenance, "build_dataset", counting_build_dataset)
-    path = _write_suite(tmp_path, stages=["train", "evaluate", "profile"])
+    # Two models with two seeds each: four runs, and the report written after each.
+    path = _write_suite(tmp_path, stages=["train", "evaluate", "profile"], seeds=[0, 1])
     suite = load_suite(path, overrides=["evaluation.num_scenes=1"])
     for command in (suite, load_suite(path)):  # the first scenes, then all of them, as the launcher does
         checks.clear()
-        run_suite(command)
-        assert 0 < len(checks) <= TEST_CHECKS_PER_RUN * len(command.runs)
+        assert run_suite(command) == {}
+        assert 0 < len(checks) <= checks_of_test_data_per_command(len(command.runs)) and len(command.runs) == 4
 
 
 @pytest.mark.parametrize(
