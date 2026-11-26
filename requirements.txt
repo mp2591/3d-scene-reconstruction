@@ -1,0 +1,24 @@
+# Everything the project needs, for any environment (conda, venv):
+#
+#   pip install -r requirements.txt
+#
+# Run it from the repository folder. The last line installs this package
+# itself, with its `scene-recon` command. If PyTorch then cannot see the GPU:
+#
+#   pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#
+# The same list is in pyproject.toml; change both together.
+
+torch>=2.1
+torchvision
+numpy
+pyyaml
+pillow
+scikit-image
+tensorboard
+matplotlib
+scipy
+timm>=1.0,<2
+lpips
+pytest
+-e .
