@@ -605,9 +605,24 @@ def save_choices(pilot: Suite, comparison: Suite, choices: Sequence[Choice]) -> 
     return path
 
 
-def choose_and_continue(pilot_path: Path, comparison_path: Path, overrides: Sequence[str] = ()) -> list[Choice]:
-    """The whole command: choose every rate, write it, continue the chosen runs, and save the choice."""
+def choose_and_continue(
+    pilot_path: Path,
+    comparison_path: Path,
+    overrides: Sequence[str] = (),
+    comparison_overrides: Sequence[str] = (),
+) -> list[Choice]:
+    """The whole command: choose every rate, write it, continue the chosen runs, and save the choice.
+
+    Args:
+        overrides: Applied to both suites, e.g. the learning-rate schedule
+            (``optimization.decay_steps``), which the pilot shares with the
+            comparison.
+        comparison_overrides: Applied to the comparison only, after
+            ``overrides``: its step budget (``training.num_steps``), which the
+            pilot does not share.
+    """
     pilot = load_suite(pilot_path, overrides)
+    overrides = [*overrides, *comparison_overrides]  # from here on, only the comparison is loaded
     tuned = check_pilot(pilot, load_suite(comparison_path, overrides), comparison_path, overrides)
     training_data = _TrainingData()
     choices = choose_rates(tuned, training_data)

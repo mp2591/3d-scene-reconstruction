@@ -17,8 +17,11 @@
 # with the learning rate falling tenfold over them. On an RTX 4090 the five
 # steps take about 42 hours: 7.5 for the pilot, 20 for the rest of the
 # training, 2 for the first scores and 12.5 for the full ones. A GH200 should
-# be faster. Asking for more steps later (training.num_steps) continues every
-# run; the learning rate keeps falling past optimization.decay_steps.
+# be faster. scripts/run_comparison.sh estimates the time on its machine
+# after its trial, and can train another budget (its second argument), which
+# then replaces both numbers under `common:` below. Asking for more steps
+# after the end (training.num_steps) continues every run; the learning rate
+# keeps falling past optimization.decay_steps.
 #
 # Keep the outputs outside OneDrive, which would upload every checkpoint
 # (several hundred MB, rewritten every 5,000 steps). If a trial of this file

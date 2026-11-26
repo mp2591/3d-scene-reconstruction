@@ -151,6 +151,32 @@ class Trainer:
 
         logger.info("Finished after %.2f training hours", self.progress.training_seconds / 3600)
 
+    def seconds_per_step(self, warmup_steps: int, timed_steps: int) -> float:
+        """How long an optimisation step takes on this machine, timed as ``train`` counts training hours.
+
+        Trains the model in memory from the run's current step and saves
+        nothing, so it is for estimates only (``scene_recon.time_estimate``).
+        The first ``warmup_steps`` are not timed: they start the loading
+        processes and let the GPU pick its kernels.
+        """
+        first = self.progress.step
+        batches = training_batches(self.schedule, start_step=first, num_workers=self.config.training.num_workers)
+        try:
+            for step in range(first, first + warmup_steps + timed_steps):
+                if step == first + warmup_steps:
+                    self._wait_for_gpu()
+                    start = time.perf_counter()
+                self._training_step(next(batches).to(self.device), step)
+            self._wait_for_gpu()
+            return (time.perf_counter() - start) / timed_steps
+        finally:
+            batches.close()
+
+    def _wait_for_gpu(self) -> None:
+        """Block until the GPU has finished the work queued so far, so that a timer stops after it."""
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+
     def _training_step(self, batch: SceneViews, step: int) -> dict[str, float]:
         """Perform optimisation step number ``step`` (counted from 0) and return the scalars worth logging."""
         self.model.train()

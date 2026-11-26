@@ -13,20 +13,20 @@ nothing specific to it. They were tried on a Windows machine with an RTX
 ```mermaid
 flowchart LR
     setup["setup_linux.sh<br/>environment, weights,<br/>data, tests"] --> check["0. check<br/>GPU works, pilot<br/>fits comparison"]
-    check --> trial["1. trial<br/>50 steps per run"]
+    check --> trial["1. trial<br/>50 steps per run,<br/>time estimate"]
     trial --> pilot["2. pilot<br/>3 models × 3 encoder rates<br/>10,000 steps, validation split"]
     pilot --> choose["3. choose rates<br/>write them, copy the<br/>chosen runs"]
-    choose --> train["4. comparison<br/>continue to 100,000 steps<br/>score 100 test scenes"]
+    choose --> train["4. comparison<br/>continue to the step budget<br/>(100,000), score 100 test scenes"]
     train --> full["5. score all<br/>704 test scenes"]
 ```
 
 | Step | What it does | On an RTX 4090 |
 |---|---|---|
 | 0 | Checks that PyTorch can use the GPU, and that every pilot run trains exactly like a comparison run apart from the encoder's learning rate; prints what the machine gives the runs | seconds |
-| 1 | A 50-step trial of every comparison run with every stage, in `runs/trial`, so that a problem with the machine shows up early | 10 min |
+| 1 | A 50-step trial of every comparison run with every stage, in `runs/trial`, so that a problem with the machine shows up early; then, once, an estimate of how long the rest takes on this machine (see "Choosing the step budget") | 15 min |
 | 2 | The learning-rate pilot: each model with encoder rates 1e-5, 3e-5 and 1e-4 for 10,000 steps, scored on 100 validation scenes | 7.5 h |
 | 3 | `scene-recon choose-encoder-rates`: per model, the lowest rate within 0.1 dB PSNR of the best; writes it into `configs/suites/proposal_comparison.yaml` and copies that pilot run into the comparison, which continues it | minutes |
-| 4 | The comparison: training from step 10,000 to 100,000, scores on the first 100 test scenes, speed | 21.5 h |
+| 4 | The comparison: training from step 10,000 to the step budget (100,000 unless you choose another), scores on the first 100 test scenes, speed | 21.5 h |
 | 5 | Scores on all 704 test scenes, 10 views each | 12.5 h |
 
 About 42 hours in all on an RTX 4090, timed in full float32. A GH200
@@ -37,6 +37,59 @@ second.)
 
 Each step skips what it has already done. If the machine stops, run the
 same command again and it carries on.
+
+## Choosing the step budget
+
+Each comparison run trains 100,000 steps (a quarter of the proposal's
+400,000), with its learning rate falling tenfold over them. On a faster
+machine a larger budget may fit in the time you have. After its trial
+(step 1), `run_comparison.sh` times a few training steps and scored views
+of every run on this machine, and writes how long the rest would take, for
+a few budgets, into `runs/time_estimate.txt`. It prints that file every time
+it starts. On the RTX 4090, with the settings of `configs/base.yaml`:
+
+```text
+Hours from the start of the pilot until:
+  steps per run | pilot done | trained, scored on 100 test scenes | final report
+        100,000 |        5.8 |                               21.9 |         33.7
+        150,000 |        5.8 |                               29.9 |         41.7
+        200,000 |        5.8 |                               37.9 |         49.7
+```
+
+To use another budget, stop the script (`Ctrl-c`) and start it again with
+the number of steps after the output folder:
+
+```bash
+bash scripts/run_comparison.sh runs 200000
+```
+
+- **Until when.** The budget can change until the first pilot run saves its
+  first checkpoint, 5,000 steps in (`training.checkpoint_every`): about 15
+  minutes on the RTX 4090. The pilot trains with the comparison's
+  learning-rate schedule, so after that the script refuses another budget.
+  A pilot run stopped before its first checkpoint starts again from step 0.
+- **What it changes.** `training.num_steps` of every comparison run, and
+  `optimization.decay_steps` of every pilot and comparison run. The pilot
+  still trains 10,000 steps. The budget is kept in `runs/steps_per_run`, so
+  the same command without a number carries on with it after a restart.
+- **How far to trust it.** On the RTX 4090 in full float32 it estimated
+  40.4 hours for 100,000 steps, against the 42 of the table above. It leaves
+  out starting each run and saving checkpoints. On a shared GPU it only
+  knows the sharing at the time it ran. Leave some spare time: if the end
+  comes too early, the scores on the first 100 test scenes are already
+  there (see "Not enough time left" below).
+- **Afterwards.** With another budget, set it in the suite files when you
+  commit the chosen rates (the script says so when it finishes):
+  `training.num_steps` and `optimization.decay_steps` in
+  `configs/suites/proposal_comparison.yaml`, and `optimization.decay_steps`
+  in `configs/suites/encoder_lr_pilot.yaml`.
+
+The estimate can also be made by hand, for any budgets, once the setup is
+done (one line; add `--set` options as the script does):
+
+```bash
+scene-recon estimate-time --pilot configs/suites/encoder_lr_pilot.yaml --comparison configs/suites/proposal_comparison.yaml --steps 100000 200000 --first-scenes 100 --set experiment.device=cuda
+```
 
 ## On a Run:ai cluster
 
@@ -93,11 +146,12 @@ Nothing in the configs has to change for that, but these things matter:
   finished work is kept and training continues from its last checkpoint
   (saved every 5,000 steps).
 
-How long the whole comparison takes on this machine shows during the
-pilot: by the timings in the table above, each of its 9 runs takes about
-50 minutes on an RTX 4090 (the times on this machine are in
-`runs/encoder_lr_pilot/suite.log`). If the first one takes much longer,
-the GPU is slower or shared, or loading from the volume is slow.
+How long the whole comparison takes on this machine is in
+`runs/time_estimate.txt` after step 1 (see "Choosing the step budget"). The
+pilot then confirms it: each of its 9 runs takes about 50 minutes on an RTX
+4090 (the times on this machine are in `runs/encoder_lr_pilot/suite.log`).
+If the first one takes much longer than the estimate said, another workload
+may be sharing the GPU, or loading from the volume is slow.
 
 If the container has no `tmux`, start the comparison in the background
 instead; its output is in `runs/run_comparison.log`:
@@ -147,7 +201,9 @@ bash scripts/run_comparison.sh runs
 Leave tmux with `Ctrl-b` then `d`; come back with `tmux attach -t comparison`.
 Everything the script prints is also written to `runs/run_comparison.log`.
 It first checks that PyTorch can use the GPU, and tells every run to use it,
-so no run can fall back to the processor unnoticed.
+so no run can fall back to the processor unnoticed. About 15 minutes in, it
+prints how long the rest will take; that is the moment to choose another
+step budget (see "Choosing the step budget").
 
 ## Watching it
 
@@ -198,14 +254,16 @@ rsync -a --exclude checkpoints <user>@<server>:3d-scene-reconstruction/runs/ gpu
   kept in `runs/proposal_comparison_first_100_test_scenes/`. Once that folder
   exists, step 4 is not run again; after changing the comparison (another
   model, another seed), delete it to have step 4 run again.
-- **Time to spare.** After step 5, more training steps can be asked for:
-  run step 4 and 5 again by hand with `--set training.num_steps=150000`
-  (see the comments in `configs/suites/proposal_comparison.yaml`). Every
-  run continues; the learning rate keeps falling past
-  `optimization.decay_steps`. After that, `scripts/run_comparison.sh` stops
-  at step 3 on purpose: it would compare models trained for different
-  numbers of steps. Keep running steps 4 and 5 by hand with the same
-  `--set`.
+- **Time to spare at the end.** The step budget is best chosen at the
+  start (see "Choosing the step budget"). After step 5, more training steps
+  can still be asked for: run steps 4 and 5 again by hand with
+  `--set optimization.decay_steps=<budget> training.num_steps=<more steps>`,
+  where `<budget>` is the number in `runs/steps_per_run` (see the comments
+  in `configs/suites/proposal_comparison.yaml`). Every run continues; the
+  learning rate keeps falling past `optimization.decay_steps`. After that,
+  `scripts/run_comparison.sh` stops at step 3 on purpose: it would compare
+  models trained for different numbers of steps. Keep running steps 4 and 5
+  by hand with the same `--set`.
 - **Running the steps by hand.** The commands are at the top of
   `configs/suites/encoder_lr_pilot.yaml` and
   `configs/suites/proposal_comparison.yaml`.
