@@ -44,6 +44,9 @@ TRAINING_DATA_SETTINGS = (
     "training.batch_size",
     "training.views_per_scene",
     "training.num_source_views",
+    "training.first_phase_steps",
+    "training.first_phase_num_source_views",
+    "training.first_phase_rays_in_object_box",
     "training.rays_per_scene",
 )
 """Settings that together determine the training data of every step."""

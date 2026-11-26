@@ -79,6 +79,9 @@ optimization:
     encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
 ```
 
+The comparison (`configs/suites/proposal_comparison.yaml`) sets no
+override, so that no model is tuned: every group learns at the same rate.
+
 `encoder_parameter_groups` (in `scene_recon.models.base`) puts the layers an
 encoder adds on top of its backbone, its `adapter`, in a group of their own,
 and the rest in `encoder` (see "Optional: choosing the encoder and decoder

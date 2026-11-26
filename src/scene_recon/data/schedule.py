@@ -7,6 +7,7 @@ function of only two numbers, the experiment's seed and the step number:
     which scenes are in the batch        scene_plan()
     which views of them are loaded       scene_plan()
     which views the model is given       source_view_indices()
+    whether rays come from the object    rays_in_object_box()
     which pixels are supervised          generator("rays")
     where along each ray samples go      generator("sample_depths")
 
@@ -26,11 +27,15 @@ so a CPU run and a GPU run draw the same numbers.
 from __future__ import annotations
 
 import hashlib
+from typing import TYPE_CHECKING
 
 import torch
 
 from scene_recon.data.base import SceneDataset
 from scene_recon.registry import ConfigError
+
+if TYPE_CHECKING:
+    from scene_recon.config import TrainingSettings
 
 
 def derived_generator(seed: int, purpose: str, *keys: int) -> torch.Generator:
@@ -47,27 +52,22 @@ def derived_generator(seed: int, purpose: str, *keys: int) -> torch.Generator:
 class TrainingSchedule:
     """Decides the training data of every step from the seed and the step number."""
 
-    def __init__(
-        self,
-        scenes: SceneDataset,
-        seed: int,
-        batch_size: int,
-        views_per_scene: int,
-        num_source_views: list[int],
-    ) -> None:
+    def __init__(self, scenes: SceneDataset, seed: int, settings: TrainingSettings) -> None:
         """
         Args:
             scenes: The training scenes.
             seed: The experiment's seed.
-            batch_size: Scenes per step.
-            views_per_scene: Views loaded per scene per step.
-            num_source_views: The possible numbers of source views; one is chosen per step.
+            settings: The config's training section: batch_size, views_per_scene,
+                num_source_views and the first_phase settings are used.
         """
         self.scenes = scenes
         self.seed = seed
-        self.batch_size = batch_size
-        self.views_per_scene = views_per_scene
-        self.num_source_views = num_source_views
+        self.batch_size = batch_size = settings.batch_size
+        self.views_per_scene = settings.views_per_scene
+        self.num_source_views = settings.num_source_views
+        self.first_phase_steps = settings.first_phase_steps
+        self.first_phase_num_source_views = settings.first_phase_num_source_views
+        self.first_phase_rays_in_object_box = settings.first_phase_rays_in_object_box
 
         num_scenes = len(scenes)
         # Every pass over the data (epoch) visits each scene at most once. A
@@ -102,13 +102,23 @@ class TrainingSchedule:
     def source_view_indices(self, step: int) -> list[int]:
         """Which of the loaded views step ``step`` gives to the model as input.
 
-        The number of source views is drawn from ``num_source_views`` every
-        step, so one model learns to work with any of them.
+        The number of source views is drawn every step, from
+        ``first_phase_num_source_views`` during the first phase and from
+        ``num_source_views`` after it, so one model learns to work with any of them.
         """
+        counts = self.first_phase_num_source_views if self.in_first_phase(step) else self.num_source_views
         generator = derived_generator(self.seed, "source_views", step)
-        choice = torch.randint(len(self.num_source_views), (1,), generator=generator).item()
-        count = self.num_source_views[choice]
+        choice = torch.randint(len(counts), (1,), generator=generator).item()
+        count = counts[choice]
         return torch.randperm(self.views_per_scene, generator=generator)[:count].tolist()
+
+    def in_first_phase(self, step: int) -> bool:
+        """Whether step ``step`` (counted from 0) belongs to the first phase of training."""
+        return step < self.first_phase_steps
+
+    def rays_in_object_box(self, step: int) -> bool:
+        """Whether step ``step`` draws its rays only from the box around each view's object."""
+        return self.first_phase_rays_in_object_box and self.in_first_phase(step)
 
     def generator(self, purpose: str, step: int) -> torch.Generator:
         """A generator for one of the step's other random choices, e.g. ``"rays"``."""

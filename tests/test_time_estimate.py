@@ -1,18 +1,16 @@
-"""The time estimate (scene-recon estimate-time), and a step budget given to the comparison alone."""
+"""The time estimate (scene-recon estimate-time)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scene_recon import time_estimate
 from scene_recon.build import build_dataset
-from scene_recon.checkpoints import read_progress
 from scene_recon.cli import main
-from scene_recon.pilot import choose_and_continue
-from scene_recon.run_files import RunFiles
-from scene_recon.suite import load_suite, run_suite
+from scene_recon.suite import load_suite
 from scene_recon.time_estimate import (
     Estimate,
     Saving,
@@ -24,17 +22,40 @@ from scene_recon.time_estimate import (
     plan_hours,
 )
 
-from test_pilot import COMPARISON_STEPS, PILOT_STEPS, _set_scores, _write_comparison, _write_pilot
+from conftest import CONFIG_DIR
 
-# The toy suites of test_pilot: the comparison trains 4 steps and the pilot 2, both validated
-# every 2 steps on 1 view of 1 scene with source view [0], and scored on 2 views of 2 scenes
-# with source views [0] and [0, 6]. Each test split has 4 scenes of 12 views.
+# A toy suite of two runs. Each trains 4 steps, is validated and saves a checkpoint every 2 steps
+# (validation: 1 view of 1 scene with source view [0]), and is scored on 2 views of 2 scenes with
+# source views [0] and [0, 6]. The test split has 4 scenes of 12 views.
+STEPS = 4
 ONE_VIEW, TWO_VIEWS = (0,), (0, 6)
 NO_SAVING = Saving(0.0, 0.0)
 
 
-def _suites(tmp_path: Path):
-    return load_suite(_write_pilot(tmp_path)), load_suite(_write_comparison(tmp_path))
+def _write_suite(tmp_path: Path) -> Path:
+    common = {
+        "base": str(CONFIG_DIR / "smoke_test.yaml"),
+        "experiment": {"output_dir": str(tmp_path / "runs"), "device": "cpu"},
+        "data": {"train": {"image_size": 16}, "val": {"image_size": 16}, "test": {"image_size": 16}},
+        "training": {
+            "num_steps": STEPS,
+            "batch_size": 2,
+            "rays_per_scene": 32,
+            "log_every": 2,
+            "validate_every": 2,
+            "checkpoint_every": 2,
+        },
+        "validation": {"num_scenes": 1, "num_target_views": 1},
+        "evaluation": {"num_scenes": 2, "num_target_views": 2, "num_preview_scenes": 0},
+    }
+    runs = {
+        "small": {"model": {"decoder": {"hidden_width": 16}}},
+        "large": {"model": {"decoder": {"hidden_width": 24}}},
+    }
+    content = {"suite_name": "toy", "stages": ["train", "evaluate"], "seeds": [0], "common": common, "runs": runs}
+    path = tmp_path / "toy.yaml"
+    path.write_text(yaml.safe_dump(content, sort_keys=False), encoding="utf-8")
+    return path
 
 
 def _speeds(step: dict[str, float], one_view: float, two_views: float) -> dict[str, Speed]:
@@ -43,51 +64,40 @@ def _speeds(step: dict[str, float], one_view: float, two_views: float) -> dict[s
     }
 
 
-def test_training_time_counts_each_run_from_where_it_starts(tmp_path: Path):
-    """A tuned run continues from the pilot's last step; a run the pilot does not tune starts at 0."""
-    pilot, comparison = _suites(tmp_path)
-    speeds = _speeds({"tiny": 1.0, "untuned": 10.0}, one_view=0.0, two_views=0.0)
+def test_training_time_counts_every_step_of_every_run(tmp_path: Path):
+    suite = load_suite(_write_suite(tmp_path))
+    speeds = _speeds({"small": 1.0, "large": 10.0}, one_view=0.0, two_views=0.0)
 
-    estimates = plan_hours(pilot, comparison, speeds, NO_SAVING, [COMPARISON_STEPS, 100], first_scenes=None)
+    estimates = plan_hours(suite, speeds, NO_SAVING, [STEPS, 100], first_scenes=None)
 
-    pilot_seconds = 2 * PILOT_STEPS * 1.0  # two rates of the tuned run
-    assert [estimate.steps for estimate in estimates] == [COMPARISON_STEPS, 100]
-    for estimate, steps in zip(estimates, [COMPARISON_STEPS, 100]):
-        comparison_seconds = (steps - PILOT_STEPS) * 1.0 + steps * 10.0
-        assert estimate.pilot_done * 3600 == pytest.approx(pilot_seconds)
-        assert estimate.first_scores * 3600 == pytest.approx(pilot_seconds + comparison_seconds)
+    assert [estimate.steps for estimate in estimates] == [STEPS, 100]
+    for estimate, steps in zip(estimates, [STEPS, 100]):
+        assert estimate.first_scores * 3600 == pytest.approx(steps * 1.0 + steps * 10.0)
         assert estimate.all_scores == estimate.first_scores  # nothing is scored a second time
 
 
 def test_scoring_time_counts_every_validation_and_evaluation(tmp_path: Path):
-    pilot, comparison = _suites(tmp_path)
-    speeds = _speeds({"tiny": 0.0, "untuned": 0.0}, one_view=1.0, two_views=100.0)
+    suite = load_suite(_write_suite(tmp_path))
+    speeds = _speeds({"small": 0.0, "large": 0.0}, one_view=1.0, two_views=100.0)
 
-    (estimate,) = plan_hours(pilot, comparison, speeds, NO_SAVING, [COMPARISON_STEPS], first_scenes=1)
+    (estimate,) = plan_hours(suite, speeds, NO_SAVING, [STEPS], first_scenes=1)
 
-    # Each pilot run: 1 validation of 1 view, then 2 scenes x 2 views with each protocol.
-    pilot_seconds = 2 * (1 * 1.0 + 4 * 1.0 + 4 * 100.0)
-    # The comparison scored on 1 scene first: the tuned run validates at step 4 only (step 2 was
-    # the pilot's), the other run at steps 2 and 4.
-    first = (1 + 2 * 1.0 + 2 * 100.0) + (2 + 2 * 1.0 + 2 * 100.0)
-    # Then on its 2 scenes, without training again.
+    # Each run: validated at steps 2 and 4, then scored on 1 scene x 2 views with each protocol...
+    first = 2 * (2 * 1.0 + 2 * 1.0 + 2 * 100.0)
+    # ...then on its 2 scenes, without training again.
     later = 2 * (4 * 1.0 + 4 * 100.0)
-    assert estimate.pilot_done * 3600 == pytest.approx(pilot_seconds)
-    assert estimate.first_scores * 3600 == pytest.approx(pilot_seconds + first)
-    assert estimate.all_scores * 3600 == pytest.approx(pilot_seconds + first + later)
+    assert estimate.first_scores * 3600 == pytest.approx(first)
+    assert estimate.all_scores * 3600 == pytest.approx(first + later)
 
 
 def test_saving_time_counts_every_checkpoint_save(tmp_path: Path):
-    """Both toy suites save every 2 steps and at the end; each suite command checks the data in full once."""
-    pilot, comparison = _suites(tmp_path)
-    speeds = _speeds({"tiny": 0.0, "untuned": 0.0}, one_view=0.0, two_views=0.0)
+    """Each run saves every 2 steps and at the end; the suite checks the data in full once."""
+    suite = load_suite(_write_suite(tmp_path))
+    speeds = _speeds({"small": 0.0, "large": 0.0}, one_view=0.0, two_views=0.0)
 
-    (estimate,) = plan_hours(pilot, comparison, speeds, Saving(1000.0, 1.0), [COMPARISON_STEPS], first_scenes=None)
+    (estimate,) = plan_hours(suite, speeds, Saving(1000.0, 1.0), [STEPS], first_scenes=None)
 
-    pilot_seconds = 1000 + 2 * (1 + 1)  # each pilot run: at step 2, and at the end
-    comparison_seconds = 1000 + (1 + 1) + (2 + 1)  # the tuned run from step 2: at step 4; the other at 2 and 4
-    assert estimate.pilot_done * 3600 == pytest.approx(pilot_seconds)
-    assert estimate.first_scores * 3600 == pytest.approx(pilot_seconds + comparison_seconds)
+    assert estimate.first_scores * 3600 == pytest.approx(1000 + 2 * (2 + 1))  # at steps 2 and 4, and at the end
 
 
 @pytest.mark.parametrize(
@@ -106,16 +116,16 @@ def test_the_views_an_evaluation_scores(smoke_config, source_views, num_scenes, 
 
 def test_the_estimates_are_written_as_a_table():
     speeds = {"run/seed_0": Speed(0.25, {ONE_VIEW: 0.5, TWO_VIEWS: 0.75})}
-    estimates = [Estimate(100000, 5.0, 20.0, 30.0), Estimate(200000, 5.0, 35.0, 45.0)]
+    estimates = [Estimate(100000, 20.0, 30.0), Estimate(200000, 35.0, 45.0)]
 
     text = format_estimates(speeds, Saving(30.0, 2.5), estimates, 100, "Test GPU")
 
     assert "Measured on this machine (Test GPU):" in text
     assert "run/seed_0: 0.250 s per training step; scoring a view 0.50 s with 1 source view, 0.75 s with 2 source views" in text
     assert "checking the training data at each checkpoint save: 2.5 s (30.0 s the first time)" in text
-    assert "steps per run | pilot done | trained, scored on 100 test scenes | final report" in text
+    assert "steps per run | trained, scored on 100 test scenes | final report" in text
     row = next(line for line in text.splitlines() if line.strip().startswith("200,000"))
-    assert [cell.strip() for cell in row.split("|")] == ["200,000", "5.0", "35.0", "45.0"]
+    assert [cell.strip() for cell in row.split("|")] == ["200,000", "35.0", "45.0"]
     # Scored on every scene at once: no final column.
     assert "final report" not in format_estimates(speeds, NO_SAVING, estimates, None, "Test GPU")
 
@@ -139,41 +149,9 @@ def test_timing_a_run_leaves_its_folder_alone(smoke_config, few_timed_steps):
 
 
 def test_the_command_prints_an_estimate_for_each_budget(tmp_path: Path, few_timed_steps, capsys):
-    pilot_path, comparison_path = _write_pilot(tmp_path), _write_comparison(tmp_path)
-
-    main(["estimate-time", "--pilot", str(pilot_path), "--comparison", str(comparison_path),
-          "--steps", "4", "8", "--first-scenes", "1", "--comparison-set", "training.num_steps=8"])
+    main(["estimate-time", "--config", str(_write_suite(tmp_path)), "--steps", "4", "8", "--first-scenes", "1"])
 
     lines = capsys.readouterr().out.splitlines()
     assert any(line.strip().startswith("4 |") for line in lines)
     assert any(line.strip().startswith("8 |") for line in lines)
     assert not (tmp_path / "runs").exists()  # nothing was trained for real
-
-
-# ---------------------------------------------------------------- a step budget for the comparison alone
-
-
-def test_a_budget_given_to_the_comparison_alone_continues_the_chosen_run_to_it(tmp_path: Path):
-    """As scripts/run_comparison.sh does: the schedule for both suites, the length for the comparison."""
-    both, comparison_only = ["optimization.decay_steps=600"], ["training.num_steps=6"]
-    comparison_path, pilot_path = _write_comparison(tmp_path), _write_pilot(tmp_path)
-    assert run_suite(load_suite(pilot_path, both)) == {}
-    _set_scores(pilot_path, {1.0e-4: 20.0, 3.0e-4: 21.0})
-
-    choose_and_continue(pilot_path, comparison_path, both, comparison_only)
-
-    comparison = load_suite(comparison_path, [*both, *comparison_only])
-    assert run_suite(comparison) == {}
-    continued = RunFiles(comparison.runs["tiny/seed_0"].run_dir).checkpoint
-    assert read_progress(continued).step == 6
-    # The pilot kept its own length.
-    pilot = load_suite(pilot_path, both)
-    assert all(read_progress(RunFiles(config.run_dir).checkpoint).step == PILOT_STEPS for config in pilot.runs.values())
-
-
-def test_a_budget_shorter_than_the_pilot_is_refused_before_the_pilot_runs(tmp_path: Path):
-    comparison_path, pilot_path = _write_comparison(tmp_path), _write_pilot(tmp_path)
-
-    with pytest.raises(SystemExit, match="more than the 1 of"):
-        main(["choose-encoder-rates", "--pilot", str(pilot_path), "--comparison", str(comparison_path),
-              "--check-only", "--comparison-set", "training.num_steps=1"])

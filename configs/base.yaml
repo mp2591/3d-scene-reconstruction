@@ -37,29 +37,46 @@ renderer:
   # rates between 1024 and 4096 differed by less than 4%.
   ray_chunk_size: 2048
 
+# Training follows pixelNeRF's recipe for ShapeNet-SRN (its appendix B.2):
+# 400,000 steps, 4 scenes and 128 rays per scene per step, a learning rate of
+# 1e-4, two source views and rays from the box around the object for the
+# first 300,000 steps, then one or two source views and rays from the whole
+# image. Every model gets this same recipe, untuned, so that differences come
+# from the architectures. One change, the same for all: a short warmup and a
+# tenfold fall of the learning rate (pixelNeRF keeps it at 1e-4 throughout).
 optimization:
   optimizer: adam           # adam | adamw
   betas: [0.9, 0.999]
   weight_decay: 0.0
   learning_rate: 1.0e-4     # Applies to every parameter group unless overridden below.
-  warmup_steps: 0
+  # Rises from 0 over the first steps, so that the first updates of the new
+  # decoder do not disturb a pretrained encoder.
+  warmup_steps: 2000
   # Exponential decay: the learning rate is multiplied by decay_rate every
-  # decay_steps steps. The proposal does not fix these numbers yet; the values
-  # below lower the learning rate tenfold over the course of training.
+  # decay_steps steps, here tenfold over the whole training.
   decay_rate: 0.1
   decay_steps: 400000
-  # Per parameter-group learning rate and warmup, keyed by group name. Example
-  # for a model whose encoder is pretrained:
+  # Per parameter-group learning rate and warmup, keyed by group name, e.g.
   #   group_overrides:
   #     encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
+  # None in the comparison: every part of every model learns at the same rate.
   group_overrides: {}
 
 training:
   num_steps: 400000
   batch_size: 4             # Scenes per step.
-  rays_per_scene: 256       # batch_size * rays_per_scene = 1,024 rays per step, as in the proposal.
-  views_per_scene: 8        # Views loaded per scene per step; sources and supervised rays come from these.
-  num_source_views: [1, 2, 3]   # One of these is picked at random each step.
+  rays_per_scene: 128       # batch_size * rays_per_scene = 512 rays per step, as in pixelNeRF.
+  # Views loaded per scene per step; sources and supervised rays come from
+  # these. (pixelNeRF draws rays from all 50 views of a scene.)
+  views_per_scene: 8
+  num_source_views: [1, 2]  # One of these is picked at random each step.
+  # The first phase of training: until this step, the source views are
+  # first_phase_num_source_views and, if first_phase_rays_in_object_box,
+  # rays come only from the smallest box around each view's object (its
+  # pixels that are not renderer.background_color). 0 = no first phase.
+  first_phase_steps: 300000
+  first_phase_num_source_views: [2]
+  first_phase_rays_in_object_box: true
   # Processes that load batches while the GPU trains. On the RTX 4090
   # machine, with 4, a batch of SRN cars was ready every 6 ms, against 240 to
   # 310 ms per training step, so more would not train faster there. 0 = load

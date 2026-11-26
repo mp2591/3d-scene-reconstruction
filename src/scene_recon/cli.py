@@ -7,16 +7,11 @@ Commands for a single run (``--config`` is an experiment config):
     profile      Report parameter counts and rendering speed.
     check-model  Verify that the configured model satisfies the pipeline's contract.
 
-Command for a set of runs (``--config`` is a suite file):
+Commands for a set of runs (``--config`` is a suite file):
 
-    run-suite    Train, evaluate and profile every run of a suite, then write a comparison report.
-
-Command for the learning-rate pilot (see ``scene_recon.pilot``):
-
-    choose-encoder-rates  Choose each encoder's learning rate from the pilot's scores, write the
-                          rates into the comparison's suite file, and continue the chosen runs.
-    estimate-time         Time training and scoring on this machine, and estimate how long the
-                          pilot and the comparison take for a few step budgets.
+    run-suite      Train, evaluate and profile every run of a suite, then write a comparison report.
+    estimate-time  Time training and scoring on this machine, and estimate how long the suite
+                   takes for a few step budgets.
 
 Any config value can be changed from the command line with ``--set``, e.g.
 ``--set training.batch_size=8 experiment.run_name=my_run``. For ``run-suite``
@@ -32,7 +27,6 @@ from typing import Sequence
 
 from scene_recon.config import load_config
 from scene_recon.models.contract import ModelContractError
-from scene_recon.pilot import check_pilot, choose_and_continue
 from scene_recon.registry import ConfigError
 from scene_recon.stages import STAGES, check_model, run_evaluation, run_profiling, run_training
 from scene_recon.run_files import SuiteFiles
@@ -128,60 +122,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     suite.set_defaults(run=_run_suite)
 
-    choose = commands.add_parser(
-        "choose-encoder-rates",
-        parents=[overrides],
-        help="Choose each encoder's learning rate from the pilot and continue the chosen runs.",
-    )
-    choose.add_argument("--pilot", required=True, type=Path, help="The pilot's suite file.")
-    choose.add_argument("--comparison", required=True, type=Path, help="The comparison's suite file.")
-    choose.add_argument(
-        "--check-only",
-        action="store_true",
-        help="Only check what can be checked before the pilot trains (see scene_recon.pilot); choose nothing.",
-    )
-    _add_comparison_overrides(choose)
-    choose.set_defaults(run=_choose_encoder_rates)
-
     estimate = commands.add_parser(
         "estimate-time",
-        parents=[overrides],
-        help="Time training and scoring on this machine, and estimate how long the comparison takes.",
+        parents=[shared],
+        help="Time training and scoring on this machine, and estimate how long a suite takes.",
     )
-    estimate.add_argument("--pilot", required=True, type=Path, help="The pilot's suite file.")
-    estimate.add_argument("--comparison", required=True, type=Path, help="The comparison's suite file.")
     estimate.add_argument(
         "--steps",
         nargs="+",
         type=int,
         required=True,
         metavar="STEPS",
-        help="Training steps per comparison run to estimate the time of, e.g. 100000 200000.",
+        help="Training steps per run to estimate the time of, e.g. 200000 400000.",
     )
     estimate.add_argument(
         "--first-scenes",
         type=int,
-        help="Test scenes the comparison is scored on first, before all of them (as scripts/run_comparison.sh does).",
+        help="Test scenes the suite is scored on first, before all of them (as scripts/run_comparison.sh does).",
     )
-    _add_comparison_overrides(estimate)
     estimate.set_defaults(run=_estimate_time)
 
     return parser
-
-
-def _add_comparison_overrides(command: argparse.ArgumentParser) -> None:
-    """``--comparison-set``, for a command that loads both the pilot and the comparison."""
-    command.add_argument(
-        "--comparison-set",
-        nargs="*",
-        action="extend",
-        default=[],
-        metavar="KEY=VALUE",
-        help=(
-            "Override config values of the comparison only, after --set, e.g. its step budget "
-            "training.num_steps=200000, which the pilot does not share."
-        ),
-    )
 
 
 def _train(args: argparse.Namespace) -> None:
@@ -229,20 +190,8 @@ def _run_suite(args: argparse.Namespace) -> None:
     logger.info("Suite finished. Report: %s", files.summary_markdown)
 
 
-def _choose_encoder_rates(args: argparse.Namespace) -> None:
-    if args.check_only:
-        comparison_overrides = [*args.set, *args.comparison_set]
-        pilot, comparison = load_suite(args.pilot, args.set), load_suite(args.comparison, comparison_overrides)
-        tuned = check_pilot(pilot, comparison, args.comparison, comparison_overrides)
-        logger.info("The pilot fits the comparison: it tunes %s.", ", ".join(run.name for run in tuned))
-        return
-    choose_and_continue(args.pilot, args.comparison, args.set, args.comparison_set)
-
-
 def _estimate_time(args: argparse.Namespace) -> None:
-    pilot = load_suite(args.pilot, args.set)
-    comparison = load_suite(args.comparison, [*args.set, *args.comparison_set])
-    print(estimate_time(pilot, comparison, args.steps, args.first_scenes))
+    print(estimate_time(load_suite(args.config, args.set), args.steps, args.first_scenes))
 
 
 if __name__ == "__main__":

@@ -6,45 +6,37 @@
 #   bash scripts/run_comparison.sh runs [STEPS_PER_RUN]
 #
 # "runs" is the output folder (relative to the repository, or absolute).
-# STEPS_PER_RUN is the step budget: how many steps each comparison run
-# trains, over which its learning rate falls tenfold (optimization.decay_steps).
-# Without it, the budget of configs/suites/proposal_comparison.yaml is used
-# (100,000). The pilot shares the learning-rate schedule, so the budget can
-# change only until a pilot run has saved a checkpoint; it is kept in
-# <output>/steps_per_run, so that the same command without it carries on
-# with the same budget.
+# STEPS_PER_RUN is the step budget: how many steps each run trains. Without
+# it, the budget of configs/suites/proposal_comparison.yaml is used (400,000,
+# pixelNeRF's). With it, three settings follow the budget: training.num_steps,
+# optimization.decay_steps (the learning rate falls tenfold over the budget)
+# and training.first_phase_steps (three quarters of it, as pixelNeRF's
+# 300,000 of 400,000). The learning-rate schedule is fixed once a run has
+# trained, so the budget can change only until the first comparison run has
+# saved a checkpoint. It is kept in <output>/steps_per_run, so that the same
+# command without it carries on with the same budget.
 #
 # Everything the script prints also goes to <output>/run_comparison.log.
 # Every step skips the work it has already done, so after a crash or a
 # reboot the same command carries on where it stopped. The steps:
 #
-#   0. Check that the GPU works and that the pilot fits the comparison
-#      (seconds). Every run is told to use the GPU, so none can fall back to
-#      the processor unnoticed. Also prints the GPU memory, processors and
-#      shared memory this machine gives the runs, and warns if the repository
-#      or the output folder is on a container's own disk.
-#   1. A short trial of every comparison run, in <output>/trial, so that a
-#      problem with this machine shows up within minutes, not after hours.
-#      Then, once, an estimate of how long the rest takes on this machine for
-#      a few budgets (scene-recon estimate-time), kept in
-#      <output>/time_estimate.txt. To change the budget, stop the script
-#      (Ctrl-c) and start it again with another STEPS_PER_RUN before the
-#      first pilot run has saved its first checkpoint.
-#   2. The learning-rate pilot (configs/suites/encoder_lr_pilot.yaml).
-#   3. Choose each encoder's rate, write it into
-#      configs/suites/proposal_comparison.yaml and copy the chosen pilot runs
-#      into the comparison's folder (scene-recon choose-encoder-rates).
-#   4. The comparison: training to the end, scores on the first 100 test
+#   0. Check that the GPU works (seconds). Every run is told to use the GPU,
+#      so none can fall back to the processor unnoticed. Also prints the GPU
+#      memory, processors and shared memory this machine gives the runs, and
+#      warns if the repository or the output folder is on a container's own disk.
+#   1. A short trial of every run, in <output>/trial, so that a problem with
+#      this machine shows up within minutes, not after hours. Then, once, an
+#      estimate of how long the rest takes on this machine for a few budgets
+#      (scene-recon estimate-time), kept in <output>/time_estimate.txt. To
+#      change the budget, stop the script (Ctrl-c) and start it again with
+#      another STEPS_PER_RUN before the first run has saved its first checkpoint.
+#   2. The comparison: training to the end, scores on the first 100 test
 #      scenes, speed. A copy of that report is kept in
 #      <output>/proposal_comparison_first_100_test_scenes/. Once that copy
-#      exists, this step is not run again (it would undo step 5's scores):
+#      exists, this step is not run again (it would undo step 3's scores):
 #      after changing the comparison, delete the copy to make it again.
-#   5. The comparison scored on every test scene: the final report is
+#   3. The comparison scored on every test scene: the final report is
 #      <output>/proposal_comparison/summary.md.
-#
-# Step 3 changes configs/suites/proposal_comparison.yaml; commit that change
-# afterwards, so the repository records the rates that were used (and, with
-# another budget, set it in both suite files, as the script says at the end).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -59,16 +51,16 @@ if [ -n "$asked_steps" ] && ! [[ $asked_steps =~ ^[1-9][0-9]*$ ]]; then
     echo "STEPS_PER_RUN must be a whole number of training steps, e.g. 200000." >&2
     exit 2
 fi
-pilot=configs/suites/encoder_lr_pilot.yaml
 comparison=configs/suites/proposal_comparison.yaml
 first_scenes=100   # test scenes scored first, so that every run has results early
 
 # Settings given to every command: where the results go, and the GPU.
 settings=(experiment.output_dir="$output" experiment.device=cuda)
 
-# A few steps of every run, with every stage, on a few scenes.
-trial=(training.num_steps=50 training.validate_every=50 training.checkpoint_every=50
-       evaluation.num_scenes=2 evaluation.num_target_views=2)
+# A few steps of every run, with every stage, on a few scenes. Half of them in
+# the first phase (two source views, rays from the object), half after it.
+trial=(training.num_steps=50 training.first_phase_steps=25 training.validate_every=50
+       training.checkpoint_every=50 evaluation.num_scenes=2 evaluation.num_target_views=2)
 
 mkdir -p "$output"
 # One launch per output folder at a time: two would train the same runs into the same files.
@@ -117,28 +109,32 @@ file_steps=$(cat "$budget_file" 2> /dev/null || true)
 if ! [[ $file_steps =~ ^[1-9][0-9]*$ ]]; then file_steps=""; fi  # missing or damaged
 recorded_steps=$file_steps
 # A run's checkpoint is <run folder>/checkpoints/last.pt (src/scene_recon/run_files.py).
-pilot_checkpoint=$(find "$output/encoder_lr_pilot" -path '*/checkpoints/last.pt' -print -quit 2> /dev/null || true)
-if [ -z "$recorded_steps" ] && [ -n "$pilot_checkpoint" ]; then
-    # The record is lost, but the pilot's saved config says which schedule it trained with.
+checkpoint=$(find "$output/proposal_comparison" -path '*/checkpoints/last.pt' -print -quit 2> /dev/null || true)
+if [ -z "$recorded_steps" ] && [ -n "$checkpoint" ]; then
+    # The record is lost, but the run's saved config says which schedule it trained with.
     recorded_steps=$(python -c 'import sys, yaml
 print(yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["optimization"]["decay_steps"])' \
-        "$(dirname "$(dirname "$pilot_checkpoint")")/config.yaml")
+        "$(dirname "$(dirname "$checkpoint")")/config.yaml")
 fi
 started_steps=${recorded_steps:-$suite_steps}
 steps=${asked_steps:-$started_steps}
-if [ -n "$pilot_checkpoint" ] && [ "$steps" != "$started_steps" ]; then
-    echo "The pilot has trained with a budget of $started_steps steps per run ($pilot_checkpoint)," >&2
+if [ -n "$checkpoint" ] && [ "$steps" != "$started_steps" ]; then
+    echo "The comparison has trained with a budget of $started_steps steps per run ($checkpoint)," >&2
     echo "and its learning-rate schedule cannot change any more. Start again with that budget, or without one:" >&2
     echo "  bash scripts/run_comparison.sh $output" >&2
     echo "To use $steps steps instead, start in a new output folder, where everything trains from the start:" >&2
     echo "  bash scripts/run_comparison.sh ${output%/}_$steps $steps" >&2
     exit 1
 fi
-# The pilot shares the comparison's learning-rate schedule, but trains its own number of steps.
-both=(optimization.decay_steps="$steps")
-comparison_only=(training.num_steps="$steps")
+# Written whole or not at all, so that a stop in the middle cannot leave an empty record.
+if [ "$steps" != "$file_steps" ]; then
+    echo "$steps" > "$budget_file.partial"
+    mv "$budget_file.partial" "$budget_file"
+fi
+# The settings that follow the budget (see the top of this file).
+budget=(training.num_steps="$steps" optimization.decay_steps="$steps" training.first_phase_steps=$((steps * 3 / 4)))
 
-log "Step 0: checking the GPU and that the pilot fits the comparison ($steps training steps per run)"
+log "Step 0: checking the GPU ($steps training steps per run)"
 warn_if_container_disk . "$output"
 # Also prints what this machine gives the runs. In a container with a share of a GPU (Run:ai)
 # the memory is that share; the runs needed at most 22 GB on an RTX 4090.
@@ -184,18 +180,8 @@ try:
 except Exception as error:
     print(f"Downloaded weights go to: cannot be read ({error})")
 EOF
-scene-recon choose-encoder-rates --pilot "$pilot" --comparison "$comparison" --check-only \
-    --set "${settings[@]}" "${both[@]}" --comparison-set "${comparison_only[@]}"
-# Kept once it has passed the check (e.g. that it is not shorter than the pilot), and written
-# whole or not at all, so that a stop in the middle cannot leave an empty record.
-if [ "$steps" != "$file_steps" ]; then
-    echo "$steps" > "$budget_file.partial"
-    mv "$budget_file.partial" "$budget_file"
-fi
 
-# The trial uses the rates of the comparison file as it was before step 3,
-# so it is not run again once it has passed. It trains with the suite file's
-# schedule, not the budget, so that a trial stopped half-way does not stop a change of budget.
+# Not run again once it has passed. It trains with its own few steps, not the budget.
 trial_done="$output/trial/passed"
 if [ ! -e "$trial_done" ]; then
     log "Step 1: a short trial of every run in $output/trial"
@@ -208,11 +194,10 @@ fi
 estimate="$output/time_estimate.txt"
 if [ ! -e "$estimate" ]; then
     log "Step 1: timing every run on this machine, to estimate how long the rest takes"
-    budgets=$(printf '%s\n' "$steps" 100000 150000 200000 300000 | sort -n -u)
+    budgets=$(printf '%s\n' "$steps" 100000 200000 300000 400000 | sort -n -u)
     # shellcheck disable=SC2086  # $budgets is a list of numbers
-    if scene-recon estimate-time --pilot "$pilot" --comparison "$comparison" --steps $budgets \
-            --first-scenes "$first_scenes" --set "${settings[@]}" "${both[@]}" \
-            --comparison-set "${comparison_only[@]}" > "$estimate.partial"; then
+    if scene-recon estimate-time --config "$comparison" --steps $budgets --first-scenes "$first_scenes" \
+            --set "${settings[@]}" "${budget[@]}" > "$estimate.partial"; then
         mv "$estimate.partial" "$estimate"
     else
         echo "The time estimate failed (see above); carrying on without it." >&2
@@ -221,26 +206,19 @@ fi
 if [ -e "$estimate" ]; then
     cat "$estimate"
 fi
-echo "This folder trains $steps steps per comparison run."
-if [ -z "$pilot_checkpoint" ]; then
+echo "This folder trains $steps steps per run."
+if [ -z "$checkpoint" ]; then
     echo "For another budget, stop the script now (Ctrl-c) and start it again with that number, e.g."
     echo "  bash scripts/run_comparison.sh $output 200000"
-    echo "That works until the first pilot run saves its first checkpoint (training.checkpoint_every steps)."
+    echo "That works until the first run saves its first checkpoint (training.checkpoint_every steps)."
 fi
 
-log "Step 2: the learning-rate pilot"
-scene-recon run-suite --config "$pilot" --set "${settings[@]}" "${both[@]}"
-
-log "Step 3: choosing each encoder's learning rate"
-scene-recon choose-encoder-rates --pilot "$pilot" --comparison "$comparison" \
-    --set "${settings[@]}" "${both[@]}" --comparison-set "${comparison_only[@]}"
-
 # The comparison's settings, from here on.
-comparison_settings=("${settings[@]}" "${both[@]}" "${comparison_only[@]}")
+comparison_settings=("${settings[@]}" "${budget[@]}")
 
 first_report="$output/proposal_comparison_first_${first_scenes}_test_scenes"
 if [ ! -e "$first_report" ]; then
-    log "Step 4: training the comparison, scoring it on the first $first_scenes test scenes"
+    log "Step 2: training the comparison, scoring it on the first $first_scenes test scenes"
     scene-recon run-suite --config "$comparison" --set "${comparison_settings[@]}" evaluation.num_scenes="$first_scenes"
     # Copied beside its final place, which appears only once the copy is complete.
     rm -rf "$first_report.partial"
@@ -249,12 +227,12 @@ if [ ! -e "$first_report" ]; then
     mv "$first_report.partial" "$first_report"
 fi
 
-log "Step 5: scoring the comparison on every test scene"
+log "Step 3: scoring the comparison on every test scene"
 scene-recon run-suite --config "$comparison" --set "${comparison_settings[@]}"
 
 log "Finished. Report: $output/proposal_comparison/summary.md"
 if [ "$steps" != "$suite_steps" ]; then
-    echo "The runs trained $steps steps, not the $suite_steps of the suite files. When you commit the chosen rates,"
-    echo "also set training.num_steps and optimization.decay_steps to $steps in $comparison,"
-    echo "and optimization.decay_steps to $steps in $pilot, so that the repository records the budget."
+    echo "The runs trained $steps steps, not the $suite_steps of $comparison. To record the budget in the"
+    echo "repository, add to the common block of $comparison: training.num_steps $steps,"
+    echo "training.first_phase_steps $((steps * 3 / 4)) and optimization.decay_steps $steps."
 fi

@@ -1,21 +1,23 @@
-"""How long the pilot and the comparison will take on this machine, for a few step budgets.
+"""How long a suite will take on this machine, for a few step budgets.
 
 ``scene-recon estimate-time`` first times, on this machine, a training step of
-every comparison run and the scoring of one view with each of its
-evaluation protocols (rendering and metrics, as the evaluation does them).
-It then multiplies those times by what the pilot and the comparison will
-do: how many steps each run trains, how often it is validated, and how many
-views each evaluation scores. ``scripts/run_comparison.sh`` runs it once,
-after its trial, so that a larger step budget can be chosen before the
-pilot starts.
+every run and the scoring of one view with each of its evaluation protocols
+(rendering and metrics, as the evaluation does them). It then multiplies
+those times by what the suite will do: how many steps each run trains, how
+often it is validated, and how many views each evaluation scores.
+``scripts/run_comparison.sh`` runs it once, after its trial, so that another
+step budget can be chosen before the real training starts.
+
+The steps are timed at the start of training, in its first phase (see
+``training.first_phase_steps``): with pixelNeRF's recipe, always two source
+views, where the later steps take one or two. The estimate errs on the long side.
 
 It also times the check of the training data that every checkpoint save
 makes (``scene_recon.provenance``): on a slow volume, looking at each of
 the split's files at every save can take hours in all.
 
 Left out: starting each run (building the model, loading its weights),
-writing the checkpoint files, choosing the rates, and any other work
-sharing the GPU.
+writing the checkpoint files, and any other work sharing the GPU.
 """
 
 from __future__ import annotations
@@ -35,7 +37,6 @@ from scene_recon.config import Config, parse_config
 from scene_recon.data import SceneDataset
 from scene_recon.environment import device_description
 from scene_recon.evaluation import Evaluator
-from scene_recon.pilot import pair_pilot_with_comparison
 from scene_recon.suite import Suite
 from scene_recon.training import Trainer
 
@@ -52,20 +53,20 @@ TIMED_VIEWS_PER_SCENE = 5
 """Views scored and timed per evaluation protocol, after one untimed view."""
 
 
-def estimate_time(pilot: Suite, comparison: Suite, budgets: Sequence[int], first_scenes: int | None) -> str:
-    """Time every comparison run on this machine, then estimate the hours for each step budget, as a table.
+def estimate_time(suite: Suite, budgets: Sequence[int], first_scenes: int | None) -> str:
+    """Time every run of the suite on this machine, then estimate the hours for each step budget, as a table.
 
-    ``first_scenes`` is the number of test scenes the comparison is scored on
+    ``first_scenes`` is the number of test scenes the suite is scored on
     first, before all of them (``None``: all of them at once).
     """
     speeds = {}
-    for key, config in comparison.runs.items():
+    for key, config in suite.runs.items():
         logger.info("Timing %s on this machine", key)
         speeds[key] = measure_speed(config)
-    first_config = next(iter(comparison.runs.values()))
+    first_config = next(iter(suite.runs.values()))
     logger.info("Timing the check of the training data that every checkpoint save makes")
     saving = measure_saving(first_config)
-    estimates = plan_hours(pilot, comparison, speeds, saving, budgets, first_scenes)
+    estimates = plan_hours(suite, speeds, saving, budgets, first_scenes)
     device = resolve_device(first_config.experiment.device)
     return format_estimates(speeds, saving, estimates, first_scenes, device_description(device)["name"])
 
@@ -159,12 +160,11 @@ def _wait_for_gpu(device: torch.device) -> None:
 
 @dataclass(frozen=True)
 class Estimate:
-    """Hours from the start of the pilot until each milestone, for one step budget."""
+    """Hours from the start of training until each milestone, for one step budget."""
 
     steps: int
-    pilot_done: float
     first_scores: float
-    """The comparison trained, profiled and scored on the first test scenes."""
+    """Every run trained, profiled and scored on the first test scenes."""
 
     all_scores: float
     """Also scored on every test scene: the final report."""
@@ -184,46 +184,30 @@ class _Datasets:
 
 
 def plan_hours(
-    pilot: Suite,
-    comparison: Suite,
+    suite: Suite,
     speeds: dict[str, Speed],
     saving: Saving,
     budgets: Sequence[int],
     first_scenes: int | None,
 ) -> list[Estimate]:
-    """The estimate for each step budget, from the speed of every comparison run (by its key in the suite).
+    """The estimate for each step budget, from the speed of every run (by its key in the suite).
 
-    Each pilot run is timed as the comparison run it trains like. A tuned
-    comparison run continues from the pilot's last step; any other starts
-    from step 0. Validation is timed as the evaluation protocol with the same
-    source views, profiling as the first protocol. Each suite command (the
-    pilot, then step 4) runs in one process, so each pays for one first
-    fingerprint of the training data.
+    Every run trains from step 0. Validation is timed as the evaluation
+    protocol with the same source views, profiling as the first protocol.
+    The suite runs in one process, so it pays for one first fingerprint of
+    the training data.
     """
     datasets = _Datasets()
-    tuned = pair_pilot_with_comparison(pilot, comparison)
-    starts = {run.key: run.candidates[0].config.training.num_steps for run in tuned}
-
-    pilot_seconds = saving.first_seconds if "train" in pilot.stages else 0.0
-    for run in tuned:
-        for candidate in run.candidates:
-            pilot_seconds += _run_seconds(candidate.config, speeds[run.key], saving, 0, pilot.stages, None, datasets)
-
     estimates = []
     for steps in budgets:
-        first = saving.first_seconds if "train" in comparison.stages else 0.0
+        first = saving.first_seconds if "train" in suite.stages else 0.0
         later = 0.0
-        for key, config in comparison.runs.items():
+        for key, config in suite.runs.items():
             config = _with_steps(config, steps)
-            first += _run_seconds(
-                config, speeds[key], saving, starts.get(key, 0), comparison.stages, first_scenes, datasets
-            )
-            if first_scenes is not None and "evaluate" in comparison.stages:
+            first += _run_seconds(config, speeds[key], saving, 0, suite.stages, first_scenes, datasets)
+            if first_scenes is not None and "evaluate" in suite.stages:
                 later += _run_seconds(config, speeds[key], saving, steps, ["evaluate"], None, datasets)
-        pilot_hours, first_hours, later_hours = (seconds / 3600 for seconds in (pilot_seconds, first, later))
-        estimates.append(
-            Estimate(steps, pilot_hours, pilot_hours + first_hours, pilot_hours + first_hours + later_hours)
-        )
+        estimates.append(Estimate(steps, first / 3600, (first + later) / 3600))
     return estimates
 
 
@@ -288,18 +272,18 @@ def format_estimates(
         f"({saving.first_seconds:.1f} s the first time)"
     )
     first = "scored on all test scenes" if first_scenes is None else f"scored on {first_scenes} test scenes"
-    columns = ["steps per run", "pilot done", f"trained, {first}", "final report"]
+    columns = ["steps per run", f"trained, {first}", "final report"]
     if first_scenes is None:
         columns.pop()
-    lines += ["", "Hours from the start of the pilot until:", "  " + " | ".join(columns)]
+    lines += ["", "Hours from the start of training until:", "  " + " | ".join(columns)]
     for estimate in estimates:
-        values = [f"{estimate.steps:,}", f"{estimate.pilot_done:.1f}", f"{estimate.first_scores:.1f}"]
+        values = [f"{estimate.steps:,}", f"{estimate.first_scores:.1f}"]
         if first_scenes is not None:
             values.append(f"{estimate.all_scores:.1f}")
         lines.append("  " + " | ".join(value.rjust(len(column)) for value, column in zip(values, columns)))
     lines += [
         "",
-        "Not counted: starting each run, writing the checkpoint files, choosing the rates (minutes in all),",
-        "and other work sharing the GPU.",
+        "Not counted: starting each run and writing the checkpoint files (minutes in all), and other work",
+        "sharing the GPU.",
     ]
     return "\n".join(lines)

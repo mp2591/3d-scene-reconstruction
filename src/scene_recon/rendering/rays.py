@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Sequence
+
 import torch
 from torch import Tensor
 
@@ -10,16 +12,23 @@ from scene_recon.structures import Cameras, RayBundle, SceneViews
 
 
 def sample_training_rays(
-    views: SceneViews, rays_per_scene: int, generator: torch.Generator
+    views: SceneViews,
+    rays_per_scene: int,
+    generator: torch.Generator,
+    object_box_background: Sequence[float] | None = None,
 ) -> tuple[RayBundle, Tensor]:
     """Pick random pixels from random views and return their rays and colours.
 
-    Rays are drawn uniformly from all pixels of all given views.
+    Rays are drawn uniformly from all pixels of all given views, or, with
+    ``object_box_background``, uniformly from the smallest box around each
+    view's object: the pixels whose colour is not that background colour.
 
     Args:
         views: B scenes with N views each.
         rays_per_scene: Number of rays R to draw from each scene.
         generator: CPU generator the pixel choices are drawn from.
+        object_box_background: The images' background colour (RGB in [0, 1]),
+            to draw rays only from the box around the object; ``None`` for the whole image.
 
     Returns:
         The rays, and the ground-truth colours of their pixels with shape (B, R, 3).
@@ -30,9 +39,17 @@ def sample_training_rays(
 
     shape = (batch_size, rays_per_scene)
     view_index = torch.randint(num_views, shape, generator=generator).to(device)
-    pixel_x = torch.randint(width, shape, generator=generator).to(device)
-    pixel_y = torch.randint(height, shape, generator=generator).to(device)
     scene_index = torch.arange(batch_size, device=device)[:, None]
+    if object_box_background is None:
+        pixel_x = torch.randint(width, shape, generator=generator).to(device)
+        pixel_y = torch.randint(height, shape, generator=generator).to(device)
+    else:
+        (left, right), (top, bottom) = object_boxes(views.images, object_box_background)
+        # The box of each ray's view, shape (B, R).
+        left, right, top, bottom = (ends[scene_index, view_index] for ends in (left, right, top, bottom))
+        pixel_x = left + (torch.rand(shape, generator=generator).to(device) * (right - left + 1)).long()
+        pixel_y = top + (torch.rand(shape, generator=generator).to(device) * (bottom - top + 1)).long()
+        pixel_x, pixel_y = torch.minimum(pixel_x, right), torch.minimum(pixel_y, bottom)  # rand < 1, but rounding
 
     cameras = Cameras(
         camera_to_world=views.cameras.camera_to_world[scene_index, view_index],
@@ -43,6 +60,35 @@ def sample_training_rays(
 
     target_rgb = views.images[scene_index, view_index, :, pixel_y, pixel_x]  # (B, R, 3)
     return RayBundle(origins, directions, views.near, views.far), target_rgb
+
+
+OBJECT_TOLERANCE = 1.5 / 255
+"""How far from the background colour a pixel must be to count as the object: more than one 8-bit level."""
+
+
+def object_boxes(images: Tensor, background: Sequence[float]) -> tuple[tuple[Tensor, Tensor], tuple[Tensor, Tensor]]:
+    """The smallest box around the object in each image: the pixels that are not the background colour.
+
+    Args:
+        images: Shape (B, N, 3, H, W), values in [0, 1].
+        background: The background colour, RGB in [0, 1].
+
+    Returns:
+        ``((left, right), (top, bottom))``: the first and last column and row
+        of each box (inclusive), each of shape (B, N). An image without an
+        object gets the whole image as its box.
+    """
+    height, width = images.shape[-2:]
+    colour = torch.tensor(background, dtype=images.dtype, device=images.device)[:, None, None]
+    is_object = ((images - colour).abs().amax(dim=-3) > OBJECT_TOLERANCE)  # (B, N, H, W)
+
+    def first_and_last(has_object: Tensor, size: int) -> tuple[Tensor, Tensor]:
+        found = has_object.any(dim=-1)
+        first = torch.where(found, has_object.int().argmax(dim=-1), 0)
+        last = torch.where(found, size - 1 - has_object.flip(-1).int().argmax(dim=-1), size - 1)
+        return first, last
+
+    return first_and_last(is_object.any(dim=-2), width), first_and_last(is_object.any(dim=-1), height)
 
 
 def rays_for_full_images(views: SceneViews) -> RayBundle:

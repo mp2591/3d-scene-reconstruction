@@ -1,27 +1,26 @@
 # The comparison of the project proposal, ready to run. Each run is one
 # encoder-decoder combination. All runs are trained on the same data, one
-# after another, and scored the same way (docs/suites.md).
+# after another, with the same recipe, and scored the same way
+# (docs/suites.md).
+#
+# The recipe is pixelNeRF's for ShapeNet-SRN (configs/base.yaml): 400,000
+# steps of 4 scenes and 128 rays, the learning rate 1e-4 for every part of
+# every model, two source views and rays from the box around the car for the
+# first 300,000 steps, then one or two source views and the whole image. No
+# model is tuned: what differs between the runs is the architecture alone.
+# The baselines (pixelNeRF, TransNeRF) are trained here with the same recipe,
+# not taken from their papers.
 #
 # Run it with scripts/run_comparison.sh, which does everything in order and
-# can be left alone for two days (docs/running_on_a_gpu_server.md):
-#   1. a short trial of every run, in a folder of its own;
-#   2. the learning-rate pilot (encoder_lr_pilot.yaml), on the validation split;
-#   3. `scene-recon choose-encoder-rates`: writes each encoder's chosen rate
-#      into the runs below (1.0e-5 until then) and copies the chosen pilot
-#      runs into this suite's folder, where they continue from step 10,000;
-#   4. this file, scored on the first 100 test scenes, so that every run has
+# can be left alone (docs/running_on_a_gpu_server.md):
+#   1. a short trial of every run, in a folder of its own, and an estimate of
+#      how long the rest takes on the machine;
+#   2. this file, scored on the first 100 test scenes, so that every run has
 #      results as early as possible;
-#   5. this file again, scored on every test scene.
-#
-# The budget is 100,000 steps per run (a quarter of the proposal's 400,000),
-# with the learning rate falling tenfold over them. On an RTX 4090 the five
-# steps take about 42 hours: 7.5 for the pilot, 20 for the rest of the
-# training, 2 for the first scores and 12.5 for the full ones. A GH200 should
-# be faster. scripts/run_comparison.sh estimates the time on its machine
-# after its trial, and can train another budget (its second argument), which
-# then replaces both numbers under `common:` below. Asking for more steps
-# after the end (training.num_steps) continues every run; the learning rate
-# keeps falling past optimization.decay_steps.
+#   3. this file again, scored on every test scene.
+# scripts/run_comparison.sh can train another step budget (its second
+# argument); it then replaces training.num_steps, optimization.decay_steps
+# and training.first_phase_steps (three quarters of the budget).
 #
 # Keep the outputs outside OneDrive, which would upload every checkpoint
 # (several hundred MB, rewritten every 5,000 steps). If a trial of this file
@@ -33,11 +32,9 @@
 # seed, the training data and batch settings, the loss, the optimiser, every
 # learning rate and its schedule, the renderer's sample counts and the model.
 # Changing one means training the run again under a new name. Free to change
-# later: training.num_steps, evaluation, validation and profiling. The pilot
-# must train like this file (see encoder_lr_pilot.yaml): change a training
-# setting in both, before the pilot starts.
+# later: training.num_steps, evaluation, validation and profiling.
 #
-# By hand, each command on one line, after the pilot and the choice:
+# By hand, each command on one line:
 #
 #   scene-recon run-suite --config configs/suites/proposal_comparison.yaml --set experiment.output_dir=runs
 #
@@ -49,8 +46,7 @@
 # (configs/models/*.yaml) and the networks they describe; uncomment each one
 # then. pixelnerf_resnet34 stays first, as the reference; until it exists the
 # reference is convnextv2_mlp. transnerf_unet is listed last, so that
-# uncommenting it first does not make it the reference. A baseline with a
-# pretrained encoder gets the same learning-rate pilot as the others.
+# uncommenting it first does not make it the reference.
 
 suite_name: proposal_comparison
 stages: [train, evaluate, profile]
@@ -60,17 +56,12 @@ seeds: [0]
 
 common:
   base: [../base.yaml, ../data/srn_cars.yaml]
-  training:
-    num_steps: 100000
-  optimization:
-    decay_steps: 100000      # the learning rate falls tenfold over the 100,000 steps
   evaluation:
     # Every test scene (704), but 10 of each scene's views, evenly spread:
-    # about 12.5 hours for the three runs below on an RTX 4090 instead of about
-    # two weeks. The report's confidence intervals are over scenes.
-    # pixelNeRF's benchmark renders every view that is not a source view (250
-    # with one source view, 249 with two); null does that (it evaluates again,
-    # without retraining).
+    # hours instead of weeks. The report's confidence intervals are over
+    # scenes. pixelNeRF's benchmark renders every view that is not a source
+    # view (250 with one source view, 249 with two); null does that (it
+    # evaluates again, without retraining).
     num_target_views: 10
 
 # The first run is the reference: every other run is compared with it scene by scene.
@@ -81,20 +72,13 @@ runs:
   #   base: ../models/pixelnerf_resnet34.yaml
 
   # (2) Encoder ablations: the modern backbones with the same pixelNeRF-style
-  #     decoder (pixelnerf_mlp). The network differs only in the encoder; each
-  #     encoder trains at the learning rate the pilot chose for it, with the
-  #     same tuning budget for both.
+  #     decoder (pixelnerf_mlp). The network differs only in the encoder.
   convnextv2_mlp:
     base: ../models/convnextv2_mlp.yaml   # ConvNeXt V2-T, pretrained weights via timm
-    optimization:
-      group_overrides:
-        encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}   # pretrained weights; the new 1x1 adapter keeps the base rate
 
   hiera_mlp:
     base: ../models/hiera_mlp.yaml        # convnextv2_mlp with Hiera-T as the encoder; needs the
-    optimization:                         # Hiera-T weights (docs/hiera_nerf.md)
-      group_overrides:
-        encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
+                                          # Hiera-T weights (docs/hiera_nerf.md)
 
   # (3) End-to-end modernised model (issue #5): Hiera-T encoder with the HieraNeRF
   #     bridge and the Hiera-style attention decoder (docs/hiera_nerf.md). Like
@@ -102,11 +86,10 @@ runs:
   #     without them the suite stops before training anything.
   hiera_nerf:
     base: ../models/hiera_nerf.yaml
-    optimization:
-      group_overrides:
-        encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
 
   # (4) Baseline TransNeRF: U-Net encoder, cross-view and ray attention decoders.
+  #     It was built for 8 to 12 source views of real scenes; here it gets the
+  #     same 1 or 2 views of SRN cars as every other model.
   #     Uncomment once configs/models/transnerf_unet.yaml exists.
   # transnerf_unet:
   #   base: ../models/transnerf_unet.yaml

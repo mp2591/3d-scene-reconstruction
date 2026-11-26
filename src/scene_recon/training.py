@@ -86,13 +86,7 @@ class Trainer:
 
         self.train_scenes = build_dataset(config, "train")
         self.validation_scenes = build_dataset(config, "val")
-        self.schedule = TrainingSchedule(
-            self.train_scenes,
-            seed=config.experiment.seed,
-            batch_size=config.training.batch_size,
-            views_per_scene=config.training.views_per_scene,
-            num_source_views=config.training.num_source_views,
-        )
+        self.schedule = TrainingSchedule(self.train_scenes, config.experiment.seed, config.training)
         self.evaluator = Evaluator(
             self.model, self.renderer, build_metrics(config.validation.metrics), self.device
         )
@@ -182,8 +176,12 @@ class Trainer:
         self.model.train()
 
         source_views = batch.select_views(self.schedule.source_view_indices(step))
+        in_box = self.schedule.rays_in_object_box(step)
         rays, target_rgb = sample_training_rays(
-            batch, self.config.training.rays_per_scene, generator=self.schedule.generator("rays", step)
+            batch,
+            self.config.training.rays_per_scene,
+            generator=self.schedule.generator("rays", step),
+            object_box_background=self.config.renderer.background_color if in_box else None,
         )
 
         scene_encoding = self.model.encode_scene(source_views)
@@ -270,12 +268,13 @@ def check_training_settings(config: Config, validation_scenes: SceneDataset) -> 
         ConfigError: Describing the first problem found.
     """
     settings = config.training
-    if max(settings.num_source_views) > settings.views_per_scene:
+    counts = settings.source_view_counts()
+    if max(counts) > settings.views_per_scene:
         raise ConfigError(
-            f"training.num_source_views asks for up to {max(settings.num_source_views)} source views, "
-            f"but only training.views_per_scene = {settings.views_per_scene} views are loaded per scene."
+            f"training.num_source_views or training.first_phase_num_source_views asks for up to {max(counts)} "
+            f"source views, but only training.views_per_scene = {settings.views_per_scene} views are loaded per scene."
         )
-    if min(settings.num_source_views) < 1:
+    if min(counts) < 1:
         raise ConfigError("training.num_source_views must only contain positive numbers.")
 
     # Validation runs thousands of steps into training; a mistake here

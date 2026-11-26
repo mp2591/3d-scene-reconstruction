@@ -13,6 +13,7 @@ from scene_recon.config import Config
 from scene_recon.metrics import PSNR
 from scene_recon.models.base import ReconstructionModel
 from scene_recon.rendering import VolumeRenderer, rays_for_full_images, sample_training_rays
+from scene_recon.rendering.rays import object_boxes
 from scene_recon.rendering.sampling import sample_importance_depths, sample_stratified_depths
 from scene_recon.rendering.volume import composite_along_rays
 from scene_recon.structures import FieldOutput, RayBundle, SceneViews
@@ -421,3 +422,29 @@ def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_c
     with pytest.raises(RuntimeError, match="at one point only 0.0 GB was free"):
         measure(num_frames=2)
     assert model.training and not frozen.training  # every part's mode restored, although the measurement was refused
+
+
+def test_object_boxes_enclose_the_pixels_that_are_not_background():
+    images = torch.ones(1, 2, 3, 8, 10)  # white
+    images[0, 0, :, 2:5, 3:7] = 0.2  # an object in rows 2-4, columns 3-6 of the first view
+    images[0, 0, 1, 6, 8] = 1 - 1 / 255  # one 8-bit level off white: still background
+
+    (left, right), (top, bottom) = object_boxes(images, [1.0, 1.0, 1.0])
+
+    assert (left[0, 0], right[0, 0], top[0, 0], bottom[0, 0]) == (3, 6, 2, 4)
+    # An image without an object gets the whole image.
+    assert (left[0, 1], right[0, 1], top[0, 1], bottom[0, 1]) == (0, 9, 0, 7)
+
+
+def test_rays_in_the_object_box_supervise_only_pixels_inside_it():
+    torch.manual_seed(0)
+    views = SyntheticSpheresDataset(num_scenes=1, num_views=3, image_size=16, seed=0).load_scene(0)
+    images = torch.ones_like(views.images)
+    images[..., 4:9, 5:12] = torch.rand(images[..., 4:9, 5:12].shape) * 0.5  # object pixels, darker than white
+    views = dataclasses.replace(views, images=images)
+
+    _, in_box = sample_training_rays(views, 500, torch.Generator().manual_seed(1), object_box_background=[1, 1, 1])
+    _, anywhere = sample_training_rays(views, 500, torch.Generator().manual_seed(1))
+
+    assert (in_box < 0.6).all()  # every supervised pixel is an object pixel
+    assert (anywhere == 1).any()  # without the box, background pixels are supervised too

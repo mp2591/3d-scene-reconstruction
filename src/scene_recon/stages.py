@@ -268,13 +268,8 @@ def check_run_can_start(config: Config, stages: list[str]) -> None:
         train_scenes = build_dataset(config, "train")
         validation_scenes = build_dataset(config, "val")
         check_training_settings(config, validation_scenes)
-        TrainingSchedule(
-            train_scenes,
-            seed=config.experiment.seed,
-            batch_size=config.training.batch_size,
-            views_per_scene=config.training.views_per_scene,
-            num_source_views=config.training.num_source_views,
-        ).scene_plan(0)  # raises if training scenes have too few views
+        # Raises if the training scenes have too few views.
+        TrainingSchedule(train_scenes, config.experiment.seed, config.training).scene_plan(0)
         if files.checkpoint.exists():
             # Also for a finished run: its checkpoint is reused in the comparison
             # as if it had been trained on the current data.
@@ -355,7 +350,7 @@ def _how_splits_are_used(config: Config, stages: Sequence[str]) -> dict[str, tup
     """
     uses = {}
     if "train" in stages:
-        uses["train"] = (set(), list(config.training.num_source_views))
+        uses["train"] = (set(), config.training.source_view_counts())
         uses["val"] = ({len(config.validation.source_views)}, None)  # validation runs in evaluation mode
     test_view_counts = set()
     if "evaluate" in stages:

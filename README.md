@@ -100,14 +100,15 @@ everything that is already done.
 
 [`docs/suites.md`](docs/suites.md) describes the suite file and the outputs.
 [`configs/suites/proposal_comparison.yaml`](configs/suites/proposal_comparison.yaml)
-is the comparison from the proposal, ready to run. Before it,
-[`configs/suites/encoder_lr_pilot.yaml`](configs/suites/encoder_lr_pilot.yaml)
-chooses each pretrained encoder's learning rate on the validation split.
+is the comparison from the proposal, ready to run. Every model in it, the
+baselines included, trains with pixelNeRF's recipe for ShapeNet-SRN
+(400,000 steps of 4 scenes × 128 rays, learning rate 1e-4), untuned, so
+that the results differ by architecture alone.
 On a Linux GPU server (for example a GH200), two scripts do all of it:
 `scripts/setup_linux.sh` prepares the machine and
-`scripts/run_comparison.sh` runs the pilot, chooses the rates and runs the
-comparison, unattended, after estimating how long that takes on the
-machine (so that a larger step budget can be chosen). See
+`scripts/run_comparison.sh` runs the comparison, unattended, after
+estimating how long that takes on the machine (so that another step budget
+can be chosen). See
 [`docs/running_on_a_gpu_server.md`](docs/running_on_a_gpu_server.md),
 which also gives the download links of the dataset and the weights, and
 every step by hand for a conda or other environment of your own.
@@ -291,6 +292,10 @@ optimization:
     encoder: {learning_rate: 1.0e-5, warmup_steps: 2000}
 ```
 
+The comparison in `configs/suites/proposal_comparison.yaml` sets no
+override: every part of every model learns at the same rate there, so that
+no model is tuned. Overrides are for experiments of your own.
+
 `encoder_parameter_groups` puts the encoder's `adapter` (section 6), the
 layers it adds on top of its backbone such as a 1x1 convolution that fuses
 its stages, in a group of its own; `encoder` holds the rest. The lower
@@ -431,9 +436,8 @@ scene-recon train --config configs/smoke_test.yaml --set training.batch_size=8 e
 
 3. Write your models ([instructions above](#writing-a-network-instructions-for-model-authors)),
    describe each in `configs/models/`, and add them as runs to
-   `configs/suites/proposal_comparison.yaml` (a model with a pretrained
-   encoder also to `configs/suites/encoder_lr_pilot.yaml`, with the same
-   three learning rates as the others).
+   `configs/suites/proposal_comparison.yaml`. Leave the training settings
+   alone: every model trains with the same recipe.
 
 ## Repository layout
 
@@ -452,7 +456,7 @@ docs/
   running_on_a_gpu_server.md   Setting up a Linux GPU machine and running the whole comparison.
 scripts/
   setup_linux.sh         Prepares a Linux GPU machine: environment, weights, data, tests.
-  run_comparison.sh      The pilot, the choice of learning rates and the comparison, unattended.
+  run_comparison.sh      The trial, the time estimate and the comparison, unattended.
 src/scene_recon/
   cli.py                 Command-line entry point.
   config.py              Config loading and validation.
@@ -473,7 +477,6 @@ src/scene_recon/
   stages.py              Train, evaluate and profile one run (used by every command).
   run_files.py           Where each output of a run is stored.
   suite.py               Loading a suite file and running its experiments in order.
-  pilot.py               Choosing encoder learning rates from the pilot, and continuing the chosen runs.
   fairness.py            What must match across runs, and what differs.
   provenance.py          Which checkpoint and settings produced a result, and whether it is still valid.
   comparison.py          Spread over seeds, and paired per-scene differences between runs.

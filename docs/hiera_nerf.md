@@ -158,15 +158,15 @@ Parts of the description that are pipeline settings or not yet in the pipeline:
 
 - **8 to 12 source photos per target view**: set
   `training.num_source_views: [8, 9, 10, 11, 12]` and `training.views_per_scene`
-  to at least 13 (ShapeNet-SRN training scenes have 50 views). The proposal's
-  comparison trains with 1 to 3 source views and, for now, evaluates with 1
-  and 2 (`evaluation.source_view_sets` in `configs/base.yaml`; a 3-view
-  protocol is still to be chosen). Memory in the decoder grows with the
+  to at least 13 (ShapeNet-SRN training scenes have 50 views). The
+  comparison follows pixelNeRF: it trains with 2 source views for the first
+  three quarters of the steps, then with 1 or 2, and evaluates with 1 and 2
+  (`training` and `evaluation.source_view_sets` in `configs/base.yaml`). Memory in the decoder grows with the
   number of photos, so lower `training.rays_per_scene` if needed.
 - **Train with more than one source photo.** With a single photo, the colour
   attention of step 3 has one key, so its weight is always 1 and its scoring
-  layers get no gradient. The template trains with 1 to 3 photos
-  (`training.num_source_views: [1, 2, 3]`), which trains them.
+  layers get no gradient. The comparison trains with 2 photos most of the
+  time (see above), which trains them.
 - **The training PSNR is optimistic.** Training rays are drawn from all
   loaded views, source views included, as in pixelNeRF
   ([pipeline.md](pipeline.md#rendering-details)). On a source view's ray,

@@ -29,10 +29,12 @@ renderer:
 
 optimization:
   learning_rate: 3.0e-4
+  warmup_steps: 0
   decay_steps: 300
 
 training:
   num_steps: 300
+  first_phase_steps: 0      # pixelNeRF's first phase is for long runs
   rays_per_scene: 128
   num_workers: 0
   log_every: 25

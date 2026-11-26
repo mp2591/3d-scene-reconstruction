@@ -113,10 +113,27 @@ class TrainingSettings:
     num_source_views: list[int]
     """Possible numbers of source views. One is picked at random for every step."""
 
+    first_phase_steps: int
+    """Steps at the start of training that use the two settings below instead (pixelNeRF: 300,000; 0 = none)."""
+
+    first_phase_num_source_views: list[int]
+    """Possible numbers of source views during the first phase. One is picked at random for every step."""
+
+    first_phase_rays_in_object_box: bool
+    """During the first phase, draw rays only from the smallest box around each view's object (its
+    pixels that are not the background colour), as pixelNeRF does: most of an image is empty."""
+
     num_workers: int
     log_every: int
     validate_every: int
     checkpoint_every: int
+
+    def source_view_counts(self) -> list[int]:
+        """Every number of source views that training uses, in either phase."""
+        counts = set(self.num_source_views)
+        if self.first_phase_steps > 0:
+            counts |= set(self.first_phase_num_source_views)
+        return sorted(counts)
 
 
 @dataclass(frozen=True)
@@ -478,6 +495,7 @@ _VALUE_RULES: dict[str, int] = {
     "training.batch_size": 1,
     "training.rays_per_scene": 1,
     "training.views_per_scene": 1,
+    "training.first_phase_steps": 0,
     "training.num_workers": 0,
     "training.log_every": 1,
     "training.validate_every": 1,
@@ -533,8 +551,10 @@ def _check_values(settings: dict[str, Any]) -> None:
     if len(optimization.betas) != 2 or not all(0 <= beta < 1 for beta in optimization.betas):
         problems.append("optimization.betas must be two values in [0, 1).")
 
-    if not settings["training"].num_source_views or min(settings["training"].num_source_views) < 1:
-        problems.append("training.num_source_views must be a non-empty list of positive numbers.")
+    for name in ("num_source_views", "first_phase_num_source_views"):
+        counts = getattr(settings["training"], name)
+        if not counts or min(counts) < 1:
+            problems.append(f"training.{name} must be a non-empty list of positive numbers.")
 
     problems += _view_list_problems(settings["validation"].source_views, "validation.source_views")
     problems += _metric_list_problems(settings["validation"].metrics, "validation.metrics")

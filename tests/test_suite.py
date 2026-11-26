@@ -10,9 +10,7 @@ import pytest
 import yaml
 
 from scene_recon import suite as suite_module
-from scene_recon.pilot import pair_pilot_with_comparison
-from scene_recon.config import flatten_settings, setting_in_sections
-from scene_recon.provenance import CONTINUATION_SETTINGS
+from scene_recon.config import flatten_settings
 from scene_recon.registry import ConfigError
 from scene_recon.report import write_report
 from scene_recon.run_files import RunFiles
@@ -753,60 +751,18 @@ def test_the_proposal_comparison_loads_as_shipped():
     assert text.index("  # pixelnerf_resnet34:") < text.index("  convnextv2_mlp:") < text.index("  # transnerf_unet:")
 
 
-def test_the_learning_rate_pilot_never_scores_on_the_test_split_and_treats_every_model_alike():
-    """Reviews F111-F113: a pilot run is matched to a comparison run by its training, not by its name."""
-    pilot = load_suite(CONFIG_DIR / "suites" / "encoder_lr_pilot.yaml")
+def test_every_comparison_run_trains_with_the_same_untuned_recipe():
+    """The runs differ in their model alone: the same training, schedule and measurement for all."""
     comparison = load_suite(CONFIG_DIR / "suites" / "proposal_comparison.yaml")
 
-    # Each pilot run trains like exactly one comparison run apart from the encoder's rate, so the
-    # comparison can continue it, and is scored on the validation split (checked by the same code
-    # that `scene-recon choose-encoder-rates --check-only` runs before a pilot starts).
-    tuned = {run.name: run for run in pair_pilot_with_comparison(pilot, comparison)}
+    def everything_but_the_model(config) -> dict:
+        return {
+            name: value
+            for name, value in flatten_settings(config.raw).items()
+            if not name.startswith("model.") and name != "experiment.run_name"
+        }
 
-    # Every comparison run with a pretrained encoder is tuned.
-    pretrained = [
-        name
-        for name, seeds in comparison.grouped_runs().items()
-        if _starts_from_pretrained_weights(next(iter(seeds.values())).model["encoder"])
-    ]
-    assert pretrained and sorted(tuned) == sorted(pretrained)
-    for name, run in tuned.items():
-        # Every tuned run gets each candidate rate exactly once; summary.csv names each score by
-        # its run, so the name must tell the truth.
-        assert [candidate.rate for candidate in run.candidates] == [1e-5, 3e-5, 1e-4], name
-        assert [candidate.key for candidate in run.candidates] == [
-            f"{name}_lr{_rate_label(candidate.rate)}" for candidate in run.candidates
-        ]
-        # A pilot run is the beginning of its comparison run, not all of it.
-        steps = {candidate.config.training.num_steps for candidate in run.candidates}
-        assert max(steps) < comparison.runs[run.key].training.num_steps, name
-
-    # The same budget and measurement for every model: steps, validation and evaluation are
-    # not part of the training identity (they may change later), so they are compared here.
-    measured = [_measurement_and_budget(config) for config in pilot.runs.values()]
-    assert all(settings == measured[0] for settings in measured), "the pilot runs differ in steps or measurement"
-
-
-def _starts_from_pretrained_weights(encoder: dict) -> bool:
-    """Whether an encoder section starts from pretrained weights, read the way each encoder's class reads it."""
-    readers = {
-        "convnextv2": lambda section: section.get("pretrained", True),  # timm weights; the class defaults to True
-        "hiera": lambda section: section["weights"] is not None,  # a weights file; None means random weights
-    }
-    assert encoder["name"] in readers, f"add how the encoder '{encoder['name']}' names its pretrained weights"
-    return readers[encoder["name"]](encoder)
-
-
-def _rate_label(rate: float) -> str:
-    """How a pilot run's name writes its rate: 1e-05 -> '1e-5'."""
-    mantissa, exponent = f"{rate:.0e}".split("e")
-    return f"{mantissa}e{int(exponent)}"
-
-
-def _measurement_and_budget(config) -> dict:
-    """The settings outside the training identity, except the run's own name."""
-    return {
-        name: value
-        for name, value in flatten_settings(config.raw).items()
-        if setting_in_sections(name, CONTINUATION_SETTINGS) and name != "experiment.run_name"
-    }
+    settings = [everything_but_the_model(config) for config in comparison.runs.values()]
+    assert all(each == settings[0] for each in settings), "the comparison runs differ in more than the model"
+    # No part of any model learns at a rate of its own.
+    assert all(config.optimization.group_overrides == {} for config in comparison.runs.values())

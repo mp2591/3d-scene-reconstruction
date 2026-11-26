@@ -22,12 +22,34 @@ from scene_recon.data.synthetic import SyntheticSpheresDataset
 from scene_recon.training import Trainer
 
 
-def _schedule(seed: int = 0, num_scenes: int = 10, batch_size: int = 3) -> TrainingSchedule:
+def _settings(batch_size: int = 3, first_phase_steps: int = 0) -> SimpleNamespace:
+    """The training settings the schedule reads; the first phase uses two source views and the object box."""
+    return SimpleNamespace(
+        batch_size=batch_size,
+        views_per_scene=4,
+        num_source_views=[1, 2, 3],
+        first_phase_steps=first_phase_steps,
+        first_phase_num_source_views=[2],
+        first_phase_rays_in_object_box=True,
+    )
+
+
+def _schedule(seed: int = 0, num_scenes: int = 10, batch_size: int = 3, first_phase_steps: int = 0) -> TrainingSchedule:
     scenes = SyntheticSpheresDataset(num_scenes=num_scenes, num_views=8, image_size=8, seed=0)
-    return TrainingSchedule(scenes, seed=seed, batch_size=batch_size, views_per_scene=4, num_source_views=[1, 2, 3])
+    return TrainingSchedule(scenes, seed, _settings(batch_size, first_phase_steps))
 
 
 class TestSchedule:
+    def test_the_first_phase_has_its_own_source_views_and_draws_rays_from_the_object(self):
+        schedule = _schedule(first_phase_steps=100)
+
+        assert {len(schedule.source_view_indices(step)) for step in range(100)} == {2}
+        assert {len(schedule.source_view_indices(step)) for step in range(100, 400)} == {1, 2, 3}
+        assert all(schedule.rays_in_object_box(step) for step in range(100))
+        assert not any(schedule.rays_in_object_box(step) for step in range(100, 400))
+        # Without a first phase, every step is like the later ones.
+        assert not _schedule().rays_in_object_box(0)
+
     def test_same_seed_and_step_give_the_same_data(self):
         first, second = _schedule(seed=7), _schedule(seed=7)
 
@@ -128,7 +150,7 @@ class TestSharedMemory:
     def test_a_closed_loader_gives_its_shared_memory_back(self):
         # The runs of a suite train one after another in one process, so each must find it free again.
         scenes = SyntheticSpheresDataset(num_scenes=10, num_views=8, image_size=64, seed=0)
-        schedule = TrainingSchedule(scenes, seed=0, batch_size=3, views_per_scene=4, num_source_views=[1, 2, 3])
+        schedule = TrainingSchedule(scenes, 0, _settings())
         batch_bytes = 3 * 4 * 3 * 64 * 64 * 4  # the images alone
 
         def used() -> int:
@@ -175,8 +197,8 @@ def _record_training_data(monkeypatch) -> list[str]:
     fingerprints: list[str] = []
     real_sample_training_rays = training_module.sample_training_rays
 
-    def recording_sample_training_rays(batch, rays_per_scene, generator):
-        rays, target_rgb = real_sample_training_rays(batch, rays_per_scene, generator)
+    def recording_sample_training_rays(batch, rays_per_scene, generator, object_box_background):
+        rays, target_rgb = real_sample_training_rays(batch, rays_per_scene, generator, object_box_background)
         content = torch.cat([batch.images.flatten(), rays.directions.flatten(), target_rgb.flatten()])
         fingerprints.append(hashlib.sha256(content.cpu().numpy().tobytes()).hexdigest())
         return rays, target_rgb
