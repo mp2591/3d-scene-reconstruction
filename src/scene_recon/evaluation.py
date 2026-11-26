@@ -19,6 +19,7 @@ from PIL import Image
 from torch import Tensor, nn
 
 from scene_recon.data.base import SceneDataset
+from scene_recon.data.schedule import derived_generator
 from scene_recon.models.base import ReconstructionModel
 from scene_recon.registry import ConfigError
 from scene_recon.rendering import VolumeRenderer
@@ -80,11 +81,14 @@ class Evaluator:
         renderer: VolumeRenderer,
         metrics: dict[str, nn.Module],
         device: torch.device,
+        seed: int,
     ) -> None:
+        """``seed`` (the run's ``experiment.seed``) fixes the random sample positions along the rays."""
         self.model = model
         self.renderer = renderer
         self.metrics = {name: metric.to(device) for name, metric in metrics.items()}
         self.device = device
+        self.seed = seed
 
     @torch.no_grad()
     def evaluate(
@@ -127,10 +131,18 @@ class Evaluator:
             target_views = views.select_views(range(num_source_views, views.num_views))
 
             scene_encoding = self.model.encode_scene(source_views)
-            rendered, _ = self.renderer.render_images(self.model, scene_encoding, target_views)
+            # The sample positions along the rays are random, as in pixelNeRF's
+            # evaluation, drawn from numbers fixed by the seed, the scene and
+            # the source views: the scores can be reproduced, and a scene
+            # scores the same however many scenes are evaluated.
+            generator = derived_generator(self.seed, "evaluation", scene_index, *source_view_indices)
+            rendered, _ = self.renderer.render_images(self.model, scene_encoding, target_views, generator)
 
             # A single scene was loaded, so the batch dimension is dropped.
-            prediction = rendered[0].clamp(0.0, 1.0)
+            # Scored as pixelNeRF scores it: its renders are saved as 8-bit
+            # images, each value rounded down to a whole step of 1/255, and
+            # read back.
+            prediction = torch.floor(rendered[0].clamp(0.0, 1.0) * 255.0) / 255.0
             ground_truth = target_views.images[0]
             scene_id = views.scene_ids[0]
 

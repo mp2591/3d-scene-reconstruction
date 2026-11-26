@@ -133,8 +133,9 @@ for ShapeNet-SRN.
 
 **Coarse pass.** `num_coarse_samples` depths per ray, one from each of that
 many equal bins between `near` and `far`. During training the position inside
-each bin is random; during evaluation it is the bin centre, which makes
-renders deterministic.
+each bin is random, in training and in evaluation, as in pixelNeRF. The random
+numbers of an evaluation are fixed by `experiment.seed`, the scene and the
+source views, so that its scores can be reproduced.
 
 **Fine pass.** `num_fine_samples` additional depths, chosen as pixelNeRF
 chooses them. `num_fine_depth_samples` of them lie close to the depth the
@@ -142,7 +143,7 @@ coarse pass found, spread normally with standard deviation `fine_depth_std`
 and kept between `near` and `far`; gradients flow back through that depth,
 as in pixelNeRF. The rest pick one of the coarse pass's bins, with a
 probability in proportion to its rendering weight, and lie anywhere inside
-it. During evaluation both use fixed quantiles instead of random numbers. The
+it. The
 model is then queried at the union of coarse and fine depths with
 `level="fine"`. Set `num_fine_samples: 0` to disable the pass.
 

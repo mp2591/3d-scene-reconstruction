@@ -90,13 +90,16 @@ def measure_rendering_speed(
         # readings is missed.
         _start_counting_memory(device)
         least_free = None
+        # Random sample positions, as evaluation draws them, so that the time
+        # to draw them is counted too; which numbers they are does not matter.
+        generator = torch.Generator().manual_seed(0)
         for _ in range(num_warmup_frames):
-            renderer.render_images(model, scene_encoding, target_view)
+            renderer.render_images(model, scene_encoding, target_view, generator)
             least_free = _least(least_free, free_gpu_memory(device))
         _wait_for_gpu(device)
         start = time.perf_counter()
         for _ in range(num_frames):
-            renderer.render_images(model, scene_encoding, target_view)
+            renderer.render_images(model, scene_encoding, target_view, generator)
             least_free = _least(least_free, free_gpu_memory(device))
         _wait_for_gpu(device)
         seconds_per_frame = (time.perf_counter() - start) / num_frames

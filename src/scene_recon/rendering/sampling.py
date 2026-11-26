@@ -2,8 +2,9 @@
 
 Random draws come from an explicit CPU ``torch.Generator`` and are then moved
 to the device, never from PyTorch's global generator, which belongs to the
-model (see ``scene_recon.data.schedule``). Passing no generator gives
-deterministic samples, as used for evaluation.
+model (see ``scene_recon.data.schedule``). Training and evaluation both pass
+one, as pixelNeRF draws its samples at random in both. Passing none gives
+samples at fixed positions.
 """
 
 from __future__ import annotations
@@ -24,9 +25,8 @@ def sample_stratified_depths(rays: RayBundle, num_samples: int, generator: torch
         rays: The rays to sample along.
         num_samples: Samples per ray, S.
         generator: If given, take a random depth within each bin, drawn
-            from this generator (used in training, so that the model sees a
-            continuum of depths over time). If ``None``, take the bin centre
-            (used in evaluation, to keep renders deterministic).
+            from this generator, so that the model sees a continuum of
+            depths over time. If ``None``, take the bin centre.
 
     Returns:
         Depths of shape (B, R, S), increasing along the last dimension.
@@ -61,9 +61,8 @@ def sample_importance_depths(
         rays: The rays the coarse pass rendered.
         weights: Rendering weights of the coarse pass, shape (B, R, S).
         num_samples: Number of new samples per ray.
-        generator: If given, draw randomly from it (training). If ``None``,
-            use evenly spaced quantiles, so that the result is deterministic
-            (evaluation).
+        generator: If given, draw randomly from it. If ``None``, use evenly
+            spaced quantiles.
 
     Returns:
         New depths of shape (B, R, num_samples), increasing along the last
@@ -115,9 +114,8 @@ def sample_around_depth(
             Gradients flow back through it, as in pixelNeRF.
         num_samples: Samples per ray.
         spread: Standard deviation of the samples around ``depth``.
-        generator: If given, draw the offsets randomly from it (training).
-            If ``None``, use evenly spaced quantiles of the normal
-            distribution, so that the result is deterministic (evaluation).
+        generator: If given, draw the offsets randomly from it. If ``None``,
+            use evenly spaced quantiles of the normal distribution.
 
     Returns:
         Depths of shape (B, R, num_samples), increasing along the last dimension.

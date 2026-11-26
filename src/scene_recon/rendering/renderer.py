@@ -39,8 +39,8 @@ class VolumeRenderer:
             scene_encoding: The result of ``model.encode_scene`` for the same scenes as ``rays``.
             rays: The rays to render.
             generator: Jitter the sample positions with random numbers from
-                this CPU generator (training). ``None`` keeps them
-                deterministic (evaluation).
+                this CPU generator (training and evaluation, as in pixelNeRF).
+                ``None`` places them at fixed positions.
 
         Returns:
             One ``RenderOutput`` per rendering pass, keyed by level name:
@@ -84,12 +84,16 @@ class VolumeRenderer:
         model: ReconstructionModel,
         scene_encoding: Any,
         target_views: SceneViews,
+        generator: torch.Generator | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Render full images from the viewpoints of ``target_views``.
 
         Only the cameras, the image size and the near/far range of
         ``target_views`` are used; its images are never read. Rays are
         rendered in chunks of ``ray_chunk_size`` to bound memory use.
+        With a ``generator``, the sample positions are random, drawn chunk
+        by chunk, so which numbers a ray gets depends on the chunk size;
+        without one, the images do not depend on it.
 
         Returns:
             ``(rgb, depth)`` with shapes (B, N, 3, H, W) and (B, N, H, W).
@@ -98,7 +102,7 @@ class VolumeRenderer:
         rgb_chunks, depth_chunks = [], []
         for start in range(0, rays.num_rays, self.settings.ray_chunk_size):
             chunk = rays.slice(start, start + self.settings.ray_chunk_size)
-            output = final_output(self.render_rays(model, scene_encoding, chunk))
+            output = final_output(self.render_rays(model, scene_encoding, chunk, generator))
             rgb_chunks.append(output.rgb)
             depth_chunks.append(output.depth)
 

@@ -24,9 +24,9 @@ flowchart LR
 | 0 | Checks that PyTorch can use the GPU; prints what the machine gives the runs | seconds |
 | 1 | A 50-step trial of every run with every stage, in `runs/trial`, so that a problem with the machine shows up early; then, once, an estimate of how long the rest takes on this machine (see "Choosing the step budget") | 15 min |
 | 2 | The comparison: training every run to the step budget (400,000 unless you choose another), scores on the first 100 test scenes, speed | 91 h |
-| 3 | Scores on all 704 test scenes, every view that is not a source view | 280 h |
+| 3 | Scores on all 704 test scenes, every view that is not a source view | 277 h |
 
-About 371 hours in all: the estimate's figures on an RTX 4090 in full
+About 368 hours in all: the estimate's figures on an RTX 4090 in full
 float32 (`experiment.float32_matmul_precision=highest`). Scoring takes most
 of it: pixelNeRF's benchmark renders about 350,000 views per model, 0.7 to
 1.3 s each on the RTX 4090, 40 hours for the first 100 test scenes of the
@@ -56,11 +56,12 @@ Everything else follows pixelNeRF's code too: each step draws its rays
 from all 50 views of a car, the rays pass through pixelNeRF's pixel centres,
 each ray takes 64 samples and then 32 more, 16 of them around the depth the
 first 64 found, and the scores cover every view of every test scene that is
-not a source view (250 or 249 per scene). Where it differs, the same way for
-every model: the learning rate rises over the first 2,000 steps and then
-falls tenfold over the budget (pixelNeRF keeps 1e-4 throughout), and
-evaluation places the samples along a ray at fixed positions, where
-pixelNeRF draws them at random, so that the scores can be reproduced.
+not a source view (250 or 249 per scene), each render rounded down to 8 bits
+as pixelNeRF's saved images are, with the samples along its rays drawn at
+random as in pixelNeRF (from numbers fixed by the seed, so that the scores
+can be reproduced). The one difference, the same for every model: the
+learning rate rises over the first 2,000 steps and then falls tenfold over
+the budget (pixelNeRF keeps 1e-4 throughout).
 TransNeRF published
 no results on SRN cars and was built for 8 to 12 source views, so it is
 trained here like every other model, not compared with its paper.
@@ -77,10 +78,10 @@ full float32:
 ```text
 Hours from the start of training until:
   steps per run | trained, scored on 100 test scenes | final report
-        100,000 |                               52.6 |        332.7
-        200,000 |                               65.3 |        345.4
-        300,000 |                               78.0 |        358.1
-        400,000 |                               90.7 |        370.8
+        100,000 |                               52.4 |        329.7
+        200,000 |                               65.3 |        342.6
+        300,000 |                               78.2 |        355.5
+        400,000 |                               91.1 |        368.4
 ```
 
 To use another budget, stop the script (`Ctrl-c`) and start it again with

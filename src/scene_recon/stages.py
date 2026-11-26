@@ -110,7 +110,9 @@ def run_evaluation(config: Config, checkpoint_path: Path | None = None) -> dict[
     device = resolve_device(config.experiment.device)
     # Read before scoring, so that reading them can never cost a finished evaluation.
     recorded_environment, software = environment(), evaluation_software(device)
-    evaluator = Evaluator(model, VolumeRenderer(config.renderer), build_metrics(settings.metrics), device)
+    evaluator = Evaluator(
+        model, VolumeRenderer(config.renderer), build_metrics(settings.metrics), device, config.experiment.seed
+    )
     test_scenes = build_dataset(config, "test")
     check_evaluation_settings(config, test_scenes)
 

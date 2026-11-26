@@ -108,7 +108,7 @@ def measure_speed(config: Config) -> Speed:
             seconds_per_step = trainer.seconds_per_step(WARMUP_STEPS, TIMED_STEPS)
             scenes = build_dataset(config, "test")
             metrics = build_metrics(config.evaluation.metrics)
-            evaluator = Evaluator(trainer.model, trainer.renderer, metrics, trainer.device)
+            evaluator = Evaluator(trainer.model, trainer.renderer, metrics, trainer.device, config.experiment.seed)
             seconds_per_view = {
                 tuple(source_views): _seconds_per_view(evaluator, scenes, source_views)
                 for source_views in config.evaluation.source_view_sets

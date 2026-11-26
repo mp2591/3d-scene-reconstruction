@@ -88,7 +88,7 @@ class Trainer:
         self.validation_scenes = build_dataset(config, "val")
         self.schedule = TrainingSchedule(self.train_scenes, config.experiment.seed, config.training)
         self.evaluator = Evaluator(
-            self.model, self.renderer, build_metrics(config.validation.metrics), self.device
+            self.model, self.renderer, build_metrics(config.validation.metrics), self.device, config.experiment.seed
         )
         check_training_settings(config, self.validation_scenes)
 
