@@ -60,6 +60,12 @@ training:
   rays_per_scene: 256       # batch_size * rays_per_scene = 1,024 rays per step, as in the proposal.
   views_per_scene: 8        # Views loaded per scene per step; sources and supervised rays come from these.
   num_source_views: [1, 2, 3]   # One of these is picked at random each step.
+  # Processes that load batches while the GPU trains. On the RTX 4090
+  # machine, with 4, a batch of SRN cars was ready every 6 ms, against 240 to
+  # 310 ms per training step, so more would not train faster there. 0 = load
+  # in the training process. The workers pass batches through /dev/shm, which
+  # is checked before training starts. Changing it never changes what is
+  # trained.
   num_workers: 4
   log_every: 100
   validate_every: 5000

@@ -22,7 +22,7 @@ flowchart LR
 
 | Step | What it does | On an RTX 4090 |
 |---|---|---|
-| 0 | Checks that PyTorch can use the GPU, and that every pilot run trains exactly like a comparison run apart from the encoder's learning rate | seconds |
+| 0 | Checks that PyTorch can use the GPU, and that every pilot run trains exactly like a comparison run apart from the encoder's learning rate; prints what the machine gives the runs | seconds |
 | 1 | A 50-step trial of every comparison run with every stage, in `runs/trial`, so that a problem with the machine shows up early | 10 min |
 | 2 | The learning-rate pilot: each model with encoder rates 1e-5, 3e-5 and 1e-4 for 10,000 steps, scored on 100 validation scenes | 7.5 h |
 | 3 | `scene-recon choose-encoder-rates`: per model, the lowest rate within 0.1 dB PSNR of the best; writes it into `configs/suites/proposal_comparison.yaml` and copies that pilot run into the comparison, which continues it | minutes |
@@ -37,6 +37,74 @@ second.)
 
 Each step skips what it has already done. If the machine stops, run the
 same command again and it carries on.
+
+## On a Run:ai cluster
+
+On a Run:ai cluster the machine is a container holding a share of a GPU.
+Nothing in the configs has to change for that, but these things matter:
+
+- **Storage.** Clone the repository onto a persistent volume, one that
+  outlives the workload (in Run:ai, a data source such as a persistent
+  volume claim). The environment `.venv`, the data, the results and the
+  pretrained weights the runs download (`weights/`) all live inside the
+  repository. Everything else is lost, with every checkpoint on it: the
+  container's own disk when the container restarts, and a temporary volume
+  (`emptyDir`, mounted, say, at `/workspace`) when Run:ai replaces the
+  whole pod. Both scripts warn if the repository is on the container's own
+  disk, but they cannot recognise a temporary volume, so check where your
+  workload mounts what before you start. If the container image sets
+  `HF_HUB_CACHE` or `TORCH_HOME`, those folders must be persistent too:
+  step 0 of `run_comparison.sh` prints where the downloaded weights go.
+- **Same software after a restart.** Start the workload again with the
+  same container image and the volume at the same path: `.venv` uses the
+  image's Python, and the pilot refuses to choose between rates scored
+  with different software (the report marks each comparison whose
+  evaluations were scored with different software).
+- **The GPU share.** A share of 0.99 gets 99% of the GPU's memory, about
+  95 GB of a 96 GB GH200. On an RTX 4090 the runs needed at most 22 GB
+  (PyTorch's peak, while training hiera_nerf); a GH200 should need about
+  the same. A share divides the memory, but not necessarily the computing
+  time: depending on how the cluster is set up, another workload placed in
+  the remaining 1% takes turns on the GPU while both compute. Training then
+  slows down, and the training hours and frame rates that the report
+  compares between models are off for the runs measured meanwhile. Ask the
+  cluster's administrators whether anything else can be scheduled on that
+  GPU. Settle the share before you start and keep it until the end: the
+  speeds of a comparison are only comparable when every run was measured
+  with the same share. If it does change, delete every run's
+  `profile.json` so that all are measured again the same way; the
+  training hours stay a mix. The copy of the report on the first 100 test
+  scenes keeps the speeds measured before the change; its quality scores
+  stay valid.
+- **Shared memory.** The 4 processes that load batches pass them through
+  `/dev/shm`: about 34 MB of it on the GH200, less than the 64 MB a
+  container usually gets by default. Training checks this before it starts
+  and, if too little is free, stops and says what to do. Ask for large
+  shared memory when you submit the workload if you can (`--large-shm`,
+  or "Increase shared memory size" in its settings).
+- **Processors and memory.** On the RTX 4090 machine, 4 loading processes
+  had a batch ready every 6 ms, against 240 to 310 ms per training step,
+  so more processors would not train faster there; 8 should be plenty, and
+  48 do no harm. The workload's main memory has a limit of its own; leave
+  it generous. Step 0 of `run_comparison.sh` prints the GPU memory,
+  processors and shared memory the container has.
+- **Restarts.** Run:ai may stop a workload, for example one that runs
+  beyond its project's quota. Once it runs again, start the same command:
+  finished work is kept and training continues from its last checkpoint
+  (saved every 5,000 steps).
+
+How long the whole comparison takes on this machine shows during the
+pilot: by the timings in the table above, each of its 9 runs takes about
+50 minutes on an RTX 4090 (the times on this machine are in
+`runs/encoder_lr_pilot/suite.log`). If the first one takes much longer,
+the GPU is slower or shared, or loading from the volume is slow.
+
+If the container has no `tmux`, start the comparison in the background
+instead; its output is in `runs/run_comparison.log`:
+
+```bash
+nohup bash scripts/run_comparison.sh runs > /dev/null 2>&1 &
+```
 
 ## 1. Prepare the machine (about 20 minutes)
 
@@ -69,7 +137,7 @@ rsync -a data/srn_cars/ <user>@<server>:3d-scene-reconstruction/data/srn_cars/
 ## 2. Start the comparison
 
 Start it inside `tmux`, so that it keeps running when the SSH connection
-drops:
+drops (without `tmux`, see "On a Run:ai cluster" above):
 
 ```bash
 tmux new -s comparison

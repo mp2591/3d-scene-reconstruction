@@ -27,6 +27,14 @@ cd "$(dirname "$0")/.."
 
 log() { echo "$(date '+%F %T') | $*"; }
 
+# A container's own disk (overlay) is deleted when the container stops or restarts: the
+# environment, the data and the runs belong on a persistent volume.
+if [ "$(stat -f -c %T . 2> /dev/null)" = overlayfs ]; then
+    echo "WARNING: $(pwd) is on the container's own disk, which is deleted when the container stops or" >&2
+    echo "restarts. Clone the repository onto a persistent volume instead (docs/running_on_a_gpu_server.md," >&2
+    echo "'On a Run:ai cluster')." >&2
+fi
+
 # ---------------------------------------------------------------- 1. environment
 # A venv interrupted while it was being made lacks a working pip or its activation script: make it again.
 if ! .venv/bin/python -m pip --version > /dev/null 2>&1 || [ ! -r .venv/bin/activate ]; then
@@ -43,6 +51,10 @@ if ! .venv/bin/python -m pip --version > /dev/null 2>&1 || [ ! -r .venv/bin/acti
 fi
 # shellcheck disable=SC1091
 source .venv/bin/activate
+# Pretrained weights downloaded later (ConvNeXt V2 from Hugging Face, the VGG16 of LPIPS) go to
+# weights/ with the repository, as in run_comparison.sh, not to the home folder.
+export HF_HOME="${HF_HOME:-$PWD/weights/huggingface}"
+export TORCH_HOME="${TORCH_HOME:-$PWD/weights/torch}"
 # Running this script again installs nothing new: the software that scores the runs stays the same.
 log "Installing the package and its dependencies"
 # Since PyTorch 2.11 the package on PyPI includes CUDA on ARM machines such as the GH200 too.

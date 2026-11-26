@@ -7,13 +7,14 @@ same data, and an interrupted run ends exactly where an uninterrupted one does.
 
 import hashlib
 import random
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 import scene_recon.training as training_module
 from scene_recon.config import Config, parse_config
-from scene_recon.data import TrainingSchedule, training_batches
+from scene_recon.data import TrainingSchedule, loading, training_batches
 from scene_recon.data.synthetic import SyntheticSpheresDataset
 from scene_recon.training import Trainer
 
@@ -81,6 +82,55 @@ class TestSchedule:
             expected = [schedule.scenes.load_scene(scene, views) for scene, views in schedule.scene_plan(step)]
             assert torch.equal(batch.images, torch.cat([scene.images for scene in expected]))
         batches.close()
+
+
+class TestSharedMemory:
+    """Worker processes hand batches over through /dev/shm, which a container may have little of."""
+
+    @pytest.fixture
+    def linux(self, monkeypatch):
+        monkeypatch.setattr(loading, "_hands_batches_over_in_shared_memory", lambda: True)
+
+    @staticmethod
+    def _free(monkeypatch, free_bytes: int) -> None:
+        monkeypatch.setattr(loading.shutil, "disk_usage", lambda path: SimpleNamespace(free=free_bytes))
+
+    @pytest.mark.parametrize("page", [4096, 65536])  # most processors; the GH200's Grace with 64 KB pages
+    def test_needs_whole_pages_for_the_batches_on_their_way_and_the_locks(self, linux, monkeypatch, tmp_path, page):
+        monkeypatch.setattr(loading.mmap, "PAGESIZE", page)
+        schedule = _schedule(batch_size=3)  # 3 scenes, 4 views of 3x8x8 float32 images, poses, intrinsics, bounds
+        tensor_bytes = [3 * 4 * 3 * 8 * 8 * 4, 3 * 4 * 16 * 4, 3 * 4 * 9 * 4, 3 * 4, 3 * 4]
+        batch_pages = sum(-(-size // page) for size in tensor_bytes)
+        workers = 2
+        batches = workers * loading.BATCHES_AHEAD_PER_WORKER + 1
+        needed = (batches * batch_pages + 3 * workers + 8) * page
+
+        self._free(monkeypatch, needed)
+        loading.check_shared_memory(schedule, start_step=0, num_workers=workers, folder=tmp_path)
+        self._free(monkeypatch, needed - 1)
+        with pytest.raises(RuntimeError, match=r"2 worker processes .* lower training.num_workers"):
+            loading.check_shared_memory(schedule, start_step=0, num_workers=workers, folder=tmp_path)
+
+    def test_a_linux_machine_without_the_folder_is_refused(self, linux, tmp_path):
+        with pytest.raises(RuntimeError, match=r"has no .*missing.* lower training.num_workers"):
+            loading.check_shared_memory(_schedule(), start_step=0, num_workers=2, folder=tmp_path / "missing")
+
+    def test_nothing_is_checked_on_other_systems(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(loading, "_hands_batches_over_in_shared_memory", lambda: False)
+        self._free(monkeypatch, 0)
+
+        loading.check_shared_memory(_schedule(), start_step=0, num_workers=2, folder=tmp_path)
+
+    def test_the_loader_checks_only_when_it_starts_workers(self, monkeypatch):
+        checked = []
+        monkeypatch.setattr(loading, "check_shared_memory", lambda *arguments: checked.append(arguments))
+
+        for num_workers in (0, 2):
+            batches = training_batches(_schedule(), start_step=0, num_workers=num_workers)
+            next(batches)
+            batches.close()
+
+        assert [arguments[2] for arguments in checked] == [2]
 
 
 # ---------------------------------------------------------------- end to end
