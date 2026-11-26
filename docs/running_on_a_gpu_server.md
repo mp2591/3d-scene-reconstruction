@@ -199,6 +199,67 @@ script again:
 rsync -a data/srn_cars/ <user>@<server>:3d-scene-reconstruction/data/srn_cars/
 ```
 
+### Setting up by hand (conda or another environment)
+
+`setup_linux.sh` does all of this; these are the same steps for an
+environment you make yourself. From the repository folder:
+
+1. **Packages.** In the activated environment (for conda:
+   `conda create -n scene-recon python=3.11 -y`, `conda activate scene-recon`):
+
+   ```bash
+   pip install -r requirements.txt
+   python -c "import torch; print(torch.cuda.is_available())"   # must print True
+   ```
+
+   If it prints False:
+   `pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu128`.
+2. **Hiera-T weights** (661 MB), to `weights/hiera_tiny_224_mae_in1k.pth`:
+
+   ```bash
+   mkdir -p weights
+   curl --fail -L -o weights/hiera_tiny_224_mae_in1k.pth https://dl.fbaipublicfiles.com/hiera/mae_hiera_tiny_224.pth
+   ```
+
+   The ConvNeXt V2 weights (Hugging Face) and the VGG16 of LPIPS download
+   themselves on first use.
+3. **ShapeNet-SRN Cars** (2.4 GB, the copy pixelNeRF published), unpacked
+   so that `data/srn_cars/cars_train`, `data/srn_cars/cars_val` and
+   `data/srn_cars/cars_test` exist (the paths in `configs/data/srn_cars.yaml`):
+
+   ```bash
+   mkdir -p data
+   curl --fail -L -o data/srn_cars.zip "https://drive.usercontent.google.com/download?id=19yDsEJjx9zNpOKz9o6AaK-E8ED6taJWU&export=download&confirm=t"
+   python -m zipfile -e data/srn_cars.zip data/srn_cars
+   ls data/srn_cars/cars_train | wc -l   # 2458 scenes; cars_val 352, cars_test 704
+   ```
+
+   If the file is a web page instead of a ZIP archive, Google Drive refused
+   the download: try later, or copy `data/srn_cars/` from another machine.
+4. **Tests** (a few minutes): `python -m pytest -q`.
+
+`run_comparison.sh` needs the `.venv` that `setup_linux.sh` makes. In an
+environment of your own, either run `bash scripts/setup_linux.sh` with that
+environment active (it builds `.venv` on its Python), or run the steps of
+the comparison by hand, each on one line, from the repository folder:
+
+```bash
+P=configs/suites/encoder_lr_pilot.yaml; C=configs/suites/proposal_comparison.yaml; S="experiment.output_dir=runs experiment.device=cuda"
+scene-recon choose-encoder-rates --pilot $P --comparison $C --check-only --set $S   # 0. check (seconds)
+scene-recon run-suite --config $P --set $S                                          # 2. the pilot
+scene-recon choose-encoder-rates --pilot $P --comparison $C --set $S                # 3. choose the rates
+scene-recon run-suite --config $C --set $S evaluation.num_scenes=100                # 4. train, score 100 test scenes
+scene-recon run-suite --config $C --set $S                                          # 5. score every test scene
+```
+
+For another step budget N, add `optimization.decay_steps=N` to every
+`--set`, and `training.num_steps=N` to the comparison's: `--set $S
+optimization.decay_steps=N training.num_steps=N` in steps 4 and 5, and
+`--comparison-set training.num_steps=N` in steps 0 and 3. Every command
+carries on where it stopped when run again. Before step 5, copy
+`runs/proposal_comparison/summary.md` aside: it is the report on the first
+100 test scenes, which step 5 replaces.
+
 ## 2. Start the comparison
 
 Start it inside `tmux`, so that it keeps running when the SSH connection

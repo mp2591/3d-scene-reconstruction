@@ -108,7 +108,9 @@ On a Linux GPU server (for example a GH200), two scripts do all of it:
 `scripts/run_comparison.sh` runs the pilot, chooses the rates and runs the
 comparison, unattended, after estimating how long that takes on the
 machine (so that a larger step budget can be chosen). See
-[`docs/running_on_a_gpu_server.md`](docs/running_on_a_gpu_server.md).
+[`docs/running_on_a_gpu_server.md`](docs/running_on_a_gpu_server.md),
+which also gives the download links of the dataset and the weights, and
+every step by hand for a conda or other environment of your own.
 
 ## Fair comparisons: what the pipeline guarantees
 
