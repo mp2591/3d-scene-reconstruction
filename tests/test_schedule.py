@@ -7,6 +7,9 @@ same data, and an interrupted run ends exactly where an uninterrupted one does.
 
 import hashlib
 import random
+import shutil
+import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -120,6 +123,28 @@ class TestSharedMemory:
         self._free(monkeypatch, 0)
 
         loading.check_shared_memory(_schedule(), start_step=0, num_workers=2, folder=tmp_path)
+
+    @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="workers use /dev/shm only on Linux")
+    def test_a_closed_loader_gives_its_shared_memory_back(self):
+        # The runs of a suite train one after another in one process, so each must find it free again.
+        scenes = SyntheticSpheresDataset(num_scenes=10, num_views=8, image_size=64, seed=0)
+        schedule = TrainingSchedule(scenes, seed=0, batch_size=3, views_per_scene=4, num_source_views=[1, 2, 3])
+        batch_bytes = 3 * 4 * 3 * 64 * 64 * 4  # the images alone
+
+        def used() -> int:
+            return shutil.disk_usage(loading.SHARED_MEMORY).used
+
+        before = used()
+        for _ in range(2):
+            batches = training_batches(schedule, start_step=0, num_workers=2)
+            for _ in range(3):
+                next(batches)
+            time.sleep(1)  # each worker has loaded its next batch by now
+            while_loading = used()
+            batches.close()
+
+            assert while_loading - before >= 2 * batch_bytes
+            assert used() - before < batch_bytes
 
     def test_the_loader_checks_only_when_it_starts_workers(self, monkeypatch):
         checked = []

@@ -79,9 +79,9 @@ Nothing in the configs has to change for that, but these things matter:
 - **Shared memory.** The 4 processes that load batches pass them through
   `/dev/shm`: about 34 MB of it on the GH200, less than the 64 MB a
   container usually gets by default. Training checks this before it starts
-  and, if too little is free, stops and says what to do. Ask for large
-  shared memory when you submit the workload if you can (`--large-shm`,
-  or "Increase shared memory size" in its settings).
+  and, if too little is free, stops and says what to do. That leaves little
+  to spare, so turn on large shared memory when you submit the workload
+  (`--large-shm`, or "Increase shared memory size" in its settings).
 - **Processors and memory.** On the RTX 4090 machine, 4 loading processes
   had a batch ready every 6 ms, against 240 to 310 ms per training step,
   so more processors would not train faster there; 8 should be plenty, and
