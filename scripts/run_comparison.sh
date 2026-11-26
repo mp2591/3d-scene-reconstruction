@@ -10,7 +10,7 @@
 # it, the budget of configs/suites/proposal_comparison.yaml is used (400,000,
 # pixelNeRF's). With it, three settings follow the budget: training.num_steps,
 # optimization.decay_steps (the learning rate falls tenfold over the budget)
-# and training.first_phase_steps (three quarters of it, as pixelNeRF's
+# and training.first_phase_steps (three quarters of it, rounded up, as pixelNeRF's
 # 300,000 of 400,000). The learning-rate schedule is fixed once a run has
 # trained, so the budget can change only until the first comparison run has
 # saved a checkpoint. It is kept in <output>/steps_per_run, so that the same
@@ -132,7 +132,31 @@ if [ "$steps" != "$file_steps" ]; then
     mv "$budget_file.partial" "$budget_file"
 fi
 # The settings that follow the budget (see the top of this file).
-budget=(training.num_steps="$steps" optimization.decay_steps="$steps" training.first_phase_steps=$((steps * 3 / 4)))
+first_phase=$(( (steps * 3 + 3) / 4 ))   # rounded up, so that even a one-step trial has a first phase
+budget=(training.num_steps="$steps" optimization.decay_steps="$steps" training.first_phase_steps="$first_phase")
+
+# A run trained further than the budget (by hand, see "Time to spare at the end" in
+# docs/running_on_a_gpu_server.md) would be scored, but left out of the comparison.
+python - "$output/proposal_comparison" "$steps" <<'EOF'
+import sys
+from pathlib import Path
+
+from scene_recon.checkpoints import read_progress
+
+folder, steps = Path(sys.argv[1]), int(sys.argv[2])
+longer = {}
+for checkpoint in sorted(folder.glob("*/*/checkpoints/last.pt")):  # <run>/<seed>/checkpoints/last.pt
+    progress = read_progress(checkpoint)
+    if progress is not None and progress.step > steps:
+        longer[checkpoint.parent.parent.relative_to(folder).as_posix()] = progress.step
+if longer:
+    runs = ", ".join(f"{run} ({step:,} steps)" for run, step in longer.items())
+    sys.exit(
+        f"Trained past this folder's budget of {steps:,} steps: {runs}. Scored now, they would be left out of the "
+        f"comparison. Train every run to {max(longer.values()):,} steps by hand instead "
+        "(docs/running_on_a_gpu_server.md, 'Time to spare at the end')."
+    )
+EOF
 
 log "Step 0: checking the GPU ($steps training steps per run)"
 warn_if_container_disk . "$output"
@@ -234,5 +258,5 @@ log "Finished. Report: $output/proposal_comparison/summary.md"
 if [ "$steps" != "$suite_steps" ]; then
     echo "The runs trained $steps steps, not the $suite_steps of $comparison. To record the budget in the"
     echo "repository, add to the common block of $comparison: training.num_steps $steps,"
-    echo "training.first_phase_steps $((steps * 3 / 4)) and optimization.decay_steps $steps."
+    echo "training.first_phase_steps $first_phase and optimization.decay_steps $steps."
 fi

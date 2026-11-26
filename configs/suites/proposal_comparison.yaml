@@ -7,8 +7,8 @@
 # steps of 4 scenes and 128 rays, the learning rate 1e-4 for every part of
 # every model, two source views and rays from the box around the car for the
 # first 300,000 steps, then one or two source views and the whole image. No
-# model is tuned: the runs differ in the model alone, as published, with
-# its own pretrained weights.
+# model is tuned: the runs differ in the model alone, each encoder starting
+# from its published pretrained weights.
 # The baselines (pixelNeRF, TransNeRF) are trained here with the same recipe,
 # not taken from their papers.
 #
@@ -21,7 +21,7 @@
 #   3. this file again, scored on every test scene.
 # scripts/run_comparison.sh can train another step budget (its second
 # argument); it then replaces training.num_steps, optimization.decay_steps
-# and training.first_phase_steps (three quarters of the budget).
+# and training.first_phase_steps (three quarters of the budget, rounded up).
 #
 # Keep the outputs outside OneDrive, which would upload every checkpoint
 # (several hundred MB, rewritten every 5,000 steps). If a trial of this file

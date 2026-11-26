@@ -103,10 +103,10 @@ everything that is already done.
 is the comparison from the proposal, ready to run. Every model in it, the
 baselines included, trains with pixelNeRF's recipe for ShapeNet-SRN
 (400,000 steps of 4 scenes × 128 rays, learning rate 1e-4), untuned. It
-compares the models as published, pretrained encoders included: the
-training is the same for all, but ConvNeXt V2 and Hiera come with weights
-pretrained in different ways, so a difference between two encoders is not
-the architecture's alone.
+compares the project's reconstruction models, each encoder starting from
+its published pretrained weights: the training is the same for all, but
+ConvNeXt V2 and Hiera were pretrained in different ways, so a difference
+between two encoders is not the architecture's alone.
 On a Linux GPU server (for example a GH200), two scripts do all of it:
 `scripts/setup_linux.sh` prepares the machine and
 `scripts/run_comparison.sh` runs the comparison, unattended, after

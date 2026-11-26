@@ -135,19 +135,26 @@ class Saving:
     test_first_seconds: float
     """The test split's first fingerprint in a process, which its evaluations and profiles record."""
 
+    test_later_seconds: float
+    """Every later fingerprint of the test split: looks at the size and time of change of every file again."""
+
+
+TEST_CHECKS_PER_RUN = 9
+"""How many times one suite command fingerprints the test split per run, at most: 6 when it
+evaluates and profiles a run, 9 when it evaluates it again on more scenes (counted on the code;
+``tests/test_time_estimate.py`` keeps the number honest)."""
+
 
 def measure_saving(config: Config) -> Saving:
-    """Time the first and a later fingerprint of the run's training split, and the test split's first."""
-    scenes = build_dataset(config, "train")
-    start = time.perf_counter()
-    scenes.fingerprint()
-    first = time.perf_counter() - start
-    start = time.perf_counter()
-    scenes.fingerprint()
-    later = time.perf_counter() - start
-    start = time.perf_counter()
-    build_dataset(config, "test").fingerprint()
-    return Saving(first, later, time.perf_counter() - start)
+    """Time the first and a later fingerprint of the run's training split, and of its test split."""
+    seconds = []
+    for split in ("train", "test"):
+        scenes = build_dataset(config, split)
+        for _ in range(2):
+            start = time.perf_counter()
+            scenes.fingerprint()
+            seconds.append(time.perf_counter() - start)
+    return Saving(*seconds)
 
 
 def _seconds_per_view(evaluator: Evaluator, scenes: SceneDataset, source_views: Sequence[int]) -> float:
@@ -209,12 +216,14 @@ def plan_hours(
     Each suite command (scored on the first scenes, then on all of them) is
     a process of its own, so each pays for the first fingerprint of the
     training split (checked before anything runs, also when training is
-    finished) and of the test split.
+    finished) and of the test split, and checks the test split again up to
+    ``TEST_CHECKS_PER_RUN`` times per run in all.
     """
     datasets = _Datasets()
-    command = (saving.first_seconds if "train" in suite.stages else 0.0) + (
-        saving.test_first_seconds if {"evaluate", "profile"} & set(suite.stages) else 0.0
-    )
+    command = saving.first_seconds if "train" in suite.stages else 0.0
+    if {"evaluate", "profile"} & set(suite.stages):
+        later_checks = TEST_CHECKS_PER_RUN * len(suite.runs) - 1
+        command += saving.test_first_seconds + later_checks * saving.test_later_seconds
     estimates = []
     for steps in budgets:
         first = command
@@ -288,7 +297,10 @@ def format_estimates(
         f"  checking the training data at each checkpoint save: {saving.seconds_per_save:.1f} s "
         f"({saving.first_seconds:.1f} s the first time in each command)"
     )
-    lines.append(f"  checking the test data, once in each command: {saving.test_first_seconds:.1f} s")
+    lines.append(
+        f"  checking the test data: {saving.test_first_seconds:.1f} s the first time in each command, "
+        f"{saving.test_later_seconds:.1f} s each later time (up to {TEST_CHECKS_PER_RUN} times per run)"
+    )
     first = "scored on all test scenes" if first_scenes is None else f"scored on {first_scenes} test scenes"
     columns = ["steps per run", f"trained, {first}", "final report"]
     if first_scenes is None:

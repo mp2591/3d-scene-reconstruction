@@ -20,7 +20,7 @@ from scene_recon.run_files import read_json, write_atomically
 
 logger = logging.getLogger(__name__)
 
-COMPATIBILITY_VERSION = 3
+COMPATIBILITY_VERSION = 4
 """Which version of the code a checkpoint's trained weights belong to.
 
 Raise it by one whenever a code change means that a checkpoint written
@@ -45,6 +45,9 @@ and add a line below.
    ``project`` -> ``adapter``, and every encoder's adapter trains at the base
    learning rate; pixel_aligned_nerf's decoder starts from random numbers of
    its own; the Hiera bridge's depth feature measures distance along the ray.
+4. 2026-11-26: the first phase's object box follows pixelNeRF's foreground
+   rule (every channel differs from the background), not the rule of commit
+   2d488d0 (any channel), so the same config draws other training rays.
 """
 
 

@@ -43,10 +43,11 @@ ShapeNet-SRN (its appendix B.2), set in `configs/base.yaml`: 400,000 steps
 of 4 scenes and 128 rays each, the learning rate 1e-4 for every parameter,
 two source views and rays from the box around the car for the first 300,000
 steps, then one or two source views and rays from the whole image. No model
-is tuned. The comparison is of the models as published: the training is the
-same for all, but each pretrained encoder comes with its own pretraining
-(ConvNeXt V2 with FCMAE, Hiera with MAE, on different schedules), so a
-difference between encoders is not the architecture's alone.
+is tuned. The comparison is of the project's reconstruction models, each
+encoder starting from its published pretrained weights: the training is the
+same for all, but each encoder was pretrained in its own way (ConvNeXt V2
+with FCMAE, Hiera with MAE, on different schedules), so a difference between
+encoders is not the architecture's alone.
 
 Where it differs from pixelNeRF, the same way for every model: the learning
 rate rises over the first 2,000 steps and then falls tenfold over the
@@ -91,7 +92,7 @@ bash scripts/run_comparison.sh runs 200000
   before its first checkpoint starts again from step 0.
 - **What it changes.** For every run: `training.num_steps`,
   `optimization.decay_steps` (the learning rate falls tenfold over the
-  budget) and `training.first_phase_steps` (three quarters of the budget,
+  budget) and `training.first_phase_steps` (three quarters of the budget, rounded up,
   as pixelNeRF's 300,000 of 400,000). The budget is kept in
   `runs/steps_per_run`, so the same command without a number carries on
   with it after a restart.

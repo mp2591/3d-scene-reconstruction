@@ -642,8 +642,9 @@ def _write_markdown(
     if interim:
         lines += [
             "",
-            "\\* Interim: evaluated before the requested training finished. Shown for information only; left out "
-            "of best values, figures and paired comparisons:",
+            "\\* Interim: evaluated at another step than the requested number of training steps. Shown for "
+            "information only; left out of best values, quality figures and paired comparisons (the training "
+            "curves show everything that was trained):",
             "",
             *[f"- **{key}**: {reason}" for key, reason in interim],
         ]
@@ -1028,6 +1029,13 @@ def _write_figures(results: list[GroupResult], plots_dir: Path, multiple_seeds: 
             title = f"Renders with {_views(count)}"
             figures.append((f"{title} (first seed of each run)" if multiple_seeds else title, path))
 
+    # A figure of an earlier report that this one has no data for (e.g. its runs are interim now) would
+    # otherwise stay in the folder, and in any copy of it.
+    written = {path for _, path in figures}
+    own = [plots_dir / name for name in ("metrics_vs_source_views.png", "quality_vs_speed.png", "training_curves.png")]
+    for stale in [*own, *plots_dir.glob("renders_*_source_views.png")]:
+        if stale not in written:
+            stale.unlink(missing_ok=True)
     return figures
 
 

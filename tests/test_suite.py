@@ -711,6 +711,16 @@ def test_a_run_trained_past_the_requested_steps_is_not_compared(tmp_path: Path):
     assert "- **wide**: evaluated at step 6, past the 4 training steps requested" in report
 
 
+def test_figures_of_an_earlier_report_are_not_left_behind(tmp_path: Path):
+    run_suite(load_suite(_write_suite(tmp_path, TWO_RUNS), overrides=["training.num_steps=6"]))
+    assert len(list((tmp_path / "runs" / "test_suite" / "plots").iterdir())) > 1
+
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))  # 4 steps: both runs are past it now, so neither is scored
+    run_suite(suite)
+
+    assert {path.name for path in (suite.directory / "plots").iterdir()} == {"training_curves.png"}
+
+
 def test_an_unfinished_candidate_is_listed_as_not_compared(tmp_path: Path, monkeypatch):
     runs = {**TWO_RUNS, "third": {"model": {"decoder": {"hidden_width": 24}}}}
     run_suite(load_suite(_write_suite(tmp_path, runs)))
