@@ -97,7 +97,13 @@ def measure_speed(config: Config) -> Speed:
     """
     with tempfile.TemporaryDirectory() as folder, configured_float32_matmul_precision(config):
         raw = config.raw
-        trainer = Trainer(parse_config({**raw, "experiment": {**raw["experiment"], "output_dir": folder}}))
+        training = dict(raw["training"])
+        if training["first_phase_steps"] > 0:
+            # Every timed step in the first phase, whose two source views cost the most.
+            training["first_phase_steps"] = max(training["first_phase_steps"], WARMUP_STEPS + TIMED_STEPS)
+        trainer = Trainer(
+            parse_config({**raw, "experiment": {**raw["experiment"], "output_dir": folder}, "training": training})
+        )
         try:
             seconds_per_step = trainer.seconds_per_step(WARMUP_STEPS, TIMED_STEPS)
             scenes = build_dataset(config, "test")
@@ -126,16 +132,22 @@ class Saving:
     seconds_per_save: float
     """Every later save: looks at the size and time of change of every file again."""
 
+    test_first_seconds: float
+    """The test split's first fingerprint in a process, which its evaluations and profiles record."""
+
 
 def measure_saving(config: Config) -> Saving:
-    """Time the first and a later fingerprint of the run's training split, on the volume it is on."""
+    """Time the first and a later fingerprint of the run's training split, and the test split's first."""
     scenes = build_dataset(config, "train")
     start = time.perf_counter()
     scenes.fingerprint()
     first = time.perf_counter() - start
     start = time.perf_counter()
     scenes.fingerprint()
-    return Saving(first, time.perf_counter() - start)
+    later = time.perf_counter() - start
+    start = time.perf_counter()
+    build_dataset(config, "test").fingerprint()
+    return Saving(first, later, time.perf_counter() - start)
 
 
 def _seconds_per_view(evaluator: Evaluator, scenes: SceneDataset, source_views: Sequence[int]) -> float:
@@ -194,14 +206,19 @@ def plan_hours(
 
     Every run trains from step 0. Validation is timed as the evaluation
     protocol with the same source views, profiling as the first protocol.
-    The suite runs in one process, so it pays for one first fingerprint of
-    the training data.
+    Each suite command (scored on the first scenes, then on all of them) is
+    a process of its own, so each pays for the first fingerprint of the
+    training split (checked before anything runs, also when training is
+    finished) and of the test split.
     """
     datasets = _Datasets()
+    command = (saving.first_seconds if "train" in suite.stages else 0.0) + (
+        saving.test_first_seconds if {"evaluate", "profile"} & set(suite.stages) else 0.0
+    )
     estimates = []
     for steps in budgets:
-        first = saving.first_seconds if "train" in suite.stages else 0.0
-        later = 0.0
+        first = command
+        later = command if first_scenes is not None and "evaluate" in suite.stages else 0.0
         for key, config in suite.runs.items():
             config = _with_steps(config, steps)
             first += _run_seconds(config, speeds[key], saving, 0, suite.stages, first_scenes, datasets)
@@ -269,8 +286,9 @@ def format_estimates(
         lines.append(f"  {key}: {speed.seconds_per_step:.3f} s per training step; scoring a view {scoring}")
     lines.append(
         f"  checking the training data at each checkpoint save: {saving.seconds_per_save:.1f} s "
-        f"({saving.first_seconds:.1f} s the first time)"
+        f"({saving.first_seconds:.1f} s the first time in each command)"
     )
+    lines.append(f"  checking the test data, once in each command: {saving.test_first_seconds:.1f} s")
     first = "scored on all test scenes" if first_scenes is None else f"scored on {first_scenes} test scenes"
     columns = ["steps per run", f"trained, {first}", "final report"]
     if first_scenes is None:

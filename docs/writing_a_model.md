@@ -90,7 +90,8 @@ the adapter starts from random values, so it keeps the base learning rate.
 An encoder trained from scratch, such as a U-Net, needs no override.
 
 For layer-wise learning-rate decay, return one group per encoder stage, named
-`encoder.stage0`, `encoder.stage1`, and so on, each with its own `lr_scale`.
+`encoder.stage0`, `encoder.stage1`, and so on, each with its own `lr_scale`
+(not in the comparison, where every group keeps `lr_scale` 1).
 An override for `encoder` applies to all of them, and `lr_scale` multiplies
 the result.
 

@@ -21,7 +21,7 @@ def sample_training_rays(
 
     Rays are drawn uniformly from all pixels of all given views, or, with
     ``object_box_background``, uniformly from the smallest box around each
-    view's object: the pixels whose colour is not that background colour.
+    view's object (see ``object_boxes``).
 
     Args:
         views: B scenes with N views each.
@@ -62,12 +62,17 @@ def sample_training_rays(
     return RayBundle(origins, directions, views.near, views.far), target_rgb
 
 
-OBJECT_TOLERANCE = 1.5 / 255
-"""How far from the background colour a pixel must be to count as the object: more than one 8-bit level."""
+OBJECT_TOLERANCE = 0.5 / 255
+"""Half an 8-bit level: a channel at least one level away from the background's differs from it."""
 
 
 def object_boxes(images: Tensor, background: Sequence[float]) -> tuple[tuple[Tensor, Tensor], tuple[Tensor, Tensor]]:
-    """The smallest box around the object in each image: the pixels that are not the background colour.
+    """The smallest box around the object in each image.
+
+    A pixel belongs to the object if every one of its channels differs from
+    the background colour. This is pixelNeRF's rule for SRN (a pixel is
+    foreground if none of its channels is 255): a pale grey edge pixel
+    counts, a pixel with one channel at the background's value does not.
 
     Args:
         images: Shape (B, N, 3, H, W), values in [0, 1].
@@ -80,7 +85,7 @@ def object_boxes(images: Tensor, background: Sequence[float]) -> tuple[tuple[Ten
     """
     height, width = images.shape[-2:]
     colour = torch.tensor(background, dtype=images.dtype, device=images.device)[:, None, None]
-    is_object = ((images - colour).abs().amax(dim=-3) > OBJECT_TOLERANCE)  # (B, N, H, W)
+    is_object = ((images - colour).abs() > OBJECT_TOLERANCE).all(dim=-3)  # (B, N, H, W)
 
     def first_and_last(has_object: Tensor, size: int) -> tuple[Tensor, Tensor]:
         found = has_object.any(dim=-1)

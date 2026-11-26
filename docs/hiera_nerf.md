@@ -150,15 +150,17 @@ These points were open in the description and are easy to change:
 The pipeline already provides what the description asks of rendering and
 training: alpha compositing along the ray (`rendering/volume.py`), the
 squared-error loss, and end-to-end training. Parameter groups: `encoder` (the
-pretrained backbone), `adapter`, `bridge` and `decoder` (from scratch);
-`configs/hiera_nerf_srn_cars.yaml` gives the encoder a learning rate of 1e-5
-with 2,000 warmup steps and everything else the base rate.
+pretrained backbone), `adapter`, `bridge` and `decoder` (from scratch).
+`configs/hiera_nerf_srn_cars.yaml` trains them all at the base learning
+rate, like the comparison.
 
 Parts of the description that are pipeline settings or not yet in the pipeline:
 
 - **8 to 12 source photos per target view**: set
-  `training.num_source_views: [8, 9, 10, 11, 12]` and `training.views_per_scene`
-  to at least 13 (ShapeNet-SRN training scenes have 50 views). The
+  `training.num_source_views: [8, 9, 10, 11, 12]`, the same for
+  `training.first_phase_num_source_views` (or `training.first_phase_steps: 0`),
+  and `training.views_per_scene` to at least 13 (ShapeNet-SRN training
+  scenes have 50 views). The
   comparison follows pixelNeRF: it trains with 2 source views for the first
   three quarters of the steps, then with 1 or 2, and evaluates with 1 and 2
   (`training` and `evaluation.source_view_sets` in `configs/base.yaml`). Memory in the decoder grows with the

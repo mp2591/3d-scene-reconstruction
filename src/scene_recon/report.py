@@ -23,8 +23,9 @@ damaged results are left out of every table and figure, and listed with the
 reason instead.
 
 A current result is also only *eligible* for the requested experiment if the
-suite requested no training, or its checkpoint has reached the requested
-number of training steps. A result that is current but not eligible, e.g.
+suite requested no training, or its checkpoint has exactly the requested
+number of training steps: not fewer, and not more (a run once trained
+further than the others). A result that is current but not eligible, e.g.
 the evaluation of the old checkpoint after a training extension failed, is
 *interim*: the quality tables still show it, marked, with its actual step,
 but it is left out of best values, figures and paired comparisons.
@@ -375,6 +376,12 @@ def _collect(key: str, config: Config, failed: bool, training_requested: bool) -
         if progress is None:  # a model without trainable parameters, evaluated as built
             result.status = "evaluated (model as built)"
             result.eligible = True
+        elif training_requested and progress.step > config.training.num_steps:
+            result.status = f"evaluated at step {progress.step:,}"
+            result.interim_reason = (
+                f"evaluated at step {progress.step:,}, past the {config.training.num_steps:,} training steps "
+                "requested, so it trained longer than asked"
+            )
         elif finished_training or not training_requested:
             result.status = "evaluated" if finished_training else f"evaluated at step {progress.step:,}"
             result.eligible = True
@@ -835,7 +842,7 @@ def _comparison_section(
     if not comparisons:
         lines.append(
             f"Not available yet: the reference run {reference} (the first run of the suite file) and at least "
-            "one other run need current evaluations of the same seeds, made after their requested training finished."
+            "one other run need current evaluations of the same seeds, made at their requested number of training steps."
         )
         return lines + (["", "Waiting for:", "", *not_compared] if not_compared else [])
 
@@ -877,7 +884,7 @@ def _comparison_section(
             "installation before drawing a conclusion.",
         ]
     if not_compared:
-        lines += ["", "Not compared, because their requested training has not finished:", "", *not_compared]
+        lines += ["", "Not compared, because they are not at their requested number of training steps:", "", *not_compared]
     return lines
 
 

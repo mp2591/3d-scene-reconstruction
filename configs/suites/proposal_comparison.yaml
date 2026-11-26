@@ -7,7 +7,8 @@
 # steps of 4 scenes and 128 rays, the learning rate 1e-4 for every part of
 # every model, two source views and rays from the box around the car for the
 # first 300,000 steps, then one or two source views and the whole image. No
-# model is tuned: what differs between the runs is the architecture alone.
+# model is tuned: the runs differ in the model alone, as published, with
+# its own pretrained weights.
 # The baselines (pixelNeRF, TransNeRF) are trained here with the same recipe,
 # not taken from their papers.
 #

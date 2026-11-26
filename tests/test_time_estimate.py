@@ -29,7 +29,7 @@ from conftest import CONFIG_DIR
 # source views [0] and [0, 6]. The test split has 4 scenes of 12 views.
 STEPS = 4
 ONE_VIEW, TWO_VIEWS = (0,), (0, 6)
-NO_SAVING = Saving(0.0, 0.0)
+NO_SAVING = Saving(0.0, 0.0, 0.0)
 
 
 def _write_suite(tmp_path: Path) -> Path:
@@ -91,13 +91,16 @@ def test_scoring_time_counts_every_validation_and_evaluation(tmp_path: Path):
 
 
 def test_saving_time_counts_every_checkpoint_save(tmp_path: Path):
-    """Each run saves every 2 steps and at the end; the suite checks the data in full once."""
+    """Each run saves every 2 steps and at the end; each command checks both splits in full once."""
     suite = load_suite(_write_suite(tmp_path))
     speeds = _speeds({"small": 0.0, "large": 0.0}, one_view=0.0, two_views=0.0)
 
-    (estimate,) = plan_hours(suite, speeds, Saving(1000.0, 1.0), [STEPS], first_scenes=None)
+    (estimate,) = plan_hours(suite, speeds, Saving(1000.0, 1.0, 500.0), [STEPS], first_scenes=None)
+    assert estimate.first_scores * 3600 == pytest.approx(1000 + 500 + 2 * (2 + 1))  # at steps 2 and 4, and at the end
 
-    assert estimate.first_scores * 3600 == pytest.approx(1000 + 2 * (2 + 1))  # at steps 2 and 4, and at the end
+    # Scored on the first scene, then on all: a second command, which checks both splits again.
+    (estimate,) = plan_hours(suite, speeds, Saving(1000.0, 1.0, 500.0), [STEPS], first_scenes=1)
+    assert estimate.all_scores * 3600 == pytest.approx(2 * (1000 + 500) + 2 * (2 + 1))
 
 
 @pytest.mark.parametrize(
@@ -118,11 +121,12 @@ def test_the_estimates_are_written_as_a_table():
     speeds = {"run/seed_0": Speed(0.25, {ONE_VIEW: 0.5, TWO_VIEWS: 0.75})}
     estimates = [Estimate(100000, 20.0, 30.0), Estimate(200000, 35.0, 45.0)]
 
-    text = format_estimates(speeds, Saving(30.0, 2.5), estimates, 100, "Test GPU")
+    text = format_estimates(speeds, Saving(30.0, 2.5, 40.0), estimates, 100, "Test GPU")
 
     assert "Measured on this machine (Test GPU):" in text
     assert "run/seed_0: 0.250 s per training step; scoring a view 0.50 s with 1 source view, 0.75 s with 2 source views" in text
-    assert "checking the training data at each checkpoint save: 2.5 s (30.0 s the first time)" in text
+    assert "checking the training data at each checkpoint save: 2.5 s (30.0 s the first time in each command)" in text
+    assert "checking the test data, once in each command: 40.0 s" in text
     assert "steps per run | trained, scored on 100 test scenes | final report" in text
     row = next(line for line in text.splitlines() if line.strip().startswith("200,000"))
     assert [cell.strip() for cell in row.split("|")] == ["200,000", "35.0", "45.0"]
@@ -145,7 +149,7 @@ def test_timing_a_run_leaves_its_folder_alone(smoke_config, few_timed_steps):
     assert all(seconds > 0 for seconds in speed.seconds_per_view.values())
     assert not smoke_config.run_dir.exists()
     saving = measure_saving(smoke_config)
-    assert saving.first_seconds >= 0 and saving.seconds_per_save >= 0
+    assert min(saving.first_seconds, saving.seconds_per_save, saving.test_first_seconds) >= 0
 
 
 def test_the_command_prints_an_estimate_for_each_budget(tmp_path: Path, few_timed_steps, capsys):

@@ -698,6 +698,19 @@ def test_a_failed_training_extension_is_not_compared_as_a_finished_experiment(tm
     assert {row["run"] for row in _comparison_rows(extended)} == {"wide"}
 
 
+def test_a_run_trained_past_the_requested_steps_is_not_compared(tmp_path: Path):
+    """The review's scenario: one run was trained longer by hand; the suite asks for the shorter length again."""
+    longer = {**TWO_RUNS, "wide": {**TWO_RUNS["wide"], "training": {"num_steps": 6}}}
+    run_suite(load_suite(_write_suite(tmp_path, longer)))
+
+    suite = load_suite(_write_suite(tmp_path, TWO_RUNS))
+    assert run_suite(suite) == {}
+
+    assert _comparison_rows(suite) == []
+    report = (suite.directory / "summary.md").read_text()
+    assert "- **wide**: evaluated at step 6, past the 4 training steps requested" in report
+
+
 def test_an_unfinished_candidate_is_listed_as_not_compared(tmp_path: Path, monkeypatch):
     runs = {**TWO_RUNS, "third": {"model": {"decoder": {"hidden_width": 24}}}}
     run_suite(load_suite(_write_suite(tmp_path, runs)))
@@ -708,7 +721,7 @@ def test_an_unfinished_candidate_is_listed_as_not_compared(tmp_path: Path, monke
 
     assert {row["run"] for row in _comparison_rows(extended)} == {"third"}
     report = (extended.directory / "summary.md").read_text()
-    assert "Not compared, because their requested training has not finished" in report
+    assert "Not compared, because they are not at their requested number of training steps" in report
     assert "- **wide**: evaluated at step 4, but 6 training steps were requested and training failed" in report
 
 
@@ -745,14 +758,15 @@ def test_the_proposal_comparison_loads_as_shipped():
     suite = load_suite(path)
 
     assert list(suite.grouped_runs()) == ["convnextv2_mlp", "hiera_mlp", "hiera_nerf"]
-    assert list(suite.runs) == ["convnextv2_mlp/seed_0", "hiera_mlp/seed_0", "hiera_nerf/seed_0"]
     text = path.read_text(encoding="utf-8")
+    seeds = yaml.safe_load(text)["seeds"]
+    assert set(suite.runs) == {f"{run}/seed_{seed}" for run in suite.grouped_runs() for seed in seeds}
     # Review F52: uncommenting transnerf_unet alone keeps convnextv2_mlp the reference.
     assert text.index("  # pixelnerf_resnet34:") < text.index("  convnextv2_mlp:") < text.index("  # transnerf_unet:")
 
 
 def test_every_comparison_run_trains_with_the_same_untuned_recipe():
-    """The runs differ in their model alone: the same training, schedule and measurement for all."""
+    """The runs of each seed differ in their model alone: the same training, schedule and measurement for all."""
     comparison = load_suite(CONFIG_DIR / "suites" / "proposal_comparison.yaml")
 
     def everything_but_the_model(config) -> dict:
@@ -762,7 +776,11 @@ def test_every_comparison_run_trains_with_the_same_untuned_recipe():
             if not name.startswith("model.") and name != "experiment.run_name"
         }
 
-    settings = [everything_but_the_model(config) for config in comparison.runs.values()]
-    assert all(each == settings[0] for each in settings), "the comparison runs differ in more than the model"
+    by_seed: dict[int, list[dict]] = {}
+    for config in comparison.runs.values():
+        by_seed.setdefault(config.experiment.seed, []).append(everything_but_the_model(config))
+    for settings in by_seed.values():
+        assert len(settings) == len(comparison.grouped_runs()), "every model has every seed"
+        assert all(each == settings[0] for each in settings), "the comparison runs differ in more than the model"
     # No part of any model learns at a rate of its own.
     assert all(config.optimization.group_overrides == {} for config in comparison.runs.values())

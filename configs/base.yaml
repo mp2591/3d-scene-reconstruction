@@ -41,9 +41,10 @@ renderer:
 # 400,000 steps, 4 scenes and 128 rays per scene per step, a learning rate of
 # 1e-4, two source views and rays from the box around the object for the
 # first 300,000 steps, then one or two source views and rays from the whole
-# image. Every model gets this same recipe, untuned, so that differences come
-# from the architectures. One change, the same for all: a short warmup and a
-# tenfold fall of the learning rate (pixelNeRF keeps it at 1e-4 throughout).
+# image. Every model gets this same recipe, untuned: the runs differ in the
+# model (and its pretrained weights) alone. One change, the same for all: a
+# short warmup and a tenfold fall of the learning rate (pixelNeRF keeps it at
+# 1e-4 throughout).
 optimization:
   optimizer: adam           # adam | adamw
   betas: [0.9, 0.999]
@@ -73,7 +74,8 @@ training:
   # The first phase of training: until this step, the source views are
   # first_phase_num_source_views and, if first_phase_rays_in_object_box,
   # rays come only from the smallest box around each view's object (its
-  # pixels that are not renderer.background_color). 0 = no first phase.
+  # pixels that differ from renderer.background_color in every channel,
+  # pixelNeRF's rule). 0 = no first phase.
   first_phase_steps: 300000
   first_phase_num_source_views: [2]
   first_phase_rays_in_object_box: true

@@ -43,13 +43,18 @@ ShapeNet-SRN (its appendix B.2), set in `configs/base.yaml`: 400,000 steps
 of 4 scenes and 128 rays each, the learning rate 1e-4 for every parameter,
 two source views and rays from the box around the car for the first 300,000
 steps, then one or two source views and rays from the whole image. No model
-is tuned, so what differs between the runs is the architecture alone.
+is tuned. The comparison is of the models as published: the training is the
+same for all, but each pretrained encoder comes with its own pretraining
+(ConvNeXt V2 with FCMAE, Hiera with MAE, on different schedules), so a
+difference between encoders is not the architecture's alone.
 
 Where it differs from pixelNeRF, the same way for every model: the learning
 rate rises over the first 2,000 steps and then falls tenfold over the
 budget (pixelNeRF keeps 1e-4 throughout); each step loads 8 views per scene
 (pixelNeRF draws rays from all 50); and the renderer takes 64 + 32 samples
-per ray (pixelNeRF 64 + 16 + 16 around a depth guess). TransNeRF published
+per ray (pixelNeRF 64 + 16 + 16 around a depth guess); and rays pass
+through pixel centres at i + 0.5, half a pixel from pixelNeRF's
+(`configs/data/srn_cars.yaml`). TransNeRF published
 no results on SRN cars and was built for 8 to 12 source views, so it is
 trained here like every other model, not compared with its paper.
 
@@ -65,10 +70,10 @@ full float32:
 ```text
 Hours from the start of training until:
   steps per run | trained, scored on 100 test scenes | final report
-        100,000 |                               12.8 |         24.0
-        200,000 |                               23.8 |         35.0
-        300,000 |                               34.9 |         46.1
-        400,000 |                               45.9 |         57.1
+        100,000 |                               12.7 |         24.0
+        200,000 |                               23.7 |         35.0
+        300,000 |                               34.7 |         46.0
+        400,000 |                               45.7 |         57.0
 ```
 
 To use another budget, stop the script (`Ctrl-c`) and start it again with
@@ -92,9 +97,10 @@ bash scripts/run_comparison.sh runs 200000
   with it after a restart.
 - **How far to trust it.** It times the training steps at the start of
   training, which always take two source views, where the later steps take
-  one or two, so it errs on the long side. It also times the check of the
-  training data that every checkpoint save makes (it looks at all 248,000
-  files), which on a slow network volume can add hours. It leaves out
+  one or two, so it errs on the long side. It also times the checks of the
+  data: the training data at every checkpoint save (it looks at all 248,000
+  files), and both splits read in full once in each of steps 2 and 3. On a
+  slow network volume these can add hours. It leaves out
   starting each run and writing the checkpoint files. On a shared GPU it
   only knows the sharing at the time it ran. Leave some spare time: if the
   end comes too early, the scores on the first 100 test scenes are already

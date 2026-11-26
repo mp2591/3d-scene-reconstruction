@@ -102,8 +102,11 @@ everything that is already done.
 [`configs/suites/proposal_comparison.yaml`](configs/suites/proposal_comparison.yaml)
 is the comparison from the proposal, ready to run. Every model in it, the
 baselines included, trains with pixelNeRF's recipe for ShapeNet-SRN
-(400,000 steps of 4 scenes × 128 rays, learning rate 1e-4), untuned, so
-that the results differ by architecture alone.
+(400,000 steps of 4 scenes × 128 rays, learning rate 1e-4), untuned. It
+compares the models as published, pretrained encoders included: the
+training is the same for all, but ConvNeXt V2 and Hiera come with weights
+pretrained in different ways, so a difference between two encoders is not
+the architecture's alone.
 On a Linux GPU server (for example a GH200), two scripts do all of it:
 `scripts/setup_linux.sh` prepares the machine and
 `scripts/run_comparison.sh` runs the comparison, unattended, after
@@ -214,7 +217,7 @@ The rules:
 | Rule | Why |
 |---|---|
 | `rgb` has shape (B, R, S, 3) with values in [0, 1]; `density` has shape (B, R, S) and is ≥ 0. Use e.g. `sigmoid` and `relu`/`softplus`. | The renderer integrates them as colour and density. |
-| Work with **any** number of source views V (1 to 3 in the proposal); pool or attend over views instead of concatenating a fixed number. | V changes from step to step (training uses 1 to 3), and evaluation runs once per protocol in `evaluation.source_view_sets`: 1 and 2 views for now, 3 once that protocol is chosen. |
+| Work with **any** number of source views V (1 or 2 in the comparison); pool or attend over views instead of concatenating a fixed number. | V changes from step to step (training uses 2 views, then 1 or 2), and evaluation runs once per protocol in `evaluation.source_view_sets`: 1 and 2 views for now, 3 once that protocol is chosen. |
 | Create new tensors on the input's device: `torch.zeros(..., device=points.device)`. Never call `.cuda()`. | The same code runs on a CPU (tests) and on any GPU. |
 | `level` tells the coarse pass from the fine pass. Use one network for both (ignore `level`) or one each, as pixelNeRF does. | Hierarchical sampling queries the model twice. |
 | Every trainable parameter must affect the output. Delete unused layers (e.g. a backbone's classification head) or freeze them with `requires_grad = False`. | Unused parameters waste optimiser memory and usually signal a wiring mistake; `check-model` reports them. |

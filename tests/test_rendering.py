@@ -424,16 +424,20 @@ def test_the_speed_measurement_reports_gpu_memory_and_refuses_a_full_gpu(smoke_c
     assert model.training and not frozen.training  # every part's mode restored, although the measurement was refused
 
 
-def test_object_boxes_enclose_the_pixels_that_are_not_background():
-    images = torch.ones(1, 2, 3, 8, 10)  # white
+def test_object_boxes_follow_pixelnerfs_foreground_rule():
+    """A pixel is the object's if none of its channels has the background's value (pixelNeRF: none is 255)."""
+    images = torch.ones(1, 3, 3, 8, 10)  # white
     images[0, 0, :, 2:5, 3:7] = 0.2  # an object in rows 2-4, columns 3-6 of the first view
-    images[0, 0, 1, 6, 8] = 1 - 1 / 255  # one 8-bit level off white: still background
+    images[0, 0, 1, 6, 8] = 254 / 255  # one channel off white: background
+    images[0, 0, :, 0, 0] = torch.tensor([1.0, 0.0, 0.0])  # saturated red keeps one channel at 255: background
+    images[0, 1, :, 7, 9] = 254 / 255  # (254, 254, 254): the object's, however pale
 
     (left, right), (top, bottom) = object_boxes(images, [1.0, 1.0, 1.0])
 
     assert (left[0, 0], right[0, 0], top[0, 0], bottom[0, 0]) == (3, 6, 2, 4)
+    assert (left[0, 1], right[0, 1], top[0, 1], bottom[0, 1]) == (9, 9, 7, 7)
     # An image without an object gets the whole image.
-    assert (left[0, 1], right[0, 1], top[0, 1], bottom[0, 1]) == (0, 9, 0, 7)
+    assert (left[0, 2], right[0, 2], top[0, 2], bottom[0, 2]) == (0, 9, 0, 7)
 
 
 def test_rays_in_the_object_box_supervise_only_pixels_inside_it():

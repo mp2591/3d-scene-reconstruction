@@ -111,10 +111,10 @@ recorded_steps=$file_steps
 # A run's checkpoint is <run folder>/checkpoints/last.pt (src/scene_recon/run_files.py).
 checkpoint=$(find "$output/proposal_comparison" -path '*/checkpoints/last.pt' -print -quit 2> /dev/null || true)
 if [ -z "$recorded_steps" ] && [ -n "$checkpoint" ]; then
-    # The record is lost, but the run's saved config says which schedule it trained with.
-    recorded_steps=$(python -c 'import sys, yaml
-print(yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["optimization"]["decay_steps"])' \
-        "$(dirname "$(dirname "$checkpoint")")/config.yaml")
+    # The record is lost, but the checkpoint says which schedule its run trained with.
+    recorded_steps=$(python -c 'import sys; from pathlib import Path
+from scene_recon.checkpoints import read_checkpoint_config
+print(read_checkpoint_config(Path(sys.argv[1]))["optimization"]["decay_steps"])' "$checkpoint")
 fi
 started_steps=${recorded_steps:-$suite_steps}
 steps=${asked_steps:-$started_steps}

@@ -48,6 +48,7 @@ TRAINING_DATA_SETTINGS = (
     "training.first_phase_num_source_views",
     "training.first_phase_rays_in_object_box",
     "training.rays_per_scene",
+    "renderer.background_color",  # decides which pixels the object box holds
 )
 """Settings that together determine the training data of every step."""
 

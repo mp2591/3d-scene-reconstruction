@@ -121,7 +121,8 @@ class TrainingSettings:
 
     first_phase_rays_in_object_box: bool
     """During the first phase, draw rays only from the smallest box around each view's object (its
-    pixels that are not the background colour), as pixelNeRF does: most of an image is empty."""
+    pixels that differ from the background colour in every channel), as pixelNeRF does: most of an
+    image is empty."""
 
     num_workers: int
     log_every: int
