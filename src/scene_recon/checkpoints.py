@@ -20,7 +20,7 @@ from scene_recon.run_files import read_json, write_atomically
 
 logger = logging.getLogger(__name__)
 
-COMPATIBILITY_VERSION = 4
+COMPATIBILITY_VERSION = 5
 """Which version of the code a checkpoint's trained weights belong to.
 
 Raise it by one whenever a code change means that a checkpoint written
@@ -48,6 +48,9 @@ and add a line below.
 4. 2026-11-26: the first phase's object box follows pixelNeRF's foreground
    rule (every channel differs from the background), not the rule of commit
    2d488d0 (any channel), so the same config draws other training rays.
+5. 2026-11-26: the fine pass samples as pixelNeRF does (some of its
+   samples around the coarse depth, the rest from the coarse bins), and a
+   ray's last sample stands for the segment up to far, not an infinite one.
 """
 
 

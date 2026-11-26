@@ -68,7 +68,14 @@ class RendererSettings:
     """Evenly spread samples per ray."""
 
     num_fine_samples: int
-    """Extra samples per ray placed where the coarse pass found content. 0 disables the fine pass."""
+    """Extra samples per ray for the fine pass. 0 disables the fine pass."""
+
+    num_fine_depth_samples: int
+    """Of the fine samples, how many lie close to the depth the coarse pass found
+    (pixelNeRF's ``n_fine_depth``). The rest are drawn where the coarse pass found content."""
+
+    fine_depth_std: float
+    """Standard deviation of those samples around the depth (pixelNeRF's ``depth_std``)."""
 
     background_color: list[float]
     """RGB in [0, 1] seen where a ray hits nothing. ShapeNet-SRN images have a white background."""
@@ -488,6 +495,8 @@ def _parse_group_overrides(overrides: dict[str, Any]) -> dict[str, dict[str, Any
 _VALUE_RULES: dict[str, int] = {
     "renderer.num_coarse_samples": 2,
     "renderer.num_fine_samples": 0,
+    "renderer.num_fine_depth_samples": 0,
+    "renderer.fine_depth_std": 0,
     "renderer.ray_chunk_size": 1,
     "optimization.weight_decay": 0,
     "optimization.warmup_steps": 0,
@@ -536,10 +545,10 @@ def _check_values(settings: dict[str, Any]) -> None:
         )
 
     renderer = settings["renderer"]
-    if renderer.num_fine_samples > 0 and renderer.num_coarse_samples < 3:
+    if renderer.num_fine_depth_samples > renderer.num_fine_samples:
         problems.append(
-            "renderer.num_coarse_samples must be at least 3 when the fine pass is enabled "
-            "(fine samples are drawn between coarse samples)."
+            "renderer.num_fine_depth_samples cannot exceed renderer.num_fine_samples, "
+            f"got {renderer.num_fine_depth_samples} of {renderer.num_fine_samples}."
         )
     if len(renderer.background_color) != 3 or not all(0 <= value <= 1 for value in renderer.background_color):
         problems.append("renderer.background_color must be three values between 0 and 1.")

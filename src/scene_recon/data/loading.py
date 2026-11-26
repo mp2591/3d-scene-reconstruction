@@ -24,11 +24,11 @@ from scene_recon.structures import SceneViews
 BATCHES_AHEAD_PER_WORKER = 1
 """Batches each worker process loads before training asks for them (PyTorch's ``prefetch_factor``).
 
-One is enough: a worker loads a batch far faster than the GPU trains on one
-(a batch of SRN cars took 22 ms to load on one core of the RTX 4090
-machine, a training step 240 ms or more), so with several workers the next
-batch is always ready. Fewer batches waiting also take less of the
-shared memory below.
+One is enough with several workers: a batch of SRN cars (4 scenes of 50
+views) took 142 ms to load on one core of the RTX 4090 machine, so 8
+workers have one ready every 27 ms or so, against 110 ms or more per
+training step. Fewer batches waiting also take less of the shared memory
+below.
 """
 
 SHARED_MEMORY = Path("/dev/shm")

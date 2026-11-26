@@ -16,6 +16,7 @@ model:
 renderer:
   num_coarse_samples: 24
   num_fine_samples: 12
+  num_fine_depth_samples: 6
 
 optimization:
   learning_rate: 1.0e-4
@@ -25,6 +26,7 @@ optimization:
 training:
   num_steps: 300
   first_phase_steps: 0      # pixelNeRF's first phase is for long runs
+  views_per_scene: 8        # of the 12 the synthetic scenes have
   rays_per_scene: 128
   num_workers: 0
   log_every: 25

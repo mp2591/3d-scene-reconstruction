@@ -12,12 +12,9 @@
 #   integer       as the original SRN and pixelNeRF code reads them (centres at i);
 #                 shifts the principal point by half a pixel. Matches the original
 #                 rays exactly at the native 128x128 (see srn.py for resized images).
-# half_integer is used: all 3,514 scenes store cx = cy = 64.0 for 128x128
-# images, the exact image centre in the pipeline's convention, where a
-# rendering camera without lens shift has its principal point. Read the
-# original way, the centre would sit half a pixel off. The choice is part of
-# the training data: a run trained with one value must be trained again to
-# change it. See the docstring of src/scene_recon/data/srn.py.
+# integer is used, so that every model sees exactly the rays pixelNeRF casts.
+# The choice is part of the training data: a run trained with one value must
+# be trained again to change it. See the docstring of src/scene_recon/data/srn.py.
 
 data:
   train:
@@ -25,16 +22,16 @@ data:
     split_dir: data/srn_cars/cars_train
     near: 0.8
     far: 1.8
-    pixel_centers: half_integer
+    pixel_centers: integer
   val:
     name: srn
     split_dir: data/srn_cars/cars_val
     near: 0.8
     far: 1.8
-    pixel_centers: half_integer
+    pixel_centers: integer
   test:
     name: srn
     split_dir: data/srn_cars/cars_test
     near: 0.8
     far: 1.8
-    pixel_centers: half_integer
+    pixel_centers: integer

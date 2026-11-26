@@ -14,11 +14,12 @@ from scene_recon.metrics import PSNR
 from scene_recon.models.base import ReconstructionModel
 from scene_recon.rendering import VolumeRenderer, rays_for_full_images, sample_training_rays
 from scene_recon.rendering.rays import object_boxes
-from scene_recon.rendering.sampling import sample_importance_depths, sample_stratified_depths
+from scene_recon.rendering.sampling import sample_around_depth, sample_importance_depths, sample_stratified_depths
 from scene_recon.rendering.volume import composite_along_rays
 from scene_recon.structures import FieldOutput, RayBundle, SceneViews
 
 WHITE = torch.ones(3)
+FAR = torch.tensor([1.8])  # one scene's far distance
 
 
 def _rays(num_scenes: int = 2, num_rays: int = 5) -> RayBundle:
@@ -32,9 +33,12 @@ def _rays(num_scenes: int = 2, num_rays: int = 5) -> RayBundle:
 
 
 def _settings(num_coarse_samples: int, num_fine_samples: int) -> RendererSettings:
+    """Half the fine samples around the coarse depth, as pixelNeRF splits them."""
     return RendererSettings(
         num_coarse_samples=num_coarse_samples,
         num_fine_samples=num_fine_samples,
+        num_fine_depth_samples=num_fine_samples // 2,
+        fine_depth_std=0.01,
         background_color=[1.0, 1.0, 1.0],
         ray_chunk_size=500,
     )
@@ -58,26 +62,49 @@ class TestStratifiedSampling:
 
 
 class TestImportanceSampling:
-    def test_new_samples_concentrate_where_the_weights_are(self):
-        depths = torch.linspace(0.8, 1.8, 11).expand(1, 1, 11)
-        weights = torch.zeros(1, 1, 11)
-        weights[..., 5] = 1.0  # all content at depth 1.3
+    @pytest.mark.parametrize("randomize", [False, True])
+    def test_new_samples_fall_in_the_bin_of_the_weight(self, randomize: bool):
+        generator = torch.Generator().manual_seed(0) if randomize else None
+        weights = torch.zeros(1, 1, 10)
+        weights[..., 5] = 1.0  # all content in the sixth of ten coarse bins
 
-        new_depths = sample_importance_depths(depths, weights, num_samples=64, generator=torch.Generator())
+        new_depths = sample_importance_depths(_rays(1, 1), weights, num_samples=64, generator=generator)
 
         assert new_depths.shape == (1, 1, 64)
         assert (new_depths[..., 1:] >= new_depths[..., :-1]).all()
-        # The weight of sample 5 belongs to the bin between its neighbouring midpoints.
-        assert ((new_depths > 1.25) & (new_depths < 1.35)).float().mean() > 0.95
+        # As in pixelNeRF, the weight belongs to its coarse sample's bin of the
+        # near-far range, 1.3 to 1.4 (not to the bin between midpoints).
+        assert ((new_depths > 1.3) & (new_depths < 1.4)).float().mean() > 0.95
 
     def test_rays_that_hit_nothing_still_get_valid_samples(self):
-        depths = torch.linspace(0.8, 1.8, 11).expand(1, 3, 11)
-        weights = torch.zeros(1, 3, 11)
+        weights = torch.zeros(1, 3, 10)
 
-        new_depths = sample_importance_depths(depths, weights, num_samples=8, generator=None)
+        new_depths = sample_importance_depths(_rays(1, 3), weights, num_samples=8, generator=None)
 
         assert torch.isfinite(new_depths).all()
         assert new_depths.min() >= 0.8 and new_depths.max() <= 1.8
+
+
+class TestSamplingAroundDepth:
+    @pytest.mark.parametrize("randomize", [False, True])
+    def test_samples_lie_close_to_the_depth_and_between_near_and_far(self, randomize: bool):
+        generator = torch.Generator().manual_seed(0) if randomize else None
+        depth = torch.tensor([[1.3, 0.8, 1.8]])  # the last two rays at near and at far
+
+        depths = sample_around_depth(_rays(1, 3), depth, num_samples=16, spread=0.01, generator=generator)
+
+        assert depths.shape == (1, 3, 16)
+        assert (depths[..., 1:] >= depths[..., :-1]).all()
+        assert depths.min() >= 0.8 and depths.max() <= 1.8
+        assert (depths[0, 0] - 1.3).abs().max() < 0.05  # five standard deviations
+
+    def test_without_randomisation_samples_sit_symmetrically_around_the_depth(self):
+        depth = torch.full((1, 1), 1.3)
+
+        depths = sample_around_depth(_rays(1, 1), depth, num_samples=4, spread=0.01, generator=None)
+
+        assert torch.allclose(depths, sample_around_depth(_rays(1, 1), depth, 4, 0.01, None))
+        assert torch.allclose(depths[0, 0] + depths[0, 0].flip(-1), torch.full((4,), 2.6), atol=1e-6)
 
 
 class TestCompositing:
@@ -85,7 +112,7 @@ class TestCompositing:
         depths = torch.linspace(0.8, 1.8, 8).expand(1, 1, 8)
         field = FieldOutput(rgb=torch.rand(1, 1, 8, 3), density=torch.zeros(1, 1, 8))
 
-        output = composite_along_rays(field, depths, WHITE)
+        output = composite_along_rays(field, depths, FAR, WHITE)
 
         assert torch.allclose(output.rgb, torch.ones(1, 1, 3))
         assert torch.allclose(output.opacity, torch.zeros(1, 1))
@@ -97,7 +124,7 @@ class TestCompositing:
         rgb = torch.zeros(1, 1, 11, 3)
         rgb[..., 4, :] = torch.tensor([1.0, 0.0, 0.0])  # the surface is red, the interior black
 
-        output = composite_along_rays(FieldOutput(rgb, density), depths, WHITE)
+        output = composite_along_rays(FieldOutput(rgb, density), depths, FAR, WHITE)
 
         assert torch.allclose(output.rgb, torch.tensor([[[1.0, 0.0, 0.0]]]), atol=1e-4)
         assert torch.allclose(output.depth, torch.tensor([[1.2]]), atol=1e-4)
@@ -107,9 +134,17 @@ class TestCompositing:
         depths = torch.linspace(0.8, 1.8, 16).expand(2, 3, 16)
         field = FieldOutput(rgb=torch.rand(2, 3, 16, 3), density=torch.rand(2, 3, 16) * 20)
 
-        output = composite_along_rays(field, depths, WHITE)
+        output = composite_along_rays(field, depths, torch.full((2,), 1.8), WHITE)
 
         assert (output.opacity <= 1.0 + 1e-5).all()
+
+    def test_the_last_sample_stands_for_the_segment_up_to_far(self):
+        depths = torch.tensor([[[1.6, 1.7]]])
+        field = FieldOutput(rgb=torch.zeros(1, 1, 2, 3), density=torch.tensor([[[0.0, 2.0]]]))
+
+        output = composite_along_rays(field, depths, FAR, WHITE)
+
+        assert output.opacity.item() == pytest.approx(1 - math.exp(-2.0 * 0.1), abs=1e-5)
 
 
 class TestRaySelection:
@@ -195,7 +230,7 @@ def test_a_partly_transparent_medium_matches_the_exact_integral():
     density = torch.where(depths < fog_end, sigma, 0.0)
     field = FieldOutput(rgb=fog_color.expand(1, 1, 2000, 3), density=density)
 
-    output = composite_along_rays(field, depths, WHITE)
+    output = composite_along_rays(field, depths, FAR, WHITE)
 
     expected_opacity = 1 - math.exp(-sigma * (fog_end - 0.8))
     assert output.opacity.item() == pytest.approx(expected_opacity, abs=2e-3)

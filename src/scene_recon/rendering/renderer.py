@@ -10,7 +10,7 @@ from torch import Tensor
 from scene_recon.config import RendererSettings
 from scene_recon.models.base import LEVEL_COARSE, LEVEL_FINE, ReconstructionModel
 from scene_recon.rendering.rays import rays_for_full_images
-from scene_recon.rendering.sampling import sample_importance_depths, sample_stratified_depths
+from scene_recon.rendering.sampling import sample_around_depth, sample_importance_depths, sample_stratified_depths
 from scene_recon.rendering.volume import composite_along_rays
 from scene_recon.structures import RayBundle, RenderOutput, SceneViews
 
@@ -56,12 +56,22 @@ class VolumeRenderer:
         }
 
         if self.settings.num_fine_samples > 0:
-            new_depths = sample_importance_depths(
-                coarse_depths, outputs[LEVEL_COARSE].weights, self.settings.num_fine_samples, generator
-            )
-            # The fine pass reuses the coarse depths, so it never sees less of
-            # the ray than the coarse pass did.
-            fine_depths, _ = torch.sort(torch.cat([coarse_depths, new_depths], dim=-1), dim=-1)
+            # pixelNeRF's fine pass: num_fine_depth_samples of the fine samples
+            # lie close to the depth the coarse pass found, the rest where it
+            # found content. It reuses the coarse depths, so it never sees
+            # less of the ray than the coarse pass did.
+            coarse = outputs[LEVEL_COARSE]
+            num_importance_samples = self.settings.num_fine_samples - self.settings.num_fine_depth_samples
+            depth_sets = [coarse_depths]
+            if num_importance_samples > 0:
+                depth_sets.append(sample_importance_depths(rays, coarse.weights, num_importance_samples, generator))
+            if self.settings.num_fine_depth_samples > 0:
+                depth_sets.append(
+                    sample_around_depth(
+                        rays, coarse.depth, self.settings.num_fine_depth_samples, self.settings.fine_depth_std, generator
+                    )
+                )
+            fine_depths, _ = torch.sort(torch.cat(depth_sets, dim=-1), dim=-1)
             outputs[LEVEL_FINE] = self._render_at_depths(
                 model, scene_encoding, rays, fine_depths, LEVEL_FINE, background_color
             )
@@ -110,7 +120,7 @@ class VolumeRenderer:
         """Query the model at the given depths along each ray and composite the result."""
         points = rays.origins[:, :, None] + depths[..., None] * rays.directions[:, :, None]
         field = model.query_field(scene_encoding, points, rays.directions, level)
-        return composite_along_rays(field, depths, background_color)
+        return composite_along_rays(field, depths, rays.far, background_color)
 
 
 def final_output(outputs: dict[str, RenderOutput]) -> RenderOutput:

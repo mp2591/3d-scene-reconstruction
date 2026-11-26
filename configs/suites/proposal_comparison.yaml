@@ -8,7 +8,8 @@
 # every model, two source views and rays from the box around the car for the
 # first 300,000 steps, then one or two source views and the whole image. No
 # model is tuned: the runs differ in the model alone, each encoder starting
-# from its published pretrained weights.
+# from its published pretrained weights. Scoring is pixelNeRF's benchmark:
+# every view of every test scene that is not a source view.
 # The baselines (pixelNeRF, TransNeRF) are trained here with the same recipe,
 # not taken from their papers.
 #
@@ -57,13 +58,6 @@ seeds: [0]
 
 common:
   base: [../base.yaml, ../data/srn_cars.yaml]
-  evaluation:
-    # Every test scene (704), but 10 of each scene's views, evenly spread:
-    # hours instead of weeks. The report's confidence intervals are over
-    # scenes. pixelNeRF's benchmark renders every view that is not a source
-    # view (250 with one source view, 249 with two); null does that (it
-    # evaluates again, without retraining).
-    num_target_views: 10
 
 # The first run is the reference: every other run is compared with it scene by scene.
 runs:

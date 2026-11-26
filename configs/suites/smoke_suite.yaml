@@ -33,3 +33,4 @@ runs:
   tiny_without_fine_pass:
     renderer:
       num_fine_samples: 0
+      num_fine_depth_samples: 0

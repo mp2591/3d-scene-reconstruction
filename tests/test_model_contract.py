@@ -126,7 +126,14 @@ def test_a_model_relying_on_ray_order_passes_the_check_and_renders():
 
     check_model_contract(model)
     renderer = VolumeRenderer(
-        RendererSettings(num_coarse_samples=8, num_fine_samples=8, background_color=[1.0, 1.0, 1.0], ray_chunk_size=50)
+        RendererSettings(
+            num_coarse_samples=8,
+            num_fine_samples=8,
+            num_fine_depth_samples=4,
+            fine_depth_std=0.01,
+            background_color=[1.0, 1.0, 1.0],
+            ray_chunk_size=50,
+        )
     )
     views = SyntheticSpheresDataset(num_scenes=1, num_views=2, image_size=8, seed=0).load_scene(0)
     renderer.render_images(model, None, views)  # the real rendering path must accept it too

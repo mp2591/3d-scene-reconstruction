@@ -23,11 +23,14 @@ flowchart LR
 |---|---|---|
 | 0 | Checks that PyTorch can use the GPU; prints what the machine gives the runs | seconds |
 | 1 | A 50-step trial of every run with every stage, in `runs/trial`, so that a problem with the machine shows up early; then, once, an estimate of how long the rest takes on this machine (see "Choosing the step budget") | 15 min |
-| 2 | The comparison: training every run to the step budget (400,000 unless you choose another), scores on the first 100 test scenes, speed | 46 h |
-| 3 | Scores on all 704 test scenes, 10 views each | 11 h |
+| 2 | The comparison: training every run to the step budget (400,000 unless you choose another), scores on the first 100 test scenes, speed | 91 h |
+| 3 | Scores on all 704 test scenes, every view that is not a source view | 280 h |
 
-About 57 hours in all: the estimate's figures on an RTX 4090 in full
-float32 (`experiment.float32_matmul_precision=highest`). A GH200
+About 371 hours in all: the estimate's figures on an RTX 4090 in full
+float32 (`experiment.float32_matmul_precision=highest`). Scoring takes most
+of it: pixelNeRF's benchmark renders about 350,000 views per model, 0.7 to
+1.3 s each on the RTX 4090, 40 hours for the first 100 test scenes of the
+three models. A GH200
 should be faster: `float32_matmul_precision: high` in `configs/base.yaml`
 lets its tensor cores compute the matrix products in TensorFloat-32. (On the
 RTX 4090 itself, a short test with it rendered 20 to 35% more frames per
@@ -49,13 +52,16 @@ same for all, but each encoder was pretrained in its own way (ConvNeXt V2
 with FCMAE, Hiera with MAE, on different schedules), so a difference between
 encoders is not the architecture's alone.
 
-Where it differs from pixelNeRF, the same way for every model: the learning
-rate rises over the first 2,000 steps and then falls tenfold over the
-budget (pixelNeRF keeps 1e-4 throughout); each step loads 8 views per scene
-(pixelNeRF draws rays from all 50); and the renderer takes 64 + 32 samples
-per ray (pixelNeRF 64 + 16 + 16 around a depth guess); and rays pass
-through pixel centres at i + 0.5, half a pixel from pixelNeRF's
-(`configs/data/srn_cars.yaml`). TransNeRF published
+Everything else follows pixelNeRF's code too: each step draws its rays
+from all 50 views of a car, the rays pass through pixelNeRF's pixel centres,
+each ray takes 64 samples and then 32 more, 16 of them around the depth the
+first 64 found, and the scores cover every view of every test scene that is
+not a source view (250 or 249 per scene). Where it differs, the same way for
+every model: the learning rate rises over the first 2,000 steps and then
+falls tenfold over the budget (pixelNeRF keeps 1e-4 throughout), and
+evaluation places the samples along a ray at fixed positions, where
+pixelNeRF draws them at random, so that the scores can be reproduced.
+TransNeRF published
 no results on SRN cars and was built for 8 to 12 source views, so it is
 trained here like every other model, not compared with its paper.
 
@@ -71,10 +77,10 @@ full float32:
 ```text
 Hours from the start of training until:
   steps per run | trained, scored on 100 test scenes | final report
-        100,000 |                               12.7 |         24.0
-        200,000 |                               23.7 |         35.0
-        300,000 |                               34.7 |         46.0
-        400,000 |                               45.7 |         57.0
+        100,000 |                               52.6 |        332.7
+        200,000 |                               65.3 |        345.4
+        300,000 |                               78.0 |        358.1
+        400,000 |                               90.7 |        370.8
 ```
 
 To use another budget, stop the script (`Ctrl-c`) and start it again with
@@ -155,17 +161,17 @@ Nothing in the configs has to change for that, but these things matter:
   training hours stay a mix. The copy of the report on the first 100 test
   scenes keeps the speeds measured before the change; its quality scores
   stay valid.
-- **Shared memory.** The 4 processes that load batches pass them through
-  `/dev/shm`: about 34 MB of it on the GH200, less than the 64 MB a
-  container usually gets by default. Training checks this before it starts
-  and, if too little is free, stops and says what to do. That leaves little
-  to spare, so turn on large shared memory when you submit the workload
-  (`--large-shm`, or "Increase shared memory size" in its settings).
-- **Processors and memory.** On the RTX 4090 machine, 4 loading processes
-  had a batch ready every 6 ms, against 240 to 310 ms per training step,
-  so more processors would not train faster there; 8 should be plenty, and
-  48 do no harm. The workload's main memory has a limit of its own; leave
-  it generous. Step 0 of `run_comparison.sh` prints the GPU memory,
+- **Shared memory.** The 8 processes that load batches pass them through
+  `/dev/shm`: about 360 MB of it on the GH200, far more than the 64 MB a
+  container usually gets by default. So turn on large shared memory when
+  you submit the workload (`--large-shm`, or "Increase shared memory size"
+  in its settings). Training checks this before it starts and, if too
+  little is free, stops and says what to do.
+- **Processors and memory.** Each step loads 4 cars of 50 views. On the
+  RTX 4090 machine one process took 142 ms to load them; 8 loading
+  processes had a batch ready every 27 ms, against 110 to 150 ms per
+  training step. Give the workload at least 10 processors; 48 do no harm.
+  The workload's main memory has a limit of its own; leave it generous. Step 0 of `run_comparison.sh` prints the GPU memory,
   processors and shared memory the container has.
 - **Restarts.** Run:ai may stop a workload, for example one that runs
   beyond its project's quota. Once it runs again, start the same command:
@@ -333,7 +339,11 @@ rsync -a --exclude checkpoints <user>@<server>:3d-scene-reconstruction/runs/ gpu
   same command again: finished work is kept.
 - **Not enough time left.** Every run has scores on 100 test scenes after
   step 2. Step 3 may be stopped (`Ctrl-c`) and those used instead; they are
-  kept in `runs/proposal_comparison_first_100_test_scenes/`. Once that folder
+  kept in `runs/proposal_comparison_first_100_test_scenes/`. Scoring
+  settings never need training again: fewer views per scene
+  (`--set evaluation.num_target_views=10`, evenly spread) score all 704
+  scenes in a fraction of the time, though no longer by pixelNeRF's
+  protocol. Once that folder
   exists, step 2 is not run again; after changing the comparison (another
   model, another seed), delete it to have step 2 run again.
 - **Time to spare at the end.** The step budget is best chosen at the

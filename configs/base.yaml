@@ -23,9 +23,15 @@ experiment:
 loss:
   name: mse                 # Photometric MSE on the coarse and the fine render.
 
+# Samples per ray as in pixelNeRF: 64, one in each of 64 equal bins between
+# near and far, then 32 more for the fine pass. Of those 32, 16 lie close to
+# the depth the coarse pass found (spread normally with fine_depth_std); the
+# other 16 pick coarse bins in proportion to their rendering weight.
 renderer:
-  num_coarse_samples: 64    # Evenly spread samples per ray.
-  num_fine_samples: 32      # Extra samples placed where the coarse pass found content. 0 = no fine pass.
+  num_coarse_samples: 64
+  num_fine_samples: 32      # 0 = no fine pass.
+  num_fine_depth_samples: 16
+  fine_depth_std: 0.01
   background_color: [1.0, 1.0, 1.0]   # ShapeNet-SRN renders have a white background.
   # Rays rendered at once for full images (evaluation, profiling). The same
   # for every run of a suite, because rendering speed depends on it. Memory
@@ -68,8 +74,8 @@ training:
   batch_size: 4             # Scenes per step.
   rays_per_scene: 128       # batch_size * rays_per_scene = 512 rays per step, as in pixelNeRF.
   # Views loaded per scene per step; sources and supervised rays come from
-  # these. (pixelNeRF draws rays from all 50 views of a scene.)
-  views_per_scene: 8
+  # these. 50 = every view of an SRN Cars training scene, as in pixelNeRF.
+  views_per_scene: 50
   num_source_views: [1, 2]  # One of these is picked at random each step.
   # The first phase of training: until this step, the source views are
   # first_phase_num_source_views and, if first_phase_rays_in_object_box,
@@ -80,12 +86,13 @@ training:
   first_phase_num_source_views: [2]
   first_phase_rays_in_object_box: true
   # Processes that load batches while the GPU trains. On the RTX 4090
-  # machine, with 4, a batch of SRN cars was ready every 6 ms, against 240 to
-  # 310 ms per training step, so more would not train faster there. 0 = load
-  # in the training process. The workers pass batches through /dev/shm, which
-  # is checked before training starts. Changing it never changes what is
+  # machine, one process took 142 ms to load a batch of SRN cars (4 scenes of
+  # 50 views); with 4 a batch was ready every 49 ms, with 8 every 27 ms,
+  # against 110 to 150 ms per training step in full float32. 0 = load in the
+  # training process. The workers pass batches through /dev/shm, which is
+  # checked before training starts. Changing it never changes what is
   # trained.
-  num_workers: 4
+  num_workers: 8
   log_every: 100
   validate_every: 5000
   checkpoint_every: 5000

@@ -118,6 +118,7 @@ def srn_overrides(splits: dict[str, Path], output_dir: Path) -> list[str]:
         "evaluation.metrics=[psnr]",
         "renderer.num_coarse_samples=6",
         "renderer.num_fine_samples=3",
+        "renderer.num_fine_depth_samples=1",
         "profiling.num_frames=1",
         "profiling.num_warmup_frames=0",
     ]

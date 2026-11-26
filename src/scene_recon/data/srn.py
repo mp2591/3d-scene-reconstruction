@@ -34,9 +34,8 @@ which is ``cx * scale + 0.5`` in this pipeline's terms. The two differ by
 resolution. This loader keeps the continuous scaling, which is the
 geometrically consistent one for a resampled image.
 
-To decide between the settings, train the same model briefly with each and
-compare validation quality; the convention that matches the renders gives
-sharper, better-aligned results.
+``configs/data/srn_cars.yaml`` uses ``"integer"``, so that every model is
+trained and scored on exactly the rays pixelNeRF casts.
 
 Fingerprint. ``fingerprint()`` hashes the content of every file the loader
 reads (images, poses, intrinsics), so a dataset replaced in place, even by

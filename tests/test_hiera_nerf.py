@@ -52,6 +52,7 @@ def hiera_config(tmp_path: Path) -> Config:
             "validation.num_target_views=1",
             "renderer.num_coarse_samples=6",
             "renderer.num_fine_samples=3",
+            "renderer.num_fine_depth_samples=1",
         ],
     )
 

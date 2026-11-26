@@ -89,8 +89,8 @@ and all problems are reported at once:
   step, at least one evaluated scene, a positive learning rate, and so on.
   The minimums are listed in `_VALUE_RULES` in
   [`config.py`](../src/scene_recon/config.py).
-* **Samples per ray.** At least 2 coarse samples, and at least 3 when the
-  fine pass is enabled (fine samples are drawn between coarse samples).
+* **Samples per ray.** At least 2 coarse samples, and no more samples around
+  the coarse depth (`num_fine_depth_samples`) than fine samples in all.
 * **View lists.** Source view lists must be non-empty and must not repeat a
   view. Each entry of `evaluation.source_view_sets` must have a different
   number of views: results are labelled and plotted by the number of input

@@ -118,8 +118,8 @@ ShapeNet-SRN stores its poses, so they are used without conversion.
 is at (0.5, 0.5). The original SRN and pixelNeRF code reads the SRN
 intrinsics with pixel centres at integers instead, half a pixel apart; the
 SRN loader's `pixel_centers` setting chooses between the two (see
-[`data/srn.py`](../src/scene_recon/data/srn.py)). Which one matches the
-renders is still to be established on the real data.
+[`data/srn.py`](../src/scene_recon/data/srn.py)). The SRN Cars configs use
+`integer`, so that the rays are exactly pixelNeRF's.
 
 **Rays and depth.** Ray directions have unit length, so a depth is a distance
 along the ray, and `near` and `far` are distances from the camera.
@@ -136,10 +136,20 @@ many equal bins between `near` and `far`. During training the position inside
 each bin is random; during evaluation it is the bin centre, which makes
 renders deterministic.
 
-**Fine pass.** `num_fine_samples` additional depths are drawn where the coarse
-pass placed rendering weight (the hierarchical sampling of NeRF). The model is
-then queried at the union of coarse and fine depths with `level="fine"`. Set
-`num_fine_samples: 0` to disable the pass.
+**Fine pass.** `num_fine_samples` additional depths, chosen as pixelNeRF
+chooses them. `num_fine_depth_samples` of them lie close to the depth the
+coarse pass found, spread normally with standard deviation `fine_depth_std`
+and kept between `near` and `far`; gradients flow back through that depth,
+as in pixelNeRF. The rest pick one of the coarse pass's bins, with a
+probability in proportion to its rendering weight, and lie anywhere inside
+it. During evaluation both use fixed quantiles instead of random numbers. The
+model is then queried at the union of coarse and fine depths with
+`level="fine"`. Set `num_fine_samples: 0` to disable the pass.
+
+**Compositing.** Each sample stands for the ray segment up to the next one,
+and the last for the segment up to `far`, as in pixelNeRF (the original NeRF
+makes the last segment infinite). Rays then show the background behind
+whatever they did not absorb.
 
 **Loss.** Mean squared error between rendered and true colours, summed over
 the coarse and the fine render.
