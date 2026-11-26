@@ -13,7 +13,16 @@ from scene_recon.cli import main
 from scene_recon.pilot import choose_and_continue
 from scene_recon.run_files import RunFiles
 from scene_recon.suite import load_suite, run_suite
-from scene_recon.time_estimate import Estimate, Speed, _views, format_estimates, measure_speed, plan_hours
+from scene_recon.time_estimate import (
+    Estimate,
+    Saving,
+    Speed,
+    _views,
+    format_estimates,
+    measure_saving,
+    measure_speed,
+    plan_hours,
+)
 
 from test_pilot import COMPARISON_STEPS, PILOT_STEPS, _set_scores, _write_comparison, _write_pilot
 
@@ -21,6 +30,7 @@ from test_pilot import COMPARISON_STEPS, PILOT_STEPS, _set_scores, _write_compar
 # every 2 steps on 1 view of 1 scene with source view [0], and scored on 2 views of 2 scenes
 # with source views [0] and [0, 6]. Each test split has 4 scenes of 12 views.
 ONE_VIEW, TWO_VIEWS = (0,), (0, 6)
+NO_SAVING = Saving(0.0, 0.0)
 
 
 def _suites(tmp_path: Path):
@@ -38,7 +48,7 @@ def test_training_time_counts_each_run_from_where_it_starts(tmp_path: Path):
     pilot, comparison = _suites(tmp_path)
     speeds = _speeds({"tiny": 1.0, "untuned": 10.0}, one_view=0.0, two_views=0.0)
 
-    estimates = plan_hours(pilot, comparison, speeds, [COMPARISON_STEPS, 100], first_scenes=None)
+    estimates = plan_hours(pilot, comparison, speeds, NO_SAVING, [COMPARISON_STEPS, 100], first_scenes=None)
 
     pilot_seconds = 2 * PILOT_STEPS * 1.0  # two rates of the tuned run
     assert [estimate.steps for estimate in estimates] == [COMPARISON_STEPS, 100]
@@ -53,7 +63,7 @@ def test_scoring_time_counts_every_validation_and_evaluation(tmp_path: Path):
     pilot, comparison = _suites(tmp_path)
     speeds = _speeds({"tiny": 0.0, "untuned": 0.0}, one_view=1.0, two_views=100.0)
 
-    (estimate,) = plan_hours(pilot, comparison, speeds, [COMPARISON_STEPS], first_scenes=1)
+    (estimate,) = plan_hours(pilot, comparison, speeds, NO_SAVING, [COMPARISON_STEPS], first_scenes=1)
 
     # Each pilot run: 1 validation of 1 view, then 2 scenes x 2 views with each protocol.
     pilot_seconds = 2 * (1 * 1.0 + 4 * 1.0 + 4 * 100.0)
@@ -65,6 +75,19 @@ def test_scoring_time_counts_every_validation_and_evaluation(tmp_path: Path):
     assert estimate.pilot_done * 3600 == pytest.approx(pilot_seconds)
     assert estimate.first_scores * 3600 == pytest.approx(pilot_seconds + first)
     assert estimate.all_scores * 3600 == pytest.approx(pilot_seconds + first + later)
+
+
+def test_saving_time_counts_every_checkpoint_save(tmp_path: Path):
+    """Both toy suites save every 2 steps and at the end; each suite command checks the data in full once."""
+    pilot, comparison = _suites(tmp_path)
+    speeds = _speeds({"tiny": 0.0, "untuned": 0.0}, one_view=0.0, two_views=0.0)
+
+    (estimate,) = plan_hours(pilot, comparison, speeds, Saving(1000.0, 1.0), [COMPARISON_STEPS], first_scenes=None)
+
+    pilot_seconds = 1000 + 2 * (1 + 1)  # each pilot run: at step 2, and at the end
+    comparison_seconds = 1000 + (1 + 1) + (2 + 1)  # the tuned run from step 2: at step 4; the other at 2 and 4
+    assert estimate.pilot_done * 3600 == pytest.approx(pilot_seconds)
+    assert estimate.first_scores * 3600 == pytest.approx(pilot_seconds + comparison_seconds)
 
 
 @pytest.mark.parametrize(
@@ -85,15 +108,16 @@ def test_the_estimates_are_written_as_a_table():
     speeds = {"run/seed_0": Speed(0.25, {ONE_VIEW: 0.5, TWO_VIEWS: 0.75})}
     estimates = [Estimate(100000, 5.0, 20.0, 30.0), Estimate(200000, 5.0, 35.0, 45.0)]
 
-    text = format_estimates(speeds, estimates, 100, "Test GPU")
+    text = format_estimates(speeds, Saving(30.0, 2.5), estimates, 100, "Test GPU")
 
     assert "Measured on this machine (Test GPU):" in text
     assert "run/seed_0: 0.250 s per training step; scoring a view 0.50 s with 1 source view, 0.75 s with 2 source views" in text
+    assert "checking the training data at each checkpoint save: 2.5 s (30.0 s the first time)" in text
     assert "steps per run | pilot done | trained, scored on 100 test scenes | final report" in text
     row = next(line for line in text.splitlines() if line.strip().startswith("200,000"))
     assert [cell.strip() for cell in row.split("|")] == ["200,000", "5.0", "35.0", "45.0"]
     # Scored on every scene at once: no final column.
-    assert "final report" not in format_estimates(speeds, estimates, None, "Test GPU")
+    assert "final report" not in format_estimates(speeds, NO_SAVING, estimates, None, "Test GPU")
 
 
 @pytest.fixture
@@ -110,6 +134,8 @@ def test_timing_a_run_leaves_its_folder_alone(smoke_config, few_timed_steps):
     assert set(speed.seconds_per_view) == {ONE_VIEW, TWO_VIEWS}
     assert all(seconds > 0 for seconds in speed.seconds_per_view.values())
     assert not smoke_config.run_dir.exists()
+    saving = measure_saving(smoke_config)
+    assert saving.first_seconds >= 0 and saving.seconds_per_save >= 0
 
 
 def test_the_command_prints_an_estimate_for_each_budget(tmp_path: Path, few_timed_steps, capsys):

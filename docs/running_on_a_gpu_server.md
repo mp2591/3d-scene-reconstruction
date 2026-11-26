@@ -66,15 +66,20 @@ bash scripts/run_comparison.sh runs 200000
 - **Until when.** The budget can change until the first pilot run saves its
   first checkpoint, 5,000 steps in (`training.checkpoint_every`): about 15
   minutes on the RTX 4090. The pilot trains with the comparison's
-  learning-rate schedule, so after that the script refuses another budget.
-  A pilot run stopped before its first checkpoint starts again from step 0.
+  learning-rate schedule, so after that the script refuses another budget
+  in that output folder; another budget then needs a new output folder,
+  where everything trains from the start. A pilot run stopped before its
+  first checkpoint starts again from step 0.
 - **What it changes.** `training.num_steps` of every comparison run, and
   `optimization.decay_steps` of every pilot and comparison run. The pilot
   still trains 10,000 steps. The budget is kept in `runs/steps_per_run`, so
   the same command without a number carries on with it after a restart.
 - **How far to trust it.** On the RTX 4090 in full float32 it estimated
-  40.4 hours for 100,000 steps, against the 42 of the table above. It leaves
-  out starting each run and saving checkpoints. On a shared GPU it only
+  40.4 hours for 100,000 steps, against the 42 of the table above. It also
+  times the check of the training data that every checkpoint save makes
+  (it looks at all 248,000 files), which on a slow network volume can add
+  hours. It leaves out starting each run and writing the checkpoint files.
+  On a shared GPU it only
   knows the sharing at the time it ran. Leave some spare time: if the end
   comes too early, the scores on the first 100 test scenes are already
   there (see "Not enough time left" below).
@@ -159,6 +164,12 @@ instead; its output is in `runs/run_comparison.log`:
 ```bash
 nohup bash scripts/run_comparison.sh runs > /dev/null 2>&1 &
 ```
+
+Ctrl-c in `tail -f runs/run_comparison.log` stops only `tail`, not the
+comparison. To stop it (for example to choose another step budget), run
+`pkill -f run_comparison.sh; pkill -f scene-recon`, and start again once
+`pgrep -f scene-recon` prints nothing. The script refuses to start while
+another launch, or a training process it started, still uses the folder.
 
 ## 1. Prepare the machine (about 20 minutes)
 

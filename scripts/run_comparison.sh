@@ -71,6 +71,16 @@ trial=(training.num_steps=50 training.validate_every=50 training.checkpoint_ever
        evaluation.num_scenes=2 evaluation.num_target_views=2)
 
 mkdir -p "$output"
+# One launch per output folder at a time: two would train the same runs into the same files.
+# The training processes inherit the lock, so it is held until the last of them has stopped.
+if command -v flock > /dev/null; then
+    exec 9> "$output/.run_comparison.lock"
+    if ! flock -n 9; then
+        echo "Another run_comparison.sh, or a training process it started, is still using $output." >&2
+        echo "Stop it first (see docs/running_on_a_gpu_server.md, 'Start the comparison')." >&2
+        exit 1
+    fi
+fi
 exec > >(tee -a "$output/run_comparison.log") 2>&1
 
 log() { echo "$(date '+%F %T') | $*"; }
@@ -103,17 +113,25 @@ export TORCH_HOME="${TORCH_HOME:-$PWD/weights/torch}"
 budget_file="$output/steps_per_run"
 suite_steps=$(python -c 'import sys; from scene_recon.suite import load_suite
 print(next(iter(load_suite(sys.argv[1]).runs.values())).training.num_steps)' "$comparison")
-recorded_steps=$(cat "$budget_file" 2> /dev/null || true)
-started_steps=${recorded_steps:-$suite_steps}
-steps=${asked_steps:-$started_steps}
+file_steps=$(cat "$budget_file" 2> /dev/null || true)
+if ! [[ $file_steps =~ ^[1-9][0-9]*$ ]]; then file_steps=""; fi  # missing or damaged
+recorded_steps=$file_steps
 # A run's checkpoint is <run folder>/checkpoints/last.pt (src/scene_recon/run_files.py).
 pilot_checkpoint=$(find "$output/encoder_lr_pilot" -path '*/checkpoints/last.pt' -print -quit 2> /dev/null || true)
+if [ -z "$recorded_steps" ] && [ -n "$pilot_checkpoint" ]; then
+    # The record is lost, but the pilot's saved config says which schedule it trained with.
+    recorded_steps=$(python -c 'import sys, yaml
+print(yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["optimization"]["decay_steps"])' \
+        "$(dirname "$(dirname "$pilot_checkpoint")")/config.yaml")
+fi
+started_steps=${recorded_steps:-$suite_steps}
+steps=${asked_steps:-$started_steps}
 if [ -n "$pilot_checkpoint" ] && [ "$steps" != "$started_steps" ]; then
     echo "The pilot has trained with a budget of $started_steps steps per run ($pilot_checkpoint)," >&2
     echo "and its learning-rate schedule cannot change any more. Start again with that budget, or without one:" >&2
     echo "  bash scripts/run_comparison.sh $output" >&2
-    echo "To use $steps steps instead, every pilot and comparison run must train again from the start:" >&2
-    echo "delete $output/encoder_lr_pilot and $output/proposal_comparison first." >&2
+    echo "To use $steps steps instead, start in a new output folder, where everything trains from the start:" >&2
+    echo "  bash scripts/run_comparison.sh ${output%/}_$steps $steps" >&2
     exit 1
 fi
 # The pilot shares the comparison's learning-rate schedule, but trains its own number of steps.
@@ -168,14 +186,20 @@ except Exception as error:
 EOF
 scene-recon choose-encoder-rates --pilot "$pilot" --comparison "$comparison" --check-only \
     --set "${settings[@]}" "${both[@]}" --comparison-set "${comparison_only[@]}"
-echo "$steps" > "$budget_file"  # kept once it has passed the check, e.g. that it is not shorter than the pilot
+# Kept once it has passed the check (e.g. that it is not shorter than the pilot), and written
+# whole or not at all, so that a stop in the middle cannot leave an empty record.
+if [ "$steps" != "$file_steps" ]; then
+    echo "$steps" > "$budget_file.partial"
+    mv "$budget_file.partial" "$budget_file"
+fi
 
 # The trial uses the rates of the comparison file as it was before step 3,
-# so it is not run again once it has passed. Its own short length comes last, so it wins.
+# so it is not run again once it has passed. It trains with the suite file's
+# schedule, not the budget, so that a trial stopped half-way does not stop a change of budget.
 trial_done="$output/trial/passed"
 if [ ! -e "$trial_done" ]; then
     log "Step 1: a short trial of every run in $output/trial"
-    scene-recon run-suite --config "$comparison" --set "${settings[@]}" "${both[@]}" "${comparison_only[@]}" \
+    scene-recon run-suite --config "$comparison" --set "${settings[@]}" \
         experiment.output_dir="$output/trial" "${trial[@]}"
     touch "$trial_done"
 fi

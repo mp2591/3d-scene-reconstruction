@@ -9,9 +9,13 @@ views each evaluation scores. ``scripts/run_comparison.sh`` runs it once,
 after its trial, so that a larger step budget can be chosen before the
 pilot starts.
 
-Left out: starting each run (building the model, loading its weights), the
-first fingerprint of the training data, saving checkpoints, choosing the
-rates, and any other work sharing the GPU.
+It also times the check of the training data that every checkpoint save
+makes (``scene_recon.provenance``): on a slow volume, looking at each of
+the split's files at every save can take hours in all.
+
+Left out: starting each run (building the model, loading its weights),
+writing the checkpoint files, choosing the rates, and any other work
+sharing the GPU.
 """
 
 from __future__ import annotations
@@ -58,9 +62,12 @@ def estimate_time(pilot: Suite, comparison: Suite, budgets: Sequence[int], first
     for key, config in comparison.runs.items():
         logger.info("Timing %s on this machine", key)
         speeds[key] = measure_speed(config)
-    estimates = plan_hours(pilot, comparison, speeds, budgets, first_scenes)
-    device = resolve_device(next(iter(comparison.runs.values())).experiment.device)
-    return format_estimates(speeds, estimates, first_scenes, device_description(device)["name"])
+    first_config = next(iter(comparison.runs.values()))
+    logger.info("Timing the check of the training data that every checkpoint save makes")
+    saving = measure_saving(first_config)
+    estimates = plan_hours(pilot, comparison, speeds, saving, budgets, first_scenes)
+    device = resolve_device(first_config.experiment.device)
+    return format_estimates(speeds, saving, estimates, first_scenes, device_description(device)["name"])
 
 
 # ---------------------------------------------------------------- measuring
@@ -106,6 +113,28 @@ def measure_speed(config: Config) -> Speed:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
     return Speed(seconds_per_step, seconds_per_view)
+
+
+@dataclass(frozen=True)
+class Saving:
+    """The check of the training data that every checkpoint save makes (its fingerprint)."""
+
+    first_seconds: float
+    """The first save in a process: reads and hashes every file of the training split."""
+
+    seconds_per_save: float
+    """Every later save: looks at the size and time of change of every file again."""
+
+
+def measure_saving(config: Config) -> Saving:
+    """Time the first and a later fingerprint of the run's training split, on the volume it is on."""
+    scenes = build_dataset(config, "train")
+    start = time.perf_counter()
+    scenes.fingerprint()
+    first = time.perf_counter() - start
+    start = time.perf_counter()
+    scenes.fingerprint()
+    return Saving(first, time.perf_counter() - start)
 
 
 def _seconds_per_view(evaluator: Evaluator, scenes: SceneDataset, source_views: Sequence[int]) -> float:
@@ -158,6 +187,7 @@ def plan_hours(
     pilot: Suite,
     comparison: Suite,
     speeds: dict[str, Speed],
+    saving: Saving,
     budgets: Sequence[int],
     first_scenes: int | None,
 ) -> list[Estimate]:
@@ -166,25 +196,30 @@ def plan_hours(
     Each pilot run is timed as the comparison run it trains like. A tuned
     comparison run continues from the pilot's last step; any other starts
     from step 0. Validation is timed as the evaluation protocol with the same
-    source views, profiling as the first protocol.
+    source views, profiling as the first protocol. Each suite command (the
+    pilot, then step 4) runs in one process, so each pays for one first
+    fingerprint of the training data.
     """
     datasets = _Datasets()
     tuned = pair_pilot_with_comparison(pilot, comparison)
     starts = {run.key: run.candidates[0].config.training.num_steps for run in tuned}
 
-    pilot_seconds = 0.0
+    pilot_seconds = saving.first_seconds if "train" in pilot.stages else 0.0
     for run in tuned:
         for candidate in run.candidates:
-            pilot_seconds += _run_seconds(candidate.config, speeds[run.key], 0, pilot.stages, None, datasets)
+            pilot_seconds += _run_seconds(candidate.config, speeds[run.key], saving, 0, pilot.stages, None, datasets)
 
     estimates = []
     for steps in budgets:
-        first = later = 0.0
+        first = saving.first_seconds if "train" in comparison.stages else 0.0
+        later = 0.0
         for key, config in comparison.runs.items():
             config = _with_steps(config, steps)
-            first += _run_seconds(config, speeds[key], starts.get(key, 0), comparison.stages, first_scenes, datasets)
+            first += _run_seconds(
+                config, speeds[key], saving, starts.get(key, 0), comparison.stages, first_scenes, datasets
+            )
             if first_scenes is not None and "evaluate" in comparison.stages:
-                later += _run_seconds(config, speeds[key], steps, ["evaluate"], None, datasets)
+                later += _run_seconds(config, speeds[key], saving, steps, ["evaluate"], None, datasets)
         pilot_hours, first_hours, later_hours = (seconds / 3600 for seconds in (pilot_seconds, first, later))
         estimates.append(
             Estimate(steps, pilot_hours, pilot_hours + first_hours, pilot_hours + first_hours + later_hours)
@@ -200,6 +235,7 @@ def _with_steps(config: Config, steps: int) -> Config:
 def _run_seconds(
     config: Config,
     speed: Speed,
+    saving: Saving,
     start: int,
     stages: Sequence[str],
     num_scenes: int | None,
@@ -214,6 +250,9 @@ def _run_seconds(
         scenes = datasets.get(config, "val")
         views = _views(scenes, validation.source_views, validation.num_scenes, validation.num_target_views)
         seconds += validations * views * speed.scoring(validation.source_views)
+        # A save every checkpoint_every steps, and one at the end.
+        saves = training.num_steps // training.checkpoint_every - start // training.checkpoint_every + 1
+        seconds += saves * saving.seconds_per_save
     if "evaluate" in stages:
         evaluation = config.evaluation
         scenes = datasets.get(config, "test")
@@ -234,7 +273,7 @@ def _views(scenes: SceneDataset, source_views: Sequence[int], num_scenes: int | 
 
 
 def format_estimates(
-    speeds: dict[str, Speed], estimates: Sequence[Estimate], first_scenes: int | None, device: str
+    speeds: dict[str, Speed], saving: Saving, estimates: Sequence[Estimate], first_scenes: int | None, device: str
 ) -> str:
     """The measured speeds and the estimates, as lines of plain text."""
     lines = [f"Measured on this machine ({device}):"]
@@ -244,6 +283,10 @@ def format_estimates(
             for views, seconds in speed.seconds_per_view.items()
         )
         lines.append(f"  {key}: {speed.seconds_per_step:.3f} s per training step; scoring a view {scoring}")
+    lines.append(
+        f"  checking the training data at each checkpoint save: {saving.seconds_per_save:.1f} s "
+        f"({saving.first_seconds:.1f} s the first time)"
+    )
     first = "scored on all test scenes" if first_scenes is None else f"scored on {first_scenes} test scenes"
     columns = ["steps per run", "pilot done", f"trained, {first}", "final report"]
     if first_scenes is None:
@@ -256,7 +299,7 @@ def format_estimates(
         lines.append("  " + " | ".join(value.rjust(len(column)) for value, column in zip(values, columns)))
     lines += [
         "",
-        "Not counted: starting each run, the first fingerprint of the training data, saving checkpoints,",
-        "choosing the rates (minutes in all), and other work sharing the GPU.",
+        "Not counted: starting each run, writing the checkpoint files, choosing the rates (minutes in all),",
+        "and other work sharing the GPU.",
     ]
     return "\n".join(lines)
