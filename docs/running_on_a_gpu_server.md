@@ -61,9 +61,8 @@ as pixelNeRF's saved images are, with the samples along its rays drawn at
 random as in pixelNeRF (from numbers fixed by the seed, so that the scores
 can be reproduced). The one difference, the same for every model: the
 learning rate rises over the first 2,000 steps and then falls tenfold over
-the budget (pixelNeRF keeps 1e-4 throughout).
-TransNeRF published
-no results on SRN cars and was built for 8 to 12 source views, so it is
+the budget (pixelNeRF keeps 1e-4 throughout). TransNeRF published no
+results on SRN cars and was built for 8 to 12 source views, so it is
 trained here like every other model, not compared with its paper.
 
 ## Choosing the step budget
@@ -172,8 +171,9 @@ Nothing in the configs has to change for that, but these things matter:
   RTX 4090 machine one process took 142 ms to load them; 8 loading
   processes had a batch ready every 27 ms, against 110 to 150 ms per
   training step. Give the workload at least 10 processors; 48 do no harm.
-  The workload's main memory has a limit of its own; leave it generous. Step 0 of `run_comparison.sh` prints the GPU memory,
-  processors and shared memory the container has.
+  The workload's main memory has a limit of its own; leave it generous.
+  Step 0 of `run_comparison.sh` prints the GPU memory, processors and
+  shared memory the container has.
 - **Restarts.** Run:ai may stop a workload, for example one that runs
   beyond its project's quota. Once it runs again, start the same command:
   finished work is kept and training continues from its last checkpoint
@@ -340,13 +340,13 @@ rsync -a --exclude checkpoints <user>@<server>:3d-scene-reconstruction/runs/ gpu
   same command again: finished work is kept.
 - **Not enough time left.** Every run has scores on 100 test scenes after
   step 2. Step 3 may be stopped (`Ctrl-c`) and those used instead; they are
-  kept in `runs/proposal_comparison_first_100_test_scenes/`. Scoring
-  settings never need training again: fewer views per scene
-  (`--set evaluation.num_target_views=10`, evenly spread) score all 704
-  scenes in a fraction of the time, though no longer by pixelNeRF's
-  protocol. Once that folder
-  exists, step 2 is not run again; after changing the comparison (another
-  model, another seed), delete it to have step 2 run again.
+  kept in `runs/proposal_comparison_first_100_test_scenes/`. Once that
+  folder exists, step 2 is not run again; after changing the comparison
+  (another model, another seed), delete it to have step 2 run again.
+  Scoring settings never need training again: fewer views per scene
+  (`--set evaluation.num_target_views=10`, evenly spread, in step 3 run by
+  hand) score all 704 scenes in a fraction of the time, though no longer
+  by pixelNeRF's protocol.
 - **Time to spare at the end.** The step budget is best chosen at the
   start (see "Choosing the step budget"). After step 3, more training steps
   can still be asked for: run steps 2 and 3 again by hand with

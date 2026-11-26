@@ -21,6 +21,9 @@ metrics, a comparison table and the plots.
 > a few small layers that exist to test the pipeline. It must not be used
 > for reported results.
 
+**To start the training on a GPU machine, follow
+[`START_TRAINING.md`](START_TRAINING.md).**
+
 **Contents:**
 [Installation](#installation) ·
 [Quick start](#quick-start) ·
@@ -445,6 +448,7 @@ scene-recon train --config configs/smoke_test.yaml --set training.batch_size=8 e
 ## Repository layout
 
 ```
+START_TRAINING.md        How to start the full comparison, and what to keep in mind.
 configs/                 Experiment configs (YAML).
   base.yaml              Every pipeline setting, with the values from the proposal.
   data/                  One file per dataset.
