@@ -16,7 +16,7 @@ from scene_recon.report import write_report
 from scene_recon.run_files import RunFiles
 from scene_recon.suite import PreflightError, SuiteReportError, load_suite, run_suite
 
-from conftest import CONFIG_DIR, srn_overrides, write_srn_splits
+from conftest import CONFIG_DIR, srn_overrides, write_srn_scene, write_srn_splits
 
 
 def _write_suite(tmp_path: Path, runs: dict, stages: list[str] | None = None, seeds: list[int] | None = None) -> Path:
@@ -564,9 +564,8 @@ def test_a_finished_run_is_not_reused_after_its_training_data_changed(tmp_path: 
     first = _run_cli_in_new_process(_write_srn_suite(tmp_path / "suite.yaml", {"run_a": {}}), overrides)
     assert first.returncode == 0, first.stderr
 
-    # Change the training data at the same path, as replacing a dataset copy would.
-    intrinsics = splits["train"] / "car_a" / "intrinsics.txt"
-    intrinsics.write_text(intrinsics.read_text().replace("131.25", "262.5"))
+    # Change the training data at the same path, as copying in another dataset would.
+    write_srn_scene(splits["train"] / "car_c", num_views=6, image_size=8)
     runs = {"run_a": {}, "run_b": {"model": {"decoder": {"hidden_width": 32}}}}
     second = _run_cli_in_new_process(_write_srn_suite(tmp_path / "suite.yaml", runs), overrides)
 
