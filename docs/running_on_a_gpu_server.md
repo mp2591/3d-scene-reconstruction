@@ -104,10 +104,7 @@ bash scripts/run_comparison.sh runs 200000
   with it after a restart.
 - **How far to trust it.** It times the training steps at the start of
   training, which always take two source views, where the later steps take
-  one or two, so it errs on the long side. It also times the checks of the
-  data: the training data at every checkpoint save (it looks at all 248,000
-  files), and both splits read in full once in each of steps 2 and 3. On a
-  slow network volume these can add hours. It leaves out
+  one or two, so it errs on the long side. It leaves out
   starting each run and writing the checkpoint files. On a shared GPU it
   only knows the sharing at the time it ran. Leave some spare time: if the
   end comes too early, the scores on the first 100 test scenes are already

@@ -37,15 +37,12 @@ geometrically consistent one for a resampled image.
 ``configs/data/srn_cars.yaml`` uses ``"integer"``, so that every model is
 trained and scored on exactly the rays pixelNeRF casts.
 
-Fingerprint. ``fingerprint()`` hashes the content of every file the loader
-reads (images, poses, intrinsics), so a dataset replaced in place, even by
-files of the same size, is recognised as different data.
+Fingerprint. ``fingerprint()`` records the number of scenes, as for every
+dataset (``SceneDataset.fingerprint``); the files are not hashed.
 """
 
 from __future__ import annotations
 
-import hashlib
-import os
 from pathlib import Path
 from typing import Sequence
 
@@ -124,28 +121,6 @@ class SRNDataset(SceneDataset):
             scene_ids=[scene_dir.name],
         )
 
-    def fingerprint(self) -> dict:
-        """Identifies this split's content: a SHA-256 hash of every file the loader reads.
-
-        Hashing reads the whole split once (a few seconds per gigabyte). The
-        result is reused within a process while no file has changed; see
-        ``_content_digest``.
-        """
-        return {
-            "dataset": "srn",
-            "num_scenes": len(self),
-            "content_sha256": _content_digest(self.split_dir, self._consumed_files()),
-        }
-
-    def _consumed_files(self) -> list[Path]:
-        """Every file ``load_scene`` can read, in a fixed order."""
-        files = []
-        for scene_index, scene_dir in enumerate(self.scene_dirs):
-            files.append(scene_dir / "intrinsics.txt")
-            for image_path in self._image_paths(scene_index):
-                files += [image_path, scene_dir / "pose" / f"{image_path.stem}.txt"]
-        return files
-
     def _image_paths(self, scene_index: int) -> list[Path]:
         return sorted((self.scene_dirs[scene_index] / "rgb").glob("*.png"))
 
@@ -164,42 +139,6 @@ def _read_pose(path: Path) -> Tensor:
 
 # Added to the stored principal point to express it in the pipeline's convention.
 _PRINCIPAL_POINT_SHIFT = {"half_integer": 0.0, "integer": 0.5}
-
-
-# Content digests computed in this process: split directory -> (file snapshot, digest).
-_DIGEST_CACHE: dict[str, tuple[str, str]] = {}
-
-
-def _content_digest(root: Path, files: list[Path]) -> str:
-    """SHA-256 over each file's relative path, size and full content.
-
-    Hashing a large split takes a while, so the digest is kept for the rest of
-    the process together with a snapshot of every file's size, modification
-    time, change time and inode. It is reused only while that snapshot is
-    unchanged; any edit, replacement or added or removed file changes the
-    snapshot (the change time cannot be set back by copying tools), so the
-    content is hashed again. A new process always hashes the content.
-    """
-    stats = [os.stat(path) for path in files]
-    snapshot = hashlib.sha256(
-        "\n".join(
-            f"{path.relative_to(root)}\t{stat.st_size}\t{stat.st_mtime_ns}\t{stat.st_ctime_ns}\t{stat.st_ino}"
-            for path, stat in zip(files, stats)
-        ).encode()
-    ).hexdigest()
-    key = str(root.resolve())
-    cached = _DIGEST_CACHE.get(key)
-    if cached is not None and cached[0] == snapshot:
-        return cached[1]
-
-    digest = hashlib.sha256()
-    for path in files:
-        content = path.read_bytes()
-        # The length before the content keeps the boundaries between files unambiguous.
-        digest.update(f"{path.relative_to(root)}\t{len(content)}\n".encode())
-        digest.update(content)
-    _DIGEST_CACHE[key] = (snapshot, digest.hexdigest())
-    return digest.hexdigest()
 
 
 def _read_intrinsics(path: Path, image_height: int, image_width: int, principal_point_shift: float) -> Tensor:

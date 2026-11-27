@@ -1,5 +1,3 @@
-import subprocess
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -13,7 +11,7 @@ from scene_recon.structures import Cameras
 from scene_recon.data.synthetic import SyntheticSpheresDataset
 from scene_recon.registry import ConfigError
 
-from conftest import write_srn_image, write_srn_scene
+from conftest import write_srn_scene
 
 
 class TestSRNDataset:
@@ -98,62 +96,6 @@ class TestSRNDataset:
     def test_missing_directory_is_a_config_error(self, tmp_path: Path):
         with pytest.raises(ConfigError, match="does not exist"):
             SRNDataset(str(tmp_path / "nowhere"), near=0.8, far=1.8, pixel_centers="half_integer")
-
-
-class TestSRNFingerprint:
-    """A fingerprint must change whenever the data the loader reads changes."""
-
-    @staticmethod
-    def _dataset(root: Path) -> SRNDataset:
-        # A new dataset object each time, as every command builds its own.
-        return SRNDataset(str(root), near=0.8, far=1.8, pixel_centers="half_integer")
-
-    def test_same_size_pose_edit_changes_the_fingerprint(self, tmp_path: Path):
-        write_srn_scene(tmp_path / "scene_a", num_views=2, image_size=8)
-        before = self._dataset(tmp_path).fingerprint()
-        pose = tmp_path / "scene_a" / "pose" / "000001.txt"
-        edited = pose.read_text().replace("1.0", "2.0", 1)  # translation x: 1.0 -> 2.0
-        assert len(edited) == len(pose.read_text())
-        pose.write_text(edited)
-
-        assert self._dataset(tmp_path).fingerprint() != before
-
-    def test_same_size_image_replacement_changes_the_fingerprint(self, tmp_path: Path):
-        write_srn_scene(tmp_path / "scene_a", num_views=2, image_size=8)
-        before = self._dataset(tmp_path).fingerprint()
-        image = tmp_path / "scene_a" / "rgb" / "000000.png"
-        size_before = image.stat().st_size
-        write_srn_image(image, image_size=8, grey_level=255)  # black -> white
-        assert image.stat().st_size == size_before
-
-        assert self._dataset(tmp_path).fingerprint() != before
-
-    def test_intrinsics_edit_is_seen_in_the_same_process_without_clearing_any_cache(self, tmp_path: Path):
-        write_srn_scene(tmp_path / "scene_a", num_views=2, image_size=8, focal=100.0)
-        before = self._dataset(tmp_path).fingerprint()
-        intrinsics = tmp_path / "scene_a" / "intrinsics.txt"
-        intrinsics.write_text(intrinsics.read_text().replace("100.0", "200.0"))
-
-        assert self._dataset(tmp_path).fingerprint() != before
-
-    def test_unchanged_data_gives_the_same_fingerprint_in_a_new_process(self, tmp_path: Path):
-        write_srn_scene(tmp_path / "scene_a", num_views=2, image_size=8)
-        program = (
-            "import sys; from scene_recon.data.srn import SRNDataset; "
-            "print(SRNDataset(sys.argv[1], 0.8, 1.8, 'half_integer').fingerprint()['content_sha256'])"
-        )
-
-        def fingerprint_in_new_process() -> str:
-            return subprocess.run(
-                [sys.executable, "-c", program, str(tmp_path)], capture_output=True, text=True, check=True
-            ).stdout.strip()
-
-        first = fingerprint_in_new_process()
-        assert first == self._dataset(tmp_path).fingerprint()["content_sha256"]
-        pose = tmp_path / "scene_a" / "pose" / "000000.txt"
-        pose.write_text(pose.read_text().replace("1.0", "3.0", 1))
-
-        assert fingerprint_in_new_process() != first
 
 
 class TestSyntheticSpheres:

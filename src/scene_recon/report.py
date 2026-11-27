@@ -816,8 +816,6 @@ def _describe_training_data(group: GroupResult) -> str:
         fingerprint = run.training_data
         if fingerprint is None:
             text = MISSING
-        elif "content_sha256" in fingerprint:
-            text = f"`{fingerprint.get('dataset', '')} {fingerprint['content_sha256'][:12]}`"
         else:
             text = _table_cell(fingerprint)
         if text not in descriptions:
