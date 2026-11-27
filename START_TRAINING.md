@@ -53,7 +53,8 @@ On a Run:ai cluster, when you submit the workload:
       for the three at once; the default 64 MB is too little, and training
       refuses to start.
 - [ ] **At least 30 processors** (each of the three runs uses 9), and
-      generous main memory.
+      generous main memory. The script limits each process to 4 threads
+      (`OMP_NUM_THREADS`), so 48 processors are plenty.
 - [ ] **A fixed GPU share** (for example 0.99) that stays the same until
       the end, with nothing else scheduled on that GPU. The three runs need
       up to about 66 GB together. The speeds are only comparable when every
@@ -73,6 +74,13 @@ says why; run it again after fixing that. If Google Drive refuses the data
 download, copy `data/srn_cars/` from a machine that has it (the command is
 in the docs) and run the script again.
 
+**Already set up on that machine?** Then only fetch the latest code, from
+the repository folder; the environment, data and weights stay:
+
+```bash
+git pull
+```
+
 ## 2. Start the comparison
 
 Inside `tmux`, so that it keeps running when the connection drops:
@@ -89,18 +97,31 @@ Without tmux:
 nohup bash scripts/run_comparison.sh runs 20h > /dev/null 2>&1 &
 ```
 
-`runs` is the output folder; use a new name if `runs` already holds an old
-comparison. Everything is also written to `runs/run_comparison.log`. The 20
-hours count from the first start in that folder (kept in `runs/started_at`),
-also after a restart.
+`runs` is the output folder. **It must be new**: in a folder that holds an
+older comparison, the runs cannot continue, and a folder that already has a
+step budget keeps it and ignores `20h`. If `runs` exists, use another name,
+for example `bash scripts/run_comparison.sh runs20 20h`, and read `runs20`
+for `runs` below. Everything is also written to `runs/run_comparison.log`.
+The 20 hours count from the first start in that folder (kept in
+`runs/started_at`), also after a restart.
 
-## 3. In the first 15 minutes
+## 3. In the first 20 minutes
 
 The script first checks the GPU and prints what the machine gives the runs:
 GPU memory, processors, shared memory. Check these. Then it trains every run
 for 50 steps in `runs/trial`, times the three runs together, prints how long
 the rest takes for each step budget (also kept in `runs/time_estimate.txt`)
-and the budget it chose: "Chosen for 20h: ... steps per run".
+and the budget it chose. Check, before the first runs reach 5,000 steps:
+
+- [ ] The log says "Chosen for 20h: N steps per run", and
+      `runs/steps_per_run` holds that N.
+- [ ] `runs/time_estimate.txt` begins "Measured on this machine (...), 3
+      runs at the same time". If it says "one run at a time", timing the
+      runs together failed (the log says why): the estimate then counts
+      them one after another, and N is smaller than it could be.
+- [ ] A few minutes into training, each run's time per 100 steps in
+      `runs/proposal_comparison/suite.log` is close to 100 times its "s per
+      training step" in `runs/time_estimate.txt`.
 
 To choose the budget yourself instead, stop the script (`Ctrl-c`) and start
 it again with the number of steps:
@@ -120,9 +141,10 @@ that, another budget needs a new output folder.
   PSNR curves so far (2 source views on 4 validation cars, every 5,000
   steps). TensorBoard shows the same live (see the docs).
 - **Progress:** `tail -f runs/proposal_comparison/suite.log` (a line every
-  100 steps per run, with the time and the run's name). If a run's time per 100 steps in `suite.log` is well above 100 times its
-  "s per training step" in `time_estimate.txt` (where the three were timed
-  together), something else is using the GPU and the hours will not hold.
+  100 steps per run, with the time and the run's name). If a run's time
+  per 100 steps there is well above 100 times its "s per training step" in
+  `time_estimate.txt` (where the three were timed together), something
+  else is using the GPU and the hours will not hold.
 - **After a crash, a restart or a stopped workload:** run the same command
   again (same output folder, same container image, volume at the same
   path). Finished work is kept, and training continues from its last

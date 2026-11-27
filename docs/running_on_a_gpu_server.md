@@ -283,6 +283,7 @@ environment active (it builds `.venv` on its Python), or run the steps of
 the comparison by hand, each on one line, from the repository folder:
 
 ```bash
+export OMP_NUM_THREADS=4   # as run_comparison.sh does: see "Processors and memory"
 C=configs/suites/proposal_comparison.yaml; S="experiment.output_dir=runs experiment.device=cuda"
 scene-recon run-suite --config $C --set $S evaluation.num_scenes=100 evaluation.num_target_views=10   # 2. train, score 100 test scenes
 scene-recon run-suite --config $C --set $S                                                         # 3. score every test scene
