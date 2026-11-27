@@ -99,6 +99,9 @@ compared side by side; the suite report does exactly that.
 
 Training time counts optimisation steps and data loading, and excludes
 validation and checkpointing. It accumulates correctly across resumed runs.
+Runs that train at the same time (`parallel_runs` in a suite file) share
+the GPU, so their training time is not their model's speed alone. Rendering
+FPS is measured one run at a time.
 
 ## Conventions
 

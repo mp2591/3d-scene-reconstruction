@@ -25,9 +25,12 @@ until their model files exist.
 **How long.** On an RTX 4090 in full float32: about 91 hours until every
 run is trained and scored on the first 100 test cars, about 368 hours until
 the final report on all 704. Scoring is most of it. Both figures are for
-one model at a time; three at once on a GH200 should take much less. The
-figure printed for your machine about 15 minutes after the start also
-assumes one at a time, so it is an upper bound.
+one model at a time, and so is the figure printed for your machine about 15
+minutes after the start. How much sooner three at once finish has not been
+measured: it depends on how much of the GPU one run leaves idle.
+Three at once finish sooner only if each run trains less than three times
+slower than alone: compare a run's time per 100 steps in `suite.log` with
+100 times its "s per training step" in `time_estimate.txt`.
 
 ## Before you start
 

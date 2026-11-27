@@ -24,13 +24,14 @@ flowchart LR
 | 0 | Checks that PyTorch can use the GPU; prints what the machine gives the runs | seconds |
 | 1 | A 50-step trial of every run with every stage, in `runs/trial`, so that a problem with the machine shows up early; then, once, an estimate of how long the rest takes on this machine (see "Choosing the step budget") | 15 min |
 | 2 | The comparison: training every run to the step budget (400,000 unless you choose another), scores on the first 100 test scenes, speed | 91 h, one run at a time |
-| 3 | Scores on all 704 test scenes, every view that is not a source view | 277 h |
+| 3 | Scores on all 704 test scenes, every view that is not a source view | 277 h, one run at a time |
 
 About 368 hours in all: the estimate's figures on an RTX 4090 in full
 float32 (`experiment.float32_matmul_precision=highest`), one run at a
 time. The comparison trains and scores its three runs at the same time
-(`parallel_runs: 3`), so on a GPU large enough for that it takes less; the
-estimate does not account for this and is an upper bound. Scoring takes most
+(`parallel_runs: 3`). That is faster only where one run alone leaves part
+of the GPU idle; by how much has not been measured. The estimate times one
+run alone. Scoring takes most
 of it: pixelNeRF's benchmark renders about 350,000 views per model, 0.7 to
 1.3 s each on the RTX 4090, 40 hours for the first 100 test scenes of the
 three models. A GH200
@@ -188,7 +189,9 @@ How long the whole comparison takes on this machine is in
 Training then shows it: `runs/proposal_comparison/suite.log` logs every
 100 steps of each run, with the time and the run's name. With the three
 runs sharing the GPU, each trains slower than the estimate, which times one
-run alone; together they should still finish sooner.
+run alone. Three at once finish sooner only if each run trains less than three times
+slower than alone: compare a run's time per 100 steps in `suite.log` with
+100 times its "s per training step" in `time_estimate.txt`.
 
 If the container has no `tmux`, start the comparison in the background
 instead; its output is in `runs/run_comparison.log`:

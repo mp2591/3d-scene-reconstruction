@@ -604,6 +604,11 @@ def _write_markdown(
             f"| {_format_count(group.parameters)} "
             f"| {_format(group.frames_per_second, '{:.2f}')} |"
         )
+    lines += [
+        "",
+        "Runs trained at the same time (`parallel_runs` in the suite file) shared the GPU, so their training "
+        "times are not each model's speed alone. Rendering FPS is measured one run at a time.",
+    ]
 
     left_out = [(run.key, reason) for group in results for run in group.replicates for reason in run.left_out]
     if left_out:
