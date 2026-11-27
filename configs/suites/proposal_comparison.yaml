@@ -1,7 +1,6 @@
 # The comparison of the project proposal, ready to run. Each run is one
-# encoder-decoder combination. All runs are trained on the same data, one
-# after another, with the same recipe, and scored the same way
-# (docs/suites.md).
+# encoder-decoder combination. All runs are trained on the same data, at the
+# same time, with the same recipe, and scored the same way (docs/suites.md).
 #
 # The recipe is pixelNeRF's for ShapeNet-SRN (configs/base.yaml): 400,000
 # steps of 4 scenes and 128 rays, the learning rate 1e-4 for every part of
@@ -55,6 +54,11 @@ stages: [train, evaluate, profile]
 # One seed for now. Listing it keeps every run in <run>/seed_0/, so that more
 # seeds ([0, 1, 2]) can be added later without moving or retraining seed 0.
 seeds: [0]
+# Train and score the three runs at the same time, each in a process of its
+# own. Each needs at most about 22 GB of GPU memory, so three fit on the
+# GH200's 96 GB. Rendering speed is still measured one run at a time, at the
+# end. On a GPU with 24 GB, set this to 1.
+parallel_runs: 3
 
 common:
   base: [../base.yaml, ../data/srn_cars.yaml]

@@ -6,8 +6,10 @@ Run:ai GH200), and what to keep in mind while it runs. Every detail is in
 
 ## What it trains
 
-Three models, one after another, each with pixelNeRF's recipe for
-ShapeNet-SRN Cars (`configs/suites/proposal_comparison.yaml`):
+Three models, trained and scored at the same time on the one GPU, each with
+pixelNeRF's recipe for ShapeNet-SRN Cars
+(`configs/suites/proposal_comparison.yaml`). Their rendering speed is
+measured at the end, one model at a time, with the GPU to itself:
 
 | Run | Encoder | Decoder |
 |---|---|---|
@@ -22,9 +24,10 @@ until their model files exist.
 
 **How long.** On an RTX 4090 in full float32: about 91 hours until every
 run is trained and scored on the first 100 test cars, about 368 hours until
-the final report on all 704. Scoring is most of it. A GH200 should be
-faster. The real figure for your machine is printed about 15 minutes after
-the start.
+the final report on all 704. Scoring is most of it. Both figures are for
+one model at a time; three at once on a GH200 should take much less. The
+figure printed for your machine about 15 minutes after the start also
+assumes one at a time, so it is an upper bound.
 
 ## Before you start
 
@@ -43,12 +46,15 @@ On a Run:ai cluster, when you submit the workload:
       container's own disk and not a temporary `emptyDir`. Everything,
       checkpoints included, lives inside the repository folder.
 - [ ] **Large shared memory.** Turn on `--large-shm` ("Increase shared
-      memory size"). Training needs about 360 MB of `/dev/shm`; the default
-      64 MB is too little, and training refuses to start.
-- [ ] **At least 10 processors**, and generous main memory.
+      memory size"). Each run needs about 360 MB of `/dev/shm`, about 1.1 GB
+      for the three at once; the default 64 MB is too little, and training
+      refuses to start.
+- [ ] **At least 30 processors** (each of the three runs uses 9), and
+      generous main memory.
 - [ ] **A fixed GPU share** (for example 0.99) that stays the same until
-      the end, with nothing else scheduled on that GPU. The speeds and
-      training hours are only comparable when every run had the same GPU.
+      the end, with nothing else scheduled on that GPU. The three runs need
+      up to about 66 GB together. The speeds are only comparable when every
+      run had the same GPU.
 
 ## 1. Prepare the machine (about 20 minutes)
 
@@ -105,8 +111,7 @@ that, another budget needs a new output folder.
 ## While it runs
 
 - **Progress:** `tail -f runs/proposal_comparison/suite.log` (a line every
-  100 steps, with the time). If the first run trains much slower than the
-  estimate, another workload may be sharing the GPU, or the volume is slow.
+  100 steps per run, with the time and the run's name).
 - **Low validation PSNR for most of a run is expected.** Validation uses
   one source view, but training uses two for the first three quarters of
   the steps. It rises once one-view steps begin.

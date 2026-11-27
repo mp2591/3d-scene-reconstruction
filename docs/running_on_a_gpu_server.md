@@ -23,11 +23,14 @@ flowchart LR
 |---|---|---|
 | 0 | Checks that PyTorch can use the GPU; prints what the machine gives the runs | seconds |
 | 1 | A 50-step trial of every run with every stage, in `runs/trial`, so that a problem with the machine shows up early; then, once, an estimate of how long the rest takes on this machine (see "Choosing the step budget") | 15 min |
-| 2 | The comparison: training every run to the step budget (400,000 unless you choose another), scores on the first 100 test scenes, speed | 91 h |
+| 2 | The comparison: training every run to the step budget (400,000 unless you choose another), scores on the first 100 test scenes, speed | 91 h, one run at a time |
 | 3 | Scores on all 704 test scenes, every view that is not a source view | 277 h |
 
 About 368 hours in all: the estimate's figures on an RTX 4090 in full
-float32 (`experiment.float32_matmul_precision=highest`). Scoring takes most
+float32 (`experiment.float32_matmul_precision=highest`), one run at a
+time. The comparison trains and scores its three runs at the same time
+(`parallel_runs: 3`), so on a GPU large enough for that it takes less; the
+estimate does not account for this and is an upper bound. Scoring takes most
 of it: pixelNeRF's benchmark renders about 350,000 views per model, 0.7 to
 1.3 s each on the RTX 4090, 40 hours for the first 100 test scenes of the
 three models. A GH200
@@ -143,13 +146,15 @@ Nothing in the configs has to change for that, but these things matter:
   image's Python, and the report marks each comparison whose evaluations
   were scored with different software.
 - **The GPU share.** A share of 0.99 gets 99% of the GPU's memory, about
-  95 GB of a 96 GB GH200. On an RTX 4090 the runs needed at most 22 GB
-  (PyTorch's peak, while training hiera_nerf); a GH200 should need about
-  the same. A share divides the memory, but not necessarily the computing
+  95 GB of a 96 GB GH200. On an RTX 4090 a run needed at most 22 GB
+  (PyTorch's peak, for hiera_nerf); a GH200 should need about
+  the same, so the three runs that train at once need up to about 66 GB.
+  With less than that, set `parallel_runs` in the suite file to what fits.
+  A share divides the memory, but not necessarily the computing
   time: depending on how the cluster is set up, another workload placed in
   the remaining 1% takes turns on the GPU while both compute. Training then
-  slows down, and the training hours and frame rates that the report
-  compares between models are off for the runs measured meanwhile. Ask the
+  slows down, and the frame rates that the report compares between models
+  are off for the runs measured meanwhile. Ask the
   cluster's administrators whether anything else can be scheduled on that
   GPU. Settle the share before you start and keep it until the end: the
   speeds of a comparison are only comparable when every run was measured
@@ -158,8 +163,9 @@ Nothing in the configs has to change for that, but these things matter:
   training hours stay a mix. The copy of the report on the first 100 test
   scenes keeps the speeds measured before the change; its quality scores
   stay valid.
-- **Shared memory.** The 8 processes that load batches pass them through
-  `/dev/shm`: about 360 MB of it on the GH200, far more than the 64 MB a
+- **Shared memory.** The 8 processes that load a run's batches pass them
+  through `/dev/shm`: about 360 MB per run on the GH200, about 1.1 GB for
+  the three that train at once, far more than the 64 MB a
   container usually gets by default. So turn on large shared memory when
   you submit the workload (`--large-shm`, or "Increase shared memory size"
   in its settings). Training checks this before it starts and, if too
@@ -167,7 +173,8 @@ Nothing in the configs has to change for that, but these things matter:
 - **Processors and memory.** Each step loads 4 cars of 50 views. On the
   RTX 4090 machine one process took 142 ms to load them; 8 loading
   processes had a batch ready every 27 ms, against 110 to 150 ms per
-  training step. Give the workload at least 10 processors; 48 do no harm.
+  training step. Each run uses 9 processors (8 loading, 1 training), so give
+  the workload at least 30 for the three runs at once; 48 do no harm.
   The workload's main memory has a limit of its own; leave it generous.
   Step 0 of `run_comparison.sh` prints the GPU memory, processors and
   shared memory the container has.
@@ -178,10 +185,10 @@ Nothing in the configs has to change for that, but these things matter:
 
 How long the whole comparison takes on this machine is in
 `runs/time_estimate.txt` after step 1 (see "Choosing the step budget").
-Training then confirms it: `runs/proposal_comparison/suite.log` logs every
-100 steps with the time. If the first run trains much slower than the
-estimate said, another workload may be sharing the GPU, or loading from the
-volume is slow.
+Training then shows it: `runs/proposal_comparison/suite.log` logs every
+100 steps of each run, with the time and the run's name. With the three
+runs sharing the GPU, each trains slower than the estimate, which times one
+run alone; together they should still finish sooner.
 
 If the container has no `tmux`, start the comparison in the background
 instead; its output is in `runs/run_comparison.log`:

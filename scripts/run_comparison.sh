@@ -64,7 +64,7 @@ trial=(training.num_steps=50 training.first_phase_steps=25 training.validate_eve
 
 mkdir -p "$output"
 # One launch per output folder at a time: two would train the same runs into the same files.
-# The training processes inherit the lock, so it is held until the last of them has stopped.
+# The suite's main process inherits the lock. Its runs' processes stop within seconds of it.
 if command -v flock > /dev/null; then
     exec 9> "$output/.run_comparison.lock"
     if ! flock -n 9; then
@@ -170,7 +170,7 @@ EOF
 log "Step 0: checking the GPU ($steps training steps per run)"
 warn_if_container_disk . "$output"
 # Also prints what this machine gives the runs. In a container with a share of a GPU (Run:ai)
-# the memory is that share; the runs needed at most 22 GB on an RTX 4090.
+# the memory is that share; a run needed at most 22 GB on an RTX 4090, and three train at once.
 python - <<'EOF'
 import os
 import shutil

@@ -19,7 +19,13 @@ from scene_recon.suite import PreflightError, SuiteReportError, load_suite, run_
 from conftest import CONFIG_DIR, srn_overrides, write_srn_scene, write_srn_splits
 
 
-def _write_suite(tmp_path: Path, runs: dict, stages: list[str] | None = None, seeds: list[int] | None = None) -> Path:
+def _write_suite(
+    tmp_path: Path,
+    runs: dict,
+    stages: list[str] | None = None,
+    seeds: list[int] | None = None,
+    parallel_runs: int | None = None,
+) -> Path:
     """Write a suite file whose runs build on the smoke test, shrunk to a few training steps."""
     content = {
         "suite_name": "test_suite",
@@ -44,6 +50,8 @@ def _write_suite(tmp_path: Path, runs: dict, stages: list[str] | None = None, se
     }
     if seeds is not None:
         content["seeds"] = seeds
+    if parallel_runs is not None:
+        content["parallel_runs"] = parallel_runs
     path = tmp_path / "suite.yaml"
     path.write_text(yaml.safe_dump(content, sort_keys=False))  # keep the runs in the given order
     return path
@@ -506,6 +514,33 @@ def test_invalid_seed_lists_are_rejected(tmp_path: Path, seeds):
         load_suite(_write_suite(tmp_path, TWO_RUNS, seeds=seeds))
 
 
+@pytest.mark.parametrize("parallel_runs", [0, 1.5, True, "2"])
+def test_invalid_numbers_of_parallel_runs_are_rejected(tmp_path: Path, parallel_runs):
+    with pytest.raises(ConfigError, match="'parallel_runs' must be"):
+        load_suite(_write_suite(tmp_path, TWO_RUNS, parallel_runs=parallel_runs))
+
+
+def test_runs_in_parallel_score_as_one_after_another_and_are_profiled_alone(tmp_path: Path):
+    """Each run trains and is scored in a process of its own; speed is measured once all have finished."""
+    scores, suites = {}, {}
+    for parallel_runs in (1, 2):
+        folder = tmp_path / f"parallel_{parallel_runs}"
+        folder.mkdir()
+        suites[parallel_runs] = suite = load_suite(_write_suite(folder, TWO_RUNS, parallel_runs=parallel_runs))
+        assert run_suite(suite) == {}
+        evaluations = {name: json.loads(RunFiles(config.run_dir).evaluation.read_text()) for name, config in suite.runs.items()}
+        scores[parallel_runs] = {
+            name: [(protocol["mean"], protocol["per_scene"]) for protocol in evaluation["protocols"]]
+            for name, evaluation in evaluations.items()
+        }
+
+    assert scores[2] == scores[1]
+    run_files = [RunFiles(config.run_dir) for config in suites[2].runs.values()]
+    last_scored = max(files.evaluation.stat().st_mtime_ns for files in run_files)
+    assert all(files.profile.stat().st_mtime_ns >= last_scored for files in run_files)
+    assert (suites[2].directory / "summary.md").is_file()
+
+
 def test_report_of_a_multi_seed_suite_shows_spread_and_paired_comparisons(tmp_path: Path):
     suite = load_suite(_write_suite(tmp_path, TWO_RUNS, seeds=[0, 1]))
 
@@ -771,6 +806,7 @@ def test_the_proposal_comparison_loads_as_shipped():
     suite = load_suite(path)
 
     assert list(suite.grouped_runs()) == ["convnextv2_mlp", "hiera_mlp", "hiera_nerf"]
+    assert suite.parallel_runs == 3  # all three train and are scored at the same time
     text = path.read_text(encoding="utf-8")
     seeds = yaml.safe_load(text)["seeds"]
     assert set(suite.runs) == {f"{run}/seed_{seed}" for run in suite.grouped_runs() for seed in seeds}

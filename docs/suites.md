@@ -35,7 +35,7 @@ runs:                                  # executed top to bottom
       decoder: {name: pixelnerf_mlp}
 ```
 
-The file has four required keys and one optional key:
+The file has four required keys and two optional keys:
 
 | Key          | Meaning                                                                         |
 |--------------|---------------------------------------------------------------------------------|
@@ -44,6 +44,7 @@ The file has four required keys and one optional key:
 | `common`     | A config fragment shared by every run.                                          |
 | `runs`       | One config fragment per run. The key is the run's name.                         |
 | `seeds`      | Optional. Repeat every run once per seed, e.g. `[0, 1, 2]`; see [Several seeds](#several-seeds). |
+| `parallel_runs` | Optional. How many runs train and are scored at the same time, e.g. `3`. Without it, one after another. |
 
 `common` and each run are ordinary config fragments, written exactly like the
 config files described in [configuration.md](configuration.md). They can use
@@ -98,8 +99,14 @@ move memory to the computer's main memory instead of failing, and the
 measured speed would be several times too low. Each `profile.json` records
 the peak GPU memory of rendering.
 
-**2. The runs are executed one after another**, each through the requested
-stages. Work that is already done is skipped:
+**2. The runs are executed**, each through the requested stages: one after
+another, or with `parallel_runs`, that many at the same time, each in a
+process of its own on the same GPU. Training and scores come out the same
+either way. Rendering speed does not, so with `parallel_runs` it is
+measured after all training and scoring, one run at a time, with the GPU to
+itself. The training hours are then measured while the runs share the GPU:
+they say how long each run took next to the others, not how fast its model
+trains alone. Work that is already done is skipped:
 
 | Stage    | Skipped when                                                                   | Otherwise                       |
 |----------|--------------------------------------------------------------------------------|---------------------------------|
