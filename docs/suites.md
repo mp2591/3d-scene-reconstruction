@@ -35,7 +35,7 @@ runs:                                  # executed top to bottom
       decoder: {name: pixelnerf_mlp}
 ```
 
-The file has four required keys and two optional keys:
+The file has four required keys and three optional keys:
 
 | Key          | Meaning                                                                         |
 |--------------|---------------------------------------------------------------------------------|
@@ -45,6 +45,7 @@ The file has four required keys and two optional keys:
 | `runs`       | One config fragment per run. The key is the run's name.                         |
 | `seeds`      | Optional. Repeat every run once per seed, e.g. `[0, 1, 2]`; see [Several seeds](#several-seeds). |
 | `parallel_runs` | Optional. How many runs train and are scored at the same time, e.g. `3`. Without it, one after another. |
+| `report_every_minutes` | Optional. While runs train in parallel, also rewrite the report this often, e.g. `30`, with every run's curves so far. Without it, the report is rewritten after each run. |
 
 `common` and each run are ordinary config fragments, written exactly like the
 config files described in [configuration.md](configuration.md). They can use

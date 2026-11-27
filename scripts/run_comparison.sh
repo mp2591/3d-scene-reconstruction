@@ -3,9 +3,18 @@
 # anyone having to step in (docs/running_on_a_gpu_server.md). Prepare the
 # machine with scripts/setup_linux.sh first, then, inside tmux:
 #
-#   bash scripts/run_comparison.sh runs [STEPS_PER_RUN]
+#   bash scripts/run_comparison.sh runs 20h
 #
 # "runs" is the output folder (relative to the repository, or absolute).
+# "20h" asks for the first report within 20 hours of the first start in this
+# folder: after timing every run on this machine (step 1), the script chooses
+# the step budget itself, the largest of 25,000, 50,000, ... up to the suite's
+# whose first report is estimated to be ready in time, with a tenth of the
+# time to spare (the estimate leaves out starting the runs and writing their
+# checkpoints). Once chosen, the budget is kept in the folder.
+#
+#   bash scripts/run_comparison.sh runs [STEPS_PER_RUN]
+#
 # STEPS_PER_RUN is the step budget: how many steps each run trains. Without
 # it, the budget of configs/suites/proposal_comparison.yaml is used (400,000,
 # pixelNeRF's). With it, three settings follow the budget: training.num_steps,
@@ -30,29 +39,39 @@
 #      (scene-recon estimate-time), kept in <output>/time_estimate.txt. To
 #      change the budget, stop the script (Ctrl-c) and start it again with
 #      another STEPS_PER_RUN before the first run has saved its first checkpoint.
-#   2. The comparison: training to the end, scores on the first 100 test
-#      scenes, speed. A copy of that report is kept in
+#   2. The comparison: training to the end, scores on 10 evenly spaced views
+#      of each of the first 100 test scenes, speed. A copy of that report is kept in
 #      <output>/proposal_comparison_first_100_test_scenes/. Once that copy
 #      exists, this step is not run again (it would undo step 3's scores):
 #      after changing the comparison, delete the copy to make it again.
-#   3. The comparison scored on every test scene: the final report is
-#      <output>/proposal_comparison/summary.md.
+#   3. The comparison scored on every view of every test scene, as
+#      pixelNeRF's benchmark: the final report is
+#      <output>/proposal_comparison/summary.md. It takes far longer than
+#      steps 1 and 2; stop it when the GPU time is up.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
-    echo "Usage: bash scripts/run_comparison.sh OUTPUT_FOLDER [STEPS_PER_RUN]" >&2
+    echo "Usage: bash scripts/run_comparison.sh OUTPUT_FOLDER [STEPS_PER_RUN | HOURSh]" >&2
     exit 2
 fi
 output=$1
-asked_steps=${2:-}
-if [ -n "$asked_steps" ] && ! [[ $asked_steps =~ ^[1-9][0-9]*$ ]]; then
-    echo "STEPS_PER_RUN must be a whole number of training steps, e.g. 200000." >&2
+asked=${2:-}
+asked_steps=""
+asked_hours=""
+if [[ $asked =~ ^[1-9][0-9]*$ ]]; then
+    asked_steps=$asked
+elif [[ $asked =~ ^[1-9][0-9]*h$ ]]; then
+    asked_hours=${asked%h}
+elif [ -n "$asked" ]; then
+    echo "The second argument is a whole number of training steps per run (e.g. 200000) or of hours (e.g. 20h)." >&2
     exit 2
 fi
 comparison=configs/suites/proposal_comparison.yaml
 first_scenes=100   # test scenes scored first, so that every run has results early
+first_views=10     # views of each of them, evenly spaced, of the 250 that pixelNeRF's benchmark scores
+safety=0.9         # share of the hours that the estimate may fill when the budget is chosen (see the top)
 
 # Settings given to every command: where the results go, and the GPU.
 settings=(experiment.output_dir="$output" experiment.device=cuda)
@@ -74,6 +93,11 @@ if command -v flock > /dev/null; then
     fi
 fi
 exec > >(tee -a "$output/run_comparison.log") 2>&1
+# When this folder was first started: the hours of HOURSh count from then.
+started_file="$output/started_at"
+if [ ! -s "$started_file" ]; then
+    date +%s > "$started_file"
+fi
 
 log() { echo "$(date '+%F %T') | $*"; }
 
@@ -127,6 +151,15 @@ print(read_checkpoint_config(Path(sys.argv[1]))["optimization"]["decay_steps"])'
 fi
 started_steps=${recorded_steps:-$suite_steps}
 steps=${asked_steps:-$started_steps}
+# With HOURSh, the budget is chosen after the runs are timed (step 1), unless this folder has one.
+choose_budget=""
+if [ -n "$asked_hours" ]; then
+    if [ -n "$recorded_steps" ]; then
+        echo "This folder already has its budget, $recorded_steps steps per run; $asked does not change it."
+    else
+        choose_budget=yes
+    fi
+fi
 if [ -n "$checkpoint" ] && [ "$steps" != "$started_steps" ]; then
     echo "The comparison has trained with a budget of $started_steps steps per run ($checkpoint)," >&2
     echo "and its learning-rate schedule cannot change any more. Start again with that budget, or without one:" >&2
@@ -135,14 +168,23 @@ if [ -n "$checkpoint" ] && [ "$steps" != "$started_steps" ]; then
     echo "  bash scripts/run_comparison.sh ${output%/}_$steps $steps" >&2
     exit 1
 fi
-# Written whole or not at all, so that a stop in the middle cannot leave an empty record.
-if [ "$steps" != "$file_steps" ]; then
-    echo "$steps" > "$budget_file.partial"
-    mv "$budget_file.partial" "$budget_file"
+# The settings that follow the budget $steps (see the top of this file).
+follow_budget() {
+    first_phase=$(( (steps * 3 + 3) / 4 ))   # rounded up, so that even a one-step trial has a first phase
+    budget=(training.num_steps="$steps" optimization.decay_steps="$steps" training.first_phase_steps="$first_phase")
+}
+# Keeps the budget $steps in the folder: written whole or not at all, so that a stop in the
+# middle cannot leave an empty record.
+record_budget() {
+    if [ "$steps" != "$file_steps" ]; then
+        echo "$steps" > "$budget_file.partial"
+        mv "$budget_file.partial" "$budget_file"
+    fi
+}
+follow_budget   # until a budget is chosen, the suite's, for timing the runs
+if [ -z "$choose_budget" ]; then
+    record_budget
 fi
-# The settings that follow the budget (see the top of this file).
-first_phase=$(( (steps * 3 + 3) / 4 ))   # rounded up, so that even a one-step trial has a first phase
-budget=(training.num_steps="$steps" optimization.decay_steps="$steps" training.first_phase_steps="$first_phase")
 
 # A run trained further than the budget (by hand, see "Time to spare at the end" in
 # docs/running_on_a_gpu_server.md) would be scored, but left out of the comparison.
@@ -167,7 +209,11 @@ if longer:
     )
 EOF
 
-log "Step 0: checking the GPU ($steps training steps per run)"
+if [ -n "$choose_budget" ]; then
+    log "Step 0: checking the GPU (the step budget is chosen after step 1, for $asked)"
+else
+    log "Step 0: checking the GPU ($steps training steps per run)"
+fi
 warn_if_container_disk . "$output"
 # Also prints what this machine gives the runs. In a container with a share of a GPU (Run:ai)
 # the memory is that share; a run needed at most 22 GB on an RTX 4090, and three train at once.
@@ -223,21 +269,60 @@ if [ ! -e "$trial_done" ]; then
     touch "$trial_done"
 fi
 
-# Made once; a failed estimate is reported and the runs go on without it.
+# Made once. Without HOURSh, a failed estimate is reported and the runs go on without it.
 estimate="$output/time_estimate.txt"
-if [ ! -e "$estimate" ]; then
+estimates_json="$output/time_estimate.json"   # the same estimates, for choosing the budget
+if [ ! -e "$estimate" ] || { [ -n "$choose_budget" ] && [ ! -e "$estimates_json" ]; }; then
     log "Step 1: timing every run on this machine, to estimate how long the rest takes"
-    budgets=$(printf '%s\n' "$steps" 100000 200000 300000 400000 | sort -n -u)
+    if [ -n "$choose_budget" ]; then
+        budgets=$( (seq 25000 25000 "$suite_steps"; echo "$suite_steps") | sort -n -u)
+    else
+        budgets=$(printf '%s\n' "$steps" 100000 200000 300000 400000 | sort -n -u)
+    fi
     # shellcheck disable=SC2086  # $budgets is a list of numbers
     if scene-recon estimate-time --config "$comparison" --steps $budgets --first-scenes "$first_scenes" \
+            --first-target-views "$first_views" --json "$estimates_json.partial" \
             --set "${settings[@]}" "${budget[@]}" > "$estimate.partial"; then
+        mv "$estimates_json.partial" "$estimates_json"
         mv "$estimate.partial" "$estimate"
+    elif [ -n "$choose_budget" ]; then
+        echo "The time estimate failed (see above), so no budget can be chosen for $asked." >&2
+        echo "Start again with a number of steps per run instead, e.g.:" >&2
+        echo "  bash scripts/run_comparison.sh $output 100000" >&2
+        exit 1
     else
         echo "The time estimate failed (see above); carrying on without it." >&2
     fi
 fi
 if [ -e "$estimate" ]; then
     cat "$estimate"
+fi
+if [ -n "$choose_budget" ]; then
+    steps=$(python - "$estimates_json" "$asked_hours" "$(cat "$started_file")" "$safety" <<'EOF'
+import sys
+import time
+from pathlib import Path
+
+from scene_recon.time_estimate import largest_budget_within, load_estimates
+
+estimates = load_estimates(Path(sys.argv[1]))
+hours, started, safety = float(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+left = hours - (time.time() - started) / 3600
+steps = largest_budget_within(estimates, left * safety)
+if steps is None:
+    smallest = min(estimates, key=lambda estimate: estimate.steps)
+    steps = smallest.steps
+    print(
+        f"WARNING: even {steps:,} steps per run are estimated to take {smallest.first_scores:.1f} hours until the "
+        f"first report, more than the {left:.1f} hours left. Training {steps:,} steps per run all the same.",
+        file=sys.stderr,
+    )
+print(steps)
+EOF
+)
+    follow_budget
+    record_budget
+    echo "Chosen for $asked: $steps steps per run, the most whose first report is estimated to be ready in time."
 fi
 echo "This folder trains $steps steps per run."
 if [ -z "$checkpoint" ]; then
@@ -251,8 +336,9 @@ comparison_settings=("${settings[@]}" "${budget[@]}")
 
 first_report="$output/proposal_comparison_first_${first_scenes}_test_scenes"
 if [ ! -e "$first_report" ]; then
-    log "Step 2: training the comparison, scoring it on the first $first_scenes test scenes"
-    scene-recon run-suite --config "$comparison" --set "${comparison_settings[@]}" evaluation.num_scenes="$first_scenes"
+    log "Step 2: training the comparison, scoring it on $first_views views of each of the first $first_scenes test scenes"
+    scene-recon run-suite --config "$comparison" --set "${comparison_settings[@]}" \
+        evaluation.num_scenes="$first_scenes" evaluation.num_target_views="$first_views"
     # Copied beside its final place, which appears only once the copy is complete.
     rm -rf "$first_report.partial"
     mkdir "$first_report.partial"
@@ -260,7 +346,7 @@ if [ ! -e "$first_report" ]; then
     mv "$first_report.partial" "$first_report"
 fi
 
-log "Step 3: scoring the comparison on every test scene"
+log "Step 3: scoring the comparison on every view of every test scene (pixelNeRF's benchmark)"
 scene-recon run-suite --config "$comparison" --set "${comparison_settings[@]}"
 
 log "Finished. Report: $output/proposal_comparison/summary.md"

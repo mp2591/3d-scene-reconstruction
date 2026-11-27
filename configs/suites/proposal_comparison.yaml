@@ -9,6 +9,10 @@
 # model is tuned: the runs differ in the model alone, each encoder starting
 # from its published pretrained weights. Scoring is pixelNeRF's benchmark:
 # every view of every test scene that is not a source view.
+#
+# To finish within 20 hours, scripts/run_comparison.sh trains fewer steps
+# (as many as fit, with the schedule scaled to them) and first scores 10
+# views of each of the first 100 test scenes (START_TRAINING.md).
 # The baselines (pixelNeRF, TransNeRF) are trained here with the same recipe,
 # not taken from their papers.
 #
@@ -59,6 +63,9 @@ seeds: [0]
 # GH200's 96 GB. Rendering speed is still measured one run at a time, at the
 # end. On a GPU with 24 GB, set this to 1.
 parallel_runs: 3
+# While they train, the report (runs/proposal_comparison/summary.md) is
+# rewritten this often, with every run's loss and validation curves so far.
+report_every_minutes: 30
 
 common:
   base: [../base.yaml, ../data/srn_cars.yaml]

@@ -101,7 +101,9 @@ training:
 validation:
   num_scenes: 4
   num_target_views: 4
-  source_views: [64]
+  # Two source views, the input of every step until training.first_phase_steps,
+  # so that the curve says how training goes from the start.
+  source_views: [64, 104]
   metrics: [psnr, ssim]
 
 # Full protocol on the test split (`scene-recon evaluate`). One pass is run per

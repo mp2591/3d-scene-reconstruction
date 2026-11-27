@@ -25,6 +25,7 @@ def _write_suite(
     stages: list[str] | None = None,
     seeds: list[int] | None = None,
     parallel_runs: int | None = None,
+    report_every_minutes: float | None = None,
 ) -> Path:
     """Write a suite file whose runs build on the smoke test, shrunk to a few training steps."""
     content = {
@@ -52,6 +53,8 @@ def _write_suite(
         content["seeds"] = seeds
     if parallel_runs is not None:
         content["parallel_runs"] = parallel_runs
+    if report_every_minutes is not None:
+        content["report_every_minutes"] = report_every_minutes
     path = tmp_path / "suite.yaml"
     path.write_text(yaml.safe_dump(content, sort_keys=False))  # keep the runs in the given order
     return path
@@ -520,13 +523,26 @@ def test_invalid_numbers_of_parallel_runs_are_rejected(tmp_path: Path, parallel_
         load_suite(_write_suite(tmp_path, TWO_RUNS, parallel_runs=parallel_runs))
 
 
-def test_runs_in_parallel_score_as_one_after_another_and_are_profiled_alone(tmp_path: Path):
+@pytest.mark.parametrize("minutes", [0, -5, True, "30"])
+def test_invalid_report_intervals_are_rejected(tmp_path: Path, minutes):
+    with pytest.raises(ConfigError, match="'report_every_minutes' must be"):
+        load_suite(_write_suite(tmp_path, TWO_RUNS, parallel_runs=2, report_every_minutes=minutes))
+
+
+def test_runs_in_parallel_score_as_one_after_another_and_are_profiled_alone(tmp_path: Path, monkeypatch):
     """Each run trains and is scored in a process of its own; speed is measured once all have finished."""
+    reports = []
+    real_write_report = suite_module._write_report
+    monkeypatch.setattr(suite_module, "_write_report", lambda *args: reports.append(1) or real_write_report(*args))
     scores, suites = {}, {}
     for parallel_runs in (1, 2):
         folder = tmp_path / f"parallel_{parallel_runs}"
         folder.mkdir()
-        suites[parallel_runs] = suite = load_suite(_write_suite(folder, TWO_RUNS, parallel_runs=parallel_runs))
+        # In parallel, the report is also rewritten every 0.06 seconds while the runs go on.
+        minutes = 0.001 if parallel_runs == 2 else None
+        path = _write_suite(folder, TWO_RUNS, parallel_runs=parallel_runs, report_every_minutes=minutes)
+        suites[parallel_runs] = suite = load_suite(path)
+        reports.clear()
         assert run_suite(suite) == {}
         evaluations = {name: json.loads(RunFiles(config.run_dir).evaluation.read_text()) for name, config in suite.runs.items()}
         scores[parallel_runs] = {
@@ -535,6 +551,8 @@ def test_runs_in_parallel_score_as_one_after_another_and_are_profiled_alone(tmp_
         }
 
     assert scores[2] == scores[1]
+    # After each run's training and scoring, and after each run's profile: 4 reports, and more on the timer.
+    assert len(reports) > 4
     run_files = [RunFiles(config.run_dir) for config in suites[2].runs.values()]
     last_scored = max(files.evaluation.stat().st_mtime_ns for files in run_files)
     assert all(files.profile.stat().st_mtime_ns >= last_scored for files in run_files)

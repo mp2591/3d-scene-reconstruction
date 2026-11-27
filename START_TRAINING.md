@@ -17,20 +17,20 @@ measured at the end, one model at a time, with the GPU to itself:
 | `hiera_mlp` | Hiera-T | pixelNeRF's MLP |
 | `hiera_nerf` | Hiera-T | HieraNeRF bridge and attention decoder |
 
-Each run trains 400,000 steps and is then scored with 1 and 2 source views
-on every view of the 704 test cars, as pixelNeRF's benchmark does. The two
-baselines, `pixelnerf_resnet34` and `transnerf_unet`, are commented out
-until their model files exist.
+Every run trains the same number of steps and is scored with 1 and 2
+source views. The two baselines, `pixelnerf_resnet34` and `transnerf_unet`,
+are commented out until their model files exist.
 
-**How long.** On an RTX 4090 in full float32: about 91 hours until every
-run is trained and scored on the first 100 test cars, about 368 hours until
-the final report on all 704. Scoring is most of it. Both figures are for
-one model at a time, and so is the figure printed for your machine about 15
-minutes after the start. How much sooner three at once finish has not been
-measured: it depends on how much of the GPU one run leaves idle.
-Three at once finish sooner only if each run trains less than three times
-slower than alone: compare a run's time per 100 steps in `suite.log` with
-100 times its "s per training step" in `time_estimate.txt`.
+**Within 20 hours.** Started with `20h` (below), the script first times the
+three runs together on this machine (about 15 minutes in). It then
+chooses the step budget itself: the largest of 25,000, 50,000, ... up to
+pixelNeRF's 400,000 whose report is estimated to be ready within 20 hours
+of the start, with a tenth of the time to spare. That report scores 10
+evenly spaced views of each of the first 100 test cars (1,000 views per
+model and number of source views). pixelNeRF's full recipe does not fit:
+400,000 steps and its benchmark, every view of all 704 test cars, take
+about 368 hours on an RTX 4090. After the report, the script goes on to
+that full benchmark (step 3); stop it when the GPU time is up.
 
 ## Before you start
 
@@ -79,28 +79,30 @@ Inside `tmux`, so that it keeps running when the connection drops:
 
 ```bash
 tmux new -s comparison
-bash scripts/run_comparison.sh runs
+bash scripts/run_comparison.sh runs 20h
 ```
 
 Leave tmux with `Ctrl-b` then `d`, come back with `tmux attach -t comparison`.
 Without tmux:
 
 ```bash
-nohup bash scripts/run_comparison.sh runs > /dev/null 2>&1 &
+nohup bash scripts/run_comparison.sh runs 20h > /dev/null 2>&1 &
 ```
 
 `runs` is the output folder; use a new name if `runs` already holds an old
-comparison. Everything is also written to `runs/run_comparison.log`.
+comparison. Everything is also written to `runs/run_comparison.log`. The 20
+hours count from the first start in that folder (kept in `runs/started_at`),
+also after a restart.
 
 ## 3. In the first 15 minutes
 
 The script first checks the GPU and prints what the machine gives the runs:
 GPU memory, processors, shared memory. Check these. Then it trains every run
-for 50 steps in `runs/trial`, and prints how long the rest will take for
-several step budgets (also kept in `runs/time_estimate.txt`).
+for 50 steps in `runs/trial`, times the three runs together, prints how long
+the rest takes for each step budget (also kept in `runs/time_estimate.txt`)
+and the budget it chose: "Chosen for 20h: ... steps per run".
 
-**This is the moment to choose another step budget**, if 400,000 steps per
-run do not fit in the time you have. Stop the script (`Ctrl-c`) and start
+To choose the budget yourself instead, stop the script (`Ctrl-c`) and start
 it again with the number of steps:
 
 ```bash
@@ -113,11 +115,14 @@ that, another budget needs a new output folder.
 
 ## While it runs
 
+- **Results so far:** `runs/proposal_comparison/summary.md` is rewritten
+  every 30 minutes, with every run's status and its loss and validation
+  PSNR curves so far (2 source views on 4 validation cars, every 5,000
+  steps). TensorBoard shows the same live (see the docs).
 - **Progress:** `tail -f runs/proposal_comparison/suite.log` (a line every
-  100 steps per run, with the time and the run's name).
-- **Low validation PSNR for most of a run is expected.** Validation uses
-  one source view, but training uses two for the first three quarters of
-  the steps. It rises once one-view steps begin.
+  100 steps per run, with the time and the run's name). If a run's time per 100 steps in `suite.log` is well above 100 times its
+  "s per training step" in `time_estimate.txt` (where the three were timed
+  together), something else is using the GPU and the hours will not hold.
 - **After a crash, a restart or a stopped workload:** run the same command
   again (same output folder, same container image, volume at the same
   path). Finished work is kept, and training continues from its last
@@ -145,8 +150,8 @@ that, another budget needs a new output folder.
 
 | File | Contents |
 |---|---|
-| `runs/proposal_comparison_first_100_test_scenes/summary.md` | The report on the first 100 test cars, after about 91 hours on a 4090 |
-| `runs/proposal_comparison/summary.md` | The final report, on all 704 test cars |
+| `runs/proposal_comparison_first_100_test_scenes/summary.md` | The report within the 20 hours: 10 views of each of the first 100 test cars |
+| `runs/proposal_comparison/summary.md` | While training: the report so far. At the very end: pixelNeRF's full benchmark, every view of all 704 test cars |
 
 Copy them off the machine before it is shut down, for example without the
 checkpoints:
@@ -155,12 +160,8 @@ checkpoints:
 rsync -a --exclude checkpoints <user>@<server>:3d-scene-reconstruction/runs/ gpu-server-runs/
 ```
 
-**If time runs out** during the scoring of all 704 cars, stop it: the
-report on the first 100 cars is already complete. Scoring settings never
-need training again, so fewer views per car (for example
-`--set evaluation.num_target_views=10`, by hand as in the docs) score all
-704 cars in a fraction of the time, though no longer by pixelNeRF's
-benchmark.
+**When the GPU time is up** during step 3 (every view of all 704 cars),
+stop it: the report on the first 100 cars is already complete.
 
 ## What matches pixelNeRF
 
@@ -169,7 +170,14 @@ way for every model: 4 cars of 128 rays per step from all 50 views of each
 car, two source views and rays from the box around the car for the first
 three quarters of the steps, then one or two views and the whole image; the
 learning rate 1e-4; 64 + 32 samples per ray, 16 of them around the depth the
-first 64 found; its pixel centres; scores on every non-source test view,
-rounded down to 8 bits, with random sample positions. The one difference: the
-learning rate rises over the first 2,000 steps and then falls tenfold over
-the budget (pixelNeRF keeps 1e-4 throughout).
+first 64 found; its pixel centres; scores rounded down to 8 bits, with
+random sample positions. The differences, all to fit in 20 hours except the
+first:
+
+- the learning rate rises over the first 2,000 steps and then falls tenfold
+  over the budget (pixelNeRF keeps 1e-4 throughout);
+- the budget is what fits, up to pixelNeRF's 400,000 steps, and the first
+  phase lasts three quarters of it;
+- the report within the 20 hours scores 10 of the about 250 non-source
+  views of each of the first 100 test cars. pixelNeRF's full benchmark
+  comes only in step 3.

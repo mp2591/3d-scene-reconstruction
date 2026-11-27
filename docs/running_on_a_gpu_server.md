@@ -2,8 +2,9 @@
 
 This page takes a fresh Linux machine with an NVIDIA GPU, such as a GH200
 cloud instance, to a finished comparison report. You type two commands; the
-second runs for days (see "Choosing the step budget") and needs no one to
-step in.
+second, `bash scripts/run_comparison.sh runs 20h`, has the report ready
+within 20 hours (see "Choosing the step budget") and needs no one to step
+in.
 
 The scripts were written for a GH200 (ARM processor, Hopper GPU) but use
 nothing specific to it. They were tried on a Windows machine with an RTX
@@ -15,30 +16,28 @@ nothing specific to it. They were tried on a Windows machine with an RTX
 flowchart LR
     setup["setup_linux.sh<br/>environment, weights,<br/>data, tests"] --> check["0. check<br/>GPU works"]
     check --> trial["1. trial<br/>50 steps per run,<br/>time estimate"]
-    trial --> train["2. comparison<br/>train to the step budget<br/>(400,000), score 100 test scenes"]
-    train --> full["3. score all<br/>704 test scenes"]
+    trial --> train["2. comparison<br/>train to the step budget,<br/>score 10 views of 100 test scenes"]
+    train --> full["3. score every view<br/>of all 704 test scenes"]
 ```
 
 | Step | What it does | On an RTX 4090 |
 |---|---|---|
 | 0 | Checks that PyTorch can use the GPU; prints what the machine gives the runs | seconds |
-| 1 | A 50-step trial of every run with every stage, in `runs/trial`, so that a problem with the machine shows up early; then, once, an estimate of how long the rest takes on this machine (see "Choosing the step budget") | 15 min |
-| 2 | The comparison: training every run to the step budget (400,000 unless you choose another), scores on the first 100 test scenes, speed | 91 h, one run at a time |
-| 3 | Scores on all 704 test scenes, every view that is not a source view | 277 h, one run at a time |
+| 1 | A 50-step trial of every run with every stage, in `runs/trial`, so that a problem with the machine shows up early; then, once, an estimate of how long the rest takes on this machine and, with `20h`, the choice of the step budget (see "Choosing the step budget") | 15 min |
+| 2 | The comparison: training every run to the step budget, scores on 10 evenly spaced views of each of the first 100 test scenes, speed | with `20h`, what fits in the hours left |
+| 3 | pixelNeRF's full benchmark: every view that is not a source view, of all 704 test scenes | 277 h, one run at a time |
 
-About 368 hours in all: the estimate's figures on an RTX 4090 in full
-float32 (`experiment.float32_matmul_precision=highest`), one run at a
-time. The comparison trains and scores its three runs at the same time
-(`parallel_runs: 3`). That is faster only where one run alone leaves part
-of the GPU idle; by how much has not been measured. The estimate times one
-run alone. Scoring takes most
-of it: pixelNeRF's benchmark renders about 350,000 views per model, 0.7 to
-1.3 s each on the RTX 4090, 40 hours for the first 100 test scenes of the
-three models. A GH200
-should be faster: `float32_matmul_precision: high` in `configs/base.yaml`
-lets its tensor cores compute the matrix products in TensorFloat-32. (On the
-RTX 4090 itself, a short test with it rendered 20 to 35% more frames per
-second.)
+pixelNeRF's full recipe does not fit in 20 hours: on an RTX 4090 in full
+float32 (`experiment.float32_matmul_precision=highest`), one run at a time,
+400,000 steps per run and its full benchmark take about 368 hours. Scoring
+takes most of it: the benchmark renders about 350,000 views per model, 0.7
+to 1.3 s each. So step 2 scores 10 views of each of 100 test scenes, 1,000
+per model and number of source views, and with `20h` the runs train as
+many steps as fit. The three runs train and are scored at the same time
+(`parallel_runs: 3`) and are timed that way. A GH200 should be faster:
+`float32_matmul_precision: high` in `configs/base.yaml` lets its tensor
+cores compute the matrix products in TensorFloat-32. (On the RTX 4090
+itself, a short test with it rendered 20 to 35% more frames per second.)
 
 Each step skips what it has already done. If the machine stops, run the
 same command again and it carries on.
@@ -71,24 +70,26 @@ trained here like every other model, not compared with its paper.
 
 ## Choosing the step budget
 
-Each run trains 400,000 steps, pixelNeRF's number. After its trial
-(step 1), `run_comparison.sh` times a few training steps and scored views
-of every run on this machine, and writes how long the rest would take, for
-a few budgets, into `runs/time_estimate.txt`. It prints that file every time
-it starts. On the RTX 4090, with the settings of `configs/base.yaml` but in
-full float32:
+pixelNeRF trains 400,000 steps, more than fit in 20 hours. Give the
+hours instead:
 
-```text
-Hours from the start of training until:
-  steps per run | trained, scored on 100 test scenes | final report
-        100,000 |                               52.4 |        329.7
-        200,000 |                               65.3 |        342.6
-        300,000 |                               78.2 |        355.5
-        400,000 |                               91.1 |        368.4
+```bash
+bash scripts/run_comparison.sh runs 20h
 ```
 
-To use another budget, stop the script (`Ctrl-c`) and start it again with
-the number of steps after the output folder:
+After its trial (step 1), `run_comparison.sh` times a few training steps
+and scored views of every run on this machine, the three runs at the same
+time as they will train, and writes how long the rest would take, for
+budgets of 25,000, 50,000, ... up to 400,000 steps per run, into
+`runs/time_estimate.txt`. It prints that file every time it starts. It then
+chooses the largest budget whose report after step 2 (every run trained,
+scored on 10 views of each of the first 100 test scenes, and profiled) is
+estimated to be ready within 20 hours of the first start in this folder
+(kept in `runs/started_at`), with a tenth of the time to spare. If even
+25,000 steps do not fit, it says so and trains 25,000.
+
+To choose the budget yourself, give a number of steps instead, or stop the
+script (`Ctrl-c`) after its choice and start it again with one:
 
 ```bash
 bash scripts/run_comparison.sh runs 200000
@@ -109,10 +110,12 @@ bash scripts/run_comparison.sh runs 200000
 - **How far to trust it.** It times the training steps at the start of
   training, which always take two source views, where the later steps take
   one or two, so it errs on the long side. It leaves out
-  starting each run and writing the checkpoint files. On a shared GPU it
-  only knows the sharing at the time it ran. Leave some spare time: if the
-  end comes too early, the scores on the first 100 test scenes are already
-  there (see "Not enough time left" below).
+  starting each run and writing the checkpoint files. The runs timed
+  together start each timing together, but the faster ones finish first,
+  so the slowest is timed with less company near the end. The tenth to
+  spare covers these. If timing them together fails, each is timed alone
+  and counted one after another, which errs on the long side. On a shared
+  GPU it only knows the sharing at the time it ran.
 - **Afterwards.** With another budget, record it in the repository (the
   script says so when it finishes): `training.num_steps`,
   `training.first_phase_steps` and `optimization.decay_steps` in the
@@ -122,7 +125,7 @@ The estimate can also be made by hand, for any budgets, once the setup is
 done (one line; add `--set` options as the script does):
 
 ```bash
-scene-recon estimate-time --config configs/suites/proposal_comparison.yaml --steps 200000 400000 --first-scenes 100 --set experiment.device=cuda
+scene-recon estimate-time --config configs/suites/proposal_comparison.yaml --steps 200000 400000 --first-scenes 100 --first-target-views 10 --set experiment.device=cuda
 ```
 
 ## On a Run:ai cluster
@@ -187,11 +190,9 @@ Nothing in the configs has to change for that, but these things matter:
 How long the whole comparison takes on this machine is in
 `runs/time_estimate.txt` after step 1 (see "Choosing the step budget").
 Training then shows it: `runs/proposal_comparison/suite.log` logs every
-100 steps of each run, with the time and the run's name. With the three
-runs sharing the GPU, each trains slower than the estimate, which times one
-run alone. Three at once finish sooner only if each run trains less than three times
-slower than alone: compare a run's time per 100 steps in `suite.log` with
-100 times its "s per training step" in `time_estimate.txt`.
+100 steps of each run, with the time and the run's name. If a run's time per 100 steps in `suite.log` is well above 100 times its
+"s per training step" in `time_estimate.txt` (where the three were timed
+together), something else is using the GPU and the hours will not hold.
 
 If the container has no `tmux`, start the comparison in the background
 instead; its output is in `runs/run_comparison.log`:
@@ -280,8 +281,8 @@ the comparison by hand, each on one line, from the repository folder:
 
 ```bash
 C=configs/suites/proposal_comparison.yaml; S="experiment.output_dir=runs experiment.device=cuda"
-scene-recon run-suite --config $C --set $S evaluation.num_scenes=100   # 2. train, score 100 test scenes
-scene-recon run-suite --config $C --set $S                             # 3. score every test scene
+scene-recon run-suite --config $C --set $S evaluation.num_scenes=100 evaluation.num_target_views=10   # 2. train, score 100 test scenes
+scene-recon run-suite --config $C --set $S                                                         # 3. score every test scene
 ```
 
 For another step budget N, add `training.num_steps=N
@@ -297,23 +298,23 @@ drops (without `tmux`, see "On a Run:ai cluster" above):
 
 ```bash
 tmux new -s comparison
-bash scripts/run_comparison.sh runs
+bash scripts/run_comparison.sh runs 20h
 ```
 
 Leave tmux with `Ctrl-b` then `d`; come back with `tmux attach -t comparison`.
 Everything the script prints is also written to `runs/run_comparison.log`.
 It first checks that PyTorch can use the GPU, and tells every run to use it,
 so no run can fall back to the processor unnoticed. About 15 minutes in, it
-prints how long the rest will take; that is the moment to choose another
-step budget (see "Choosing the step budget").
+prints how long the rest will take and the step budget it chose (see
+"Choosing the step budget").
 
 ## Watching it
 
+- Results so far: `runs/proposal_comparison/summary.md` is rewritten every
+  30 minutes (`report_every_minutes` in the suite file) with every run's
+  status and its loss and validation curves so far. Validation renders 4
+  views of 4 validation cars from 2 source views every 5,000 steps.
 - Progress: `tail -f runs/proposal_comparison/suite.log`.
-- Validation scores one source view, but training takes two until three
-  quarters of the budget (the first phase). The validation PSNR therefore
-  looks low for most of a run and rises once one-view steps begin; that is
-  expected, not a failing run.
 - Training curves: on your own computer, `ssh -L 6006:localhost:6006 <user>@<server>`,
   then on the server `.venv/bin/tensorboard --logdir runs --port 6006`, and
   open http://localhost:6006.
@@ -323,8 +324,8 @@ step budget (see "Choosing the step budget").
 
 | File | Contents |
 |---|---|
-| `runs/proposal_comparison/summary.md` | The final report: quality, cost, paired comparisons, figures |
-| `runs/proposal_comparison_first_100_test_scenes/summary.md` | The same after step 2, on the first 100 test scenes |
+| `runs/proposal_comparison_first_100_test_scenes/summary.md` | The report after step 2, within the hours given: quality on 10 views of each of the first 100 test scenes, cost, paired comparisons, figures |
+| `runs/proposal_comparison/summary.md` | The report so far while training; after step 3, the same on pixelNeRF's full benchmark |
 
 A cloud instance's disk is usually deleted with the instance. Copy the
 results to your own computer before shutting it down, for example without
@@ -345,15 +346,15 @@ rsync -a --exclude checkpoints <user>@<server>:3d-scene-reconstruction/runs/ gpu
 - **The script stopped with an error.** The last lines name the problem;
   the suite logs (`runs/*/suite.log`) have the details. Fix it and run the
   same command again: finished work is kept.
-- **Not enough time left.** Every run has scores on 100 test scenes after
-  step 2. Step 3 may be stopped (`Ctrl-c`) and those used instead; they are
-  kept in `runs/proposal_comparison_first_100_test_scenes/`. Once that
-  folder exists, step 2 is not run again; after changing the comparison
-  (another model, another seed), delete it to have step 2 run again.
-  Scoring settings never need training again: fewer views per scene
-  (`--set evaluation.num_target_views=10`, evenly spread, in step 3 run by
-  hand) score all 704 scenes in a fraction of the time, though no longer
-  by pixelNeRF's protocol.
+- **Not enough time left.** Every run has scores on 10 views of each of
+  100 test scenes after step 2. Step 3 may be stopped (`Ctrl-c`) and those
+  used instead; they are kept in
+  `runs/proposal_comparison_first_100_test_scenes/`. Once that folder
+  exists, step 2 is not run again; after changing the comparison (another
+  model, another seed), delete it to have step 2 run again. Scoring
+  settings never need training again: for example 10 views of all 704
+  scenes (`--set evaluation.num_target_views=10` in step 3 run by hand)
+  take about seven times as long as step 2's scoring.
 - **Time to spare at the end.** The step budget is best chosen at the
   start (see "Choosing the step budget"). After step 3, more training steps
   can still be asked for: run steps 2 and 3 again by hand with

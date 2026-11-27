@@ -31,7 +31,7 @@ from scene_recon.registry import ConfigError
 from scene_recon.stages import STAGES, check_model, run_evaluation, run_profiling, run_training
 from scene_recon.run_files import SuiteFiles
 from scene_recon.suite import PreflightError, SuiteReportError, load_suite, run_suite
-from scene_recon.time_estimate import estimate_time
+from scene_recon.time_estimate import estimate_time, save_estimates
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +140,16 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Test scenes the suite is scored on first, before all of them (as scripts/run_comparison.sh does).",
     )
+    estimate.add_argument(
+        "--first-target-views",
+        type=int,
+        help="Views per test scene the suite is scored on first, before all of them (as scripts/run_comparison.sh does).",
+    )
+    estimate.add_argument(
+        "--json",
+        type=Path,
+        help="Also write the estimates to this file, as JSON (scripts/run_comparison.sh chooses its budget from it).",
+    )
     estimate.set_defaults(run=_estimate_time)
 
     return parser
@@ -191,7 +201,11 @@ def _run_suite(args: argparse.Namespace) -> None:
 
 
 def _estimate_time(args: argparse.Namespace) -> None:
-    print(estimate_time(load_suite(args.config, args.set), args.steps, args.first_scenes))
+    suite = load_suite(args.config, args.set)
+    text, estimates = estimate_time(suite, args.steps, args.first_scenes, args.first_target_views)
+    print(text)
+    if args.json is not None:
+        save_estimates(estimates, args.json)
 
 
 if __name__ == "__main__":

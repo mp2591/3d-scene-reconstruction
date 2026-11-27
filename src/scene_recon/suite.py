@@ -34,7 +34,9 @@ An optional ``parallel_runs: 3`` trains and scores up to that many runs at
 the same time, each in a process of its own on the same GPU. Their results
 are the same as one after another. Rendering speed is not: it is measured
 afterwards, one run at a time, with the GPU to itself. Without the key, runs
-go one after another.
+go one after another. With them in parallel, an optional
+``report_every_minutes: 30`` also rewrites the report that often while they
+train, with every run's curves so far.
 
 Running a suite:
 
@@ -86,7 +88,7 @@ from scene_recon.stages import STAGES, check_run_can_start, run_evaluation, run_
 logger = logging.getLogger(__name__)
 
 _SUITE_KEYS = {"suite_name", "stages", "common", "runs"}
-_OPTIONAL_SUITE_KEYS = {"seeds", "parallel_runs"}
+_OPTIONAL_SUITE_KEYS = {"seeds", "parallel_runs", "report_every_minutes"}
 # Letters, digits and _ . + -, but not "." or ".." alone, which are not directory names of their own.
 _VALID_NAME = re.compile(r"^(?!\.+$)[A-Za-z0-9_.+-]+$")
 
@@ -123,6 +125,9 @@ class Suite:
     parallel_runs: int
     """How many runs train and are scored at the same time. 1: one after another."""
 
+    report_every_minutes: float | None
+    """While runs train in parallel, the report is also rewritten this often. ``None``: only after each run."""
+
     def grouped_runs(self) -> dict[str, dict[str, Config]]:
         """Run name -> {key in ``runs``: config}, the shape the report expects."""
         return {name: {key: self.runs[key] for key in keys} for name, keys in self.groups.items()}
@@ -147,6 +152,7 @@ def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
     stages = _checked_stages(content["stages"])
     seeds = _checked_seeds(content.get("seeds"))
     parallel_runs = _checked_parallel_runs(content.get("parallel_runs", 1))
+    report_every_minutes = _checked_report_every_minutes(content.get("report_every_minutes"))
     runs = content["runs"]
     if not isinstance(runs, Mapping) or not runs:
         raise ConfigError(f"'runs' in {path} must be a non-empty mapping from run name to config.")
@@ -203,6 +209,7 @@ def load_suite(path: str | Path, overrides: Sequence[str] = ()) -> Suite:
         directory=suite_directory,
         groups=groups,
         parallel_runs=parallel_runs,
+        report_every_minutes=report_every_minutes,
     )
 
 
@@ -264,9 +271,10 @@ def _run_one_after_another(suite: Suite, stages: list[str], failures: dict[str, 
 def _run_in_parallel(suite: Suite, stages: list[str], failures: dict[str, str]) -> str | None:
     """Execute ``stages`` of every run, ``suite.parallel_runs`` at a time, each in a process of its own.
 
-    The report is rewritten (by this process only) after each run ends. A
-    run that fails is added to ``failures``. Returns the error of the last
-    report written, if it failed.
+    The report is rewritten (by this process only) after each run ends, and
+    every ``suite.report_every_minutes`` while runs go on. A run that fails
+    is added to ``failures``. Returns the error of the last report written,
+    if it failed.
     """
     # A new interpreter for each run: CUDA cannot be used in a forked copy of a process that has used it.
     context = multiprocessing.get_context("spawn")
@@ -275,6 +283,8 @@ def _run_in_parallel(suite: Suite, stages: list[str], failures: dict[str, str]) 
     waiting = list(suite.runs.items())
     running: dict[str, tuple[multiprocessing.Process, multiprocessing.connection.Connection]] = {}
     report_error = None
+    interval = None if suite.report_every_minutes is None else suite.report_every_minutes * 60
+    next_report = None if interval is None else time.monotonic() + interval
     try:
         while waiting or running:
             while waiting and len(running) < suite.parallel_runs:
@@ -290,7 +300,11 @@ def _run_in_parallel(suite: Suite, stages: list[str], failures: dict[str, str]) 
                 sender.close()  # the run's process holds the only sending end now
                 running[run_name] = (process, receiver)
 
-            multiprocessing.connection.wait([process.sentinel for process, _ in running.values()])
+            timeout = None if next_report is None else max(0.0, next_report - time.monotonic())
+            multiprocessing.connection.wait([process.sentinel for process, _ in running.values()], timeout=timeout)
+            if next_report is not None and time.monotonic() >= next_report:
+                report_error = _write_report(suite, failures)  # the runs' curves so far
+                next_report = time.monotonic() + interval
             for run_name, (process, receiver) in list(running.items()):
                 if process.is_alive():
                     continue
@@ -501,6 +515,15 @@ def _checked_seeds(seeds: Any) -> list[int] | None:
     if not valid:
         raise ConfigError(f"'seeds' must be a non-empty list of distinct non-negative whole numbers, got {seeds!r}.")
     return seeds
+
+
+def _checked_report_every_minutes(minutes: Any) -> float | None:
+    """How often the report is rewritten while runs train in parallel: a positive number of minutes, or unset."""
+    if minutes is None:
+        return None
+    if not isinstance(minutes, (int, float)) or isinstance(minutes, bool) or not minutes > 0:
+        raise ConfigError(f"'report_every_minutes' must be a positive number of minutes, got {minutes!r}.")
+    return float(minutes)
 
 
 def _checked_parallel_runs(parallel_runs: Any) -> int:
