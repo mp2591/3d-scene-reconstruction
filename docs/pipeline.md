@@ -171,21 +171,17 @@ Give all scenes of a split the same image size. The encoders accept only
 sizes their strides divide, and the checks before a run read the size of
 each split's first scene only.
 
-Also override `fingerprint()` to identify the data's content: it is
-recorded with every checkpoint and evaluation, an evaluation made on other
-test data is redone, and a run is not resumed on other training data. The
-default only records the class and the number of scenes. Hash the
-*content* of everything `load_scene` reads, as the SRN loader does (images,
-poses and intrinsics), so that data replaced in place, even by files of the
-same size, is recognised. The SRN loader keeps the hash for the rest of the
-process only while every file's size, modification time, change time and
-inode are unchanged, and hashes again otherwise.
+`fingerprint()` identifies the data: it is recorded with every checkpoint
+and evaluation, an evaluation made on other test data is redone, and a run
+is not resumed on other training data. The default, which the SRN loader
+uses, records the class and the number of scenes; the files are not
+hashed, so an edit inside a file is not noticed. Override it if a dataset
+needs more.
 
-Checkpoints from before content hashing record an older SRN fingerprint
-(`files_sha256`: names and sizes only). It cannot confirm that the files
-still hold the same content, so such a checkpoint is not resumed or reused
-for training; the error says so. It can still be evaluated and profiled.
-To train further, start a new run.
+Checkpoints written by older code record the SRN data in another format
+(with a hash of the files). Such a checkpoint is not resumed or reused for
+training; the error says so. It can still be evaluated and profiled. To
+train further, start a new run.
 
 ## Adding a loss or a metric
 
