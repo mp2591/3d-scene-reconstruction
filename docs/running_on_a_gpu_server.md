@@ -179,6 +179,9 @@ Nothing in the configs has to change for that, but these things matter:
   processes had a batch ready every 27 ms, against 110 to 150 ms per
   training step. Each run uses 9 processors (8 loading, 1 training), so give
   the workload at least 30 for the three runs at once; 48 do no harm.
+  `run_comparison.sh` limits each process to 4 threads (`OMP_NUM_THREADS`):
+  otherwise each would start one per processor of the whole machine, not
+  of the container's share.
   The workload's main memory has a limit of its own; leave it generous.
   Step 0 of `run_comparison.sh` prints the GPU memory, processors and
   shared memory the container has.

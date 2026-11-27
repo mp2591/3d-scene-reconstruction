@@ -123,6 +123,11 @@ source .venv/bin/activate
 # are kept in weights/ with the repository, not in the home folder, which a container may lose.
 export HF_HOME="${HF_HOME:-$PWD/weights/huggingface}"
 export TORCH_HOME="${TORCH_HOME:-$PWD/weights/torch}"
+# Without a limit, every PyTorch process starts one thread per processor of the whole machine
+# (72 on a GH200), not of the container's share: three training processes would start over 200
+# threads for 48 processors, beside their 24 loading processes (one thread each). 4 each is
+# plenty: the GPU does the work. Changing it never changes what is trained.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-4}"
 
 # The step budget (see the top of this file): asked for, else the one this folder was started
 # with, else the one in the comparison's suite file.
